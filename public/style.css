@@ -5691,3 +5691,190 @@ tbody tr { transition: background .14s var(--ease); }
   .wm-panel { right: 8px; left: 8px; bottom: 8px; width: auto; height: calc(100dvh - 80px); }
   .wm-launcher { right: 16px; bottom: 78px; }
 }
+
+/* ═══ Salary overview band ═══════════════════════════════════════════════
+   Sits above the detail table and answers one question: how much is still to
+   pay, per group. Each tile carries a meter whose fill is what has been paid
+   and whose notch is where the calendar says you should be -- so "behind" is
+   something the reader sees rather than something a colour asserts. No
+   categorical palette here on purpose: every tile is named, so identity never
+   depends on hue, and the only colour with meaning is the reserved amber on
+   the "to pay" chip, which always ships with its count. */
+.sal-ov {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 18px 20px 16px;
+}
+
+.sal-ov-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 14px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sal-ov-eyebrow {
+  font: 600 10px/1 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.9px;
+  color: var(--dim);
+}
+
+.sal-ov-title {
+  font-size: 1.05rem;
+  font-weight: 650;
+  color: var(--text);
+  margin: 6px 0 0;
+  letter-spacing: -0.01em;
+}
+
+.sal-ov-note {
+  font: 500 11.5px/1.4 var(--font-mono);
+  color: var(--muted);
+  margin: 4px 0 0;
+}
+
+/* The one hero figure on this page. */
+.sal-ov-total { text-align: right; }
+.sal-ov-total-label {
+  font: 600 10px/1 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--dim);
+}
+.sal-ov-total-value {
+  font: 700 36px/1 var(--font-mono);   /* same step as .dss-value on the dashboard */
+  letter-spacing: -1.5px;
+  color: var(--text);
+  margin-top: 6px;
+}
+.sal-ov-total-note {
+  font: 500 11px/1.3 var(--font-mono);
+  color: var(--muted);
+  margin-top: 6px;
+}
+
+.sal-ov-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+  gap: 12px;
+}
+
+.sal-ov-tile {
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 3px);
+  padding: 14px 14px 12px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sal-ov-tile--empty { opacity: 0.66; }
+
+.sal-ov-t-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sal-ov-t-name {
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: var(--text);
+}
+.sal-ov-t-count {
+  font: 500 10.5px/1 var(--font-mono);
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+/* Plain ink, not a warning colour: owing salary in September is the normal
+   state of the world, not an error. */
+.sal-ov-t-owed {
+  font: 700 25px/1 var(--font-mono);
+  letter-spacing: -1px;
+  color: var(--text);
+  margin-top: 2px;
+}
+.sal-ov-t-owed--done { color: var(--positive); font-size: 19px; letter-spacing: -0.5px; }
+.sal-ov-t-owed--none { font-size: 13px; font-weight: 500; color: var(--dim); letter-spacing: 0; }
+
+.sal-ov-t-alt {
+  font: 500 11px/1.3 var(--font-mono);
+  color: var(--muted);
+}
+
+/* Meter: fill is paid, notch is expected. Track is a lighter step of the
+   fill's own hue so the state reads across the whole bar. */
+.sal-ov-meter {
+  position: relative;
+  height: 7px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  margin-top: 6px;
+  overflow: hidden;
+}
+.sal-ov-meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 4px 2px 2px 4px;
+  background: var(--accent);
+}
+.sal-ov-meter-mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--text);
+  opacity: 0.55;
+}
+
+.sal-ov-t-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+}
+.sal-ov-t-pace {
+  font: 600 10.5px/1.3 var(--font-mono);
+  color: var(--muted);
+}
+.sal-ov-t-exp { font-weight: 500; color: var(--dim); }
+
+.sal-ov-chip {
+  font: 600 10px/1 var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  white-space: nowrap;
+}
+
+.sal-ov-t-over {
+  font: 500 10.5px/1.3 var(--font-mono);
+  color: var(--dim);
+}
+
+.sal-ov-fx {
+  font: 500 10.5px/1.5 var(--font-mono);
+  color: var(--dim);
+  margin: 14px 0 0;
+}
+
+@media (max-width: 640px) {
+  .sal-ov { padding: 16px 14px 14px; }
+  .sal-ov-head { align-items: flex-start; }
+  .sal-ov-total { text-align: left; }
+  .sal-ov-total-value { font-size: 28px; }
+}

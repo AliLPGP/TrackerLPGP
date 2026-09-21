@@ -17,6 +17,36 @@ const MONTHS = ['','January','February','March','April','May','June',
                 'July','August','September','October','November','December'];
 
 function currencySymbol(c) { return c === 'AED' ? 'AED ' : c === 'PHP' ? '₱' : '£'; }
+
+// Salary FX. One table, used by both the overview band and the summary table
+// below it, so the two can never quote different rates for the same money.
+const SAL_FX = { GBP: 1, AED: 1 / 4.67, PHP: 0.0138 };
+const salFxToGBP = (v, c) => v * (SAL_FX[c] || 1);
+
+/**
+ * What a person should have been paid by now, in their own currency.
+ *
+ * Salaries land monthly, so this counts whole months rather than days -- on
+ * the 21st of September, September's payment is due, and someone who has had
+ * it is not "behind" just because the month has nine days left. The window is
+ * the person's own: a mid-year starter is measured from their start month, so
+ * they are never shown as behind for months they did not work.
+ */
+function salaryExpectedByNow(row, year, now) {
+  const effective = (parseFloat(row.net_remaining) || 0) + (parseFloat(row.total_paid) || 0);
+  if (effective <= 0) return 0;
+  const y = parseInt(year, 10);
+  const curY = now.getFullYear();
+  if (y < curY) return effective;   // the year is over; all of it fell due
+  if (y > curY) return 0;           // hasn't started
+
+  const inYear = (d) => d && String(d).slice(0, 4) === String(y);
+  const startM = inYear(row.start_date)       ? parseInt(String(row.start_date).slice(5, 7), 10) : 1;
+  const endM   = inYear(row.termination_date) ? parseInt(String(row.termination_date).slice(5, 7), 10) : 12;
+  const span   = Math.max(1, endM - startM + 1);
+  const due    = Math.min(span, Math.max(0, (now.getMonth() + 1) - startM + 1));
+  return effective * (due / span);
+}
 function fmtMoney(amount, currency) { return currencySymbol(currency) + Number(amount || 0).toLocaleString('en-GB', {minimumFractionDigits:2}); }
 function fmt(n) { return Number(n||0).toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2}); }
 
@@ -1967,9 +1997,6 @@ async function loadSalaryPage() {
     });
     const TYPE_LABEL = { payroll: 'Payroll', self_employed: 'Self-Employed' };
     const TYPE_CLASS  = { payroll: 'payroll', self_employed: 'self-employed' };
-    const SAL_FX = { GBP: 1, AED: 1/4.67, PHP: 0.0138 };
-    const salFxToGBP = (v, c) => v * (SAL_FX[c] || 1);
-    const AED_TO_GBP = SAL_FX.AED; // kept for legacy references below
 
     // ── Summary table ──
     const allActive = activeRows;
@@ -1978,9 +2005,152 @@ async function loadSalaryPage() {
     const gtDeduct  = allActive.reduce((s, e) => s + salFxToGBP((parseFloat(e.excess_deduction)||0)+(parseFloat(e.total_office_deductions)||0), e.currency || 'GBP'), 0);
     const gtRemain  = allActive.reduce((s, e) => s + Math.max(0, salFxToGBP(parseFloat(e.net_remaining) || 0, e.currency || 'GBP')), 0);
     const hasMultiCurrency = groups.some(g => g.currency !== 'GBP');
-    const gtPaidPct = gtTarget > 0 ? Math.min(100, Math.round(gtPaid / gtTarget * 100)) : 0;
+    const gtPaidPct = (gtTarget - gtDeduct) > 0 ? Math.min(100, Math.round(gtPaid / (gtTarget - gtDeduct) * 100)) : 0;
     const fmtN = (v, sym) => sym + v.toLocaleString('en-GB', {maximumFractionDigits:0});
     const fmtGBP = v => '£' + v.toLocaleString('en-GB', {maximumFractionDigits:0});
+
+    // ── Overview: what is still to pay, per group ──────────────────────────
+    // Not filtered by the type tab on purpose. An overview that changed every
+    // time you clicked a tab would not be an overview; this answers "what is
+    // left across the whole team" whichever tab is open. The year, employee
+    // and search filters do apply, because those narrow who you are asking
+    // about rather than which slice of them you are looking at.
+    const ovRows = searched.filter(e => !e.is_terminated);
+    const ovNow  = new Date();
+
+    // Fixed list, fixed order. Payroll appears even when nobody is on it, so
+    // "nothing owed on payroll" is a visible answer rather than a missing
+    // tile. Anyone the list does not claim -- a currency we have not seen
+    // before -- still gets a tile rather than being dropped.
+    const OV_DEFS = [
+      { key: 'payroll', label: 'Payroll',
+        match: r => r.employment_type === 'payroll' },
+      { key: 'se_gbp',  label: 'Self-Employed',
+        match: r => r.employment_type === 'self_employed' && (r.currency || 'GBP') === 'GBP' },
+      { key: 'se_php',  label: 'Self-Employed · PHP',
+        match: r => r.employment_type === 'self_employed' && r.currency === 'PHP' },
+    ];
+    const ovClaimed = new Set();
+    const ovGroups = OV_DEFS.map(d => {
+      const rows = ovRows.filter(d.match);
+      rows.forEach(r => ovClaimed.add(r.employee_id));
+      return { key: d.key, label: d.label, rows };
+    });
+    const ovExtra = {};
+    ovRows.filter(r => !ovClaimed.has(r.employee_id)).forEach(r => {
+      const cur = r.currency || 'GBP';
+      const k = `${r.employment_type}_${cur}`;
+      (ovExtra[k] = ovExtra[k] || {
+        key: k,
+        label: `${TYPE_LABEL[r.employment_type] || r.employment_type}${cur !== 'GBP' ? ' · ' + cur : ''}`,
+        rows: []
+      }).rows.push(r);
+    });
+    Object.values(ovExtra).forEach(g => ovGroups.push(g));
+
+    // Each person's effective target is rebuilt as remaining + paid, so it is
+    // the server's own figure rather than a second formula that could drift.
+    const ovEffective = r => (parseFloat(r.net_remaining) || 0) + (parseFloat(r.total_paid) || 0);
+    // Owed counts only the people who are actually behind. Overpaying one
+    // person is not cash you get to hold back from another, so overpayment is
+    // reported on its own line instead of quietly shrinking the bill.
+    const ovOwedOf  = r => Math.max(0, parseFloat(r.net_remaining) || 0);
+    const ovOverOf  = r => Math.max(0, -(parseFloat(r.net_remaining) || 0));
+    const ovPaidOf  = r => parseFloat(r.total_paid) || 0;
+
+    const ovMonth = MONTHS[ovNow.getMonth() + 1].slice(0, 3);
+    const ovTiles = ovGroups.map(g => {
+      const curs  = [...new Set(g.rows.map(r => r.currency || 'GBP'))];
+      // A group in one currency is reported in it. A group spanning several
+      // can only be added up in GBP, and says so.
+      const mixed = curs.length > 1;
+      const cur   = mixed ? 'GBP' : (curs[0] || 'GBP');
+      const sym   = currencySymbol(cur);
+      const sum   = pick => g.rows.reduce(
+        (a, r) => a + (mixed ? salFxToGBP(pick(r), r.currency || 'GBP') : pick(r)), 0);
+
+      const owed = sum(ovOwedOf);
+      const over = sum(ovOverOf);
+      const eff  = sum(ovEffective);
+      const paid = sum(ovPaidOf);
+      const exp  = sum(r => salaryExpectedByNow(r, year, ovNow));
+
+      const pctPaid = eff > 0 ? Math.min(100, Math.round(paid / eff * 100)) : 0;
+      const pctExp  = eff > 0 ? Math.min(100, Math.round(exp  / eff * 100)) : 0;
+      const due     = g.rows.filter(r => unpaidSet.has(r.employee_id)).length;
+      const showGBP = !mixed && cur !== 'GBP' && owed > 0;
+      const money   = v => sym + Math.round(v).toLocaleString('en-GB');
+
+      if (!g.rows.length) {
+        return `<article class="sal-ov-tile sal-ov-tile--empty">
+          <div class="sal-ov-t-head">
+            <span class="sal-ov-t-name">${esc(g.label)}</span>
+            <span class="sal-ov-t-count">none</span>
+          </div>
+          <div class="sal-ov-t-owed sal-ov-t-owed--none">Nobody on this group</div>
+        </article>`;
+      }
+
+      return `<article class="sal-ov-tile">
+        <div class="sal-ov-t-head">
+          <span class="sal-ov-t-name">${esc(g.label)}</span>
+          <span class="sal-ov-t-count">${g.rows.length} ${g.rows.length === 1 ? 'person' : 'people'}</span>
+        </div>
+        <div class="sal-ov-t-owed${owed <= 0 ? ' sal-ov-t-owed--done' : ''}">${owed > 0 ? money(owed) : 'Fully paid'}</div>
+        <div class="sal-ov-t-alt">${
+          owed <= 0 ? 'nothing outstanding'
+          : showGBP ? `${fmtGBP(salFxToGBP(owed, cur))} still owed`
+          : mixed ? 'still owed this year, mixed currencies in GBP'
+          : 'still owed this year'
+        }</div>
+        <div class="sal-ov-meter" role="img"
+             aria-label="${pctPaid}% paid, ${pctExp}% expected by the end of ${ovMonth}">
+          <span class="sal-ov-meter-fill" style="width:${pctPaid}%"></span>
+          <span class="sal-ov-meter-mark" style="left:${pctExp}%"></span>
+        </div>
+        <div class="sal-ov-t-foot">
+          <span class="sal-ov-t-pace">${pctPaid}% paid<span class="sal-ov-t-exp"> · ${pctExp}% expected by ${ovMonth}</span></span>
+          ${due > 0 ? `<span class="sal-ov-chip">${due} to pay</span>` : ''}
+        </div>
+        ${over > 0 ? `<div class="sal-ov-t-over">${money(over)} overpaid, kept separate</div>` : ''}
+      </article>`;
+    }).join('');
+
+    // Whole-team totals. GBP, because that is the only way to add them up.
+    const ovGbp     = pick => ovRows.reduce((a, r) => a + salFxToGBP(pick(r), r.currency || 'GBP'), 0);
+    const ovOwedGBP = ovGbp(ovOwedOf);
+    const ovOverGBP = ovGbp(ovOverOf);
+    const ovEffGBP  = ovGbp(ovEffective);
+    const ovPaidGBP = ovGbp(ovPaidOf);
+    const ovPct     = ovEffGBP > 0 ? Math.min(100, Math.round(ovPaidGBP / ovEffGBP * 100)) : 0;
+    const ovNonGBP  = [...new Set(ovRows.map(r => r.currency || 'GBP'))].filter(c => c !== 'GBP');
+
+    // Guard: a stale cached index.html would not have this element, and losing
+    // the overview must not take the rest of the salary page down with it.
+    const ovEl = document.getElementById('salaryOverview');
+    if (ovEl) ovEl.innerHTML = ovRows.length ? `
+      <section class="sal-ov">
+        <header class="sal-ov-head">
+          <div>
+            <div class="sal-ov-eyebrow">Overview</div>
+            <h3 class="sal-ov-title">Still to pay in ${year}</h3>
+            <p class="sal-ov-note">${ovRows.length} active ${ovRows.length === 1 ? 'person' : 'people'}${
+              ovOverGBP > 0 ? ` · ${fmtGBP(ovOverGBP)} overpaid elsewhere, not netted off` : ''}</p>
+          </div>
+          <div class="sal-ov-total">
+            <div class="sal-ov-total-label">All groups, in GBP</div>
+            <div class="sal-ov-total-value">${fmtGBP(ovOwedGBP)}</div>
+            <div class="sal-ov-total-note">${ovPaidGBP > ovEffGBP
+              ? `${fmtGBP(ovPaidGBP)} paid, ${fmtGBP(ovPaidGBP - ovEffGBP)} ahead of what is owed`
+              : `${fmtGBP(ovPaidGBP)} of ${fmtGBP(ovEffGBP)} paid · ${ovPct}%`}</div>
+          </div>
+        </header>
+        <div class="sal-ov-grid">${ovTiles}</div>
+        <p class="sal-ov-fx">
+          The bar fills to what has been paid; the notch is where the year says you should be by the end of ${ovMonth}.${
+          ovNonGBP.length ? ` GBP conversions use ${ovNonGBP.map(c => `1 ${c} = £${SAL_FX[c]}`).join(', ')}.` : ''}
+        </p>
+      </section>` : '';
 
     window._salGrpOpen = window._salGrpOpen || {};
     const tableRows = groups.map(g => {
@@ -1989,7 +2159,8 @@ async function loadSalaryPage() {
       const tPaid   = g.rows.reduce((a, b) => a + (parseFloat(b.total_paid) || 0), 0);
       const tDeduct = g.rows.reduce((a, b) => a + (parseFloat(b.excess_deduction)||0) + (parseFloat(b.total_office_deductions)||0), 0);
       const tRemain = g.rows.reduce((a, b) => a + (parseFloat(b.net_remaining) || 0), 0);
-      const pct     = tTarget > 0 ? Math.min(100, Math.round(tPaid / tTarget * 100)) : 0;
+      const tEffective = tTarget - tDeduct;   // what is actually owed, after deductions
+      const pct     = tEffective > 0 ? Math.min(100, Math.round(tPaid / tEffective * 100)) : 0;
       const isNonGBP = g.currency !== 'GBP';
       const groupLabel = `${TYPE_LABEL[g.type]}${g.currency !== 'GBP' ? ' · ' + g.currency : ''}`;
 
