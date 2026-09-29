@@ -1176,27 +1176,7 @@ tbody tr:last-child td { border-bottom: none; }
 }
 #dealPackageToggleBtn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .emp-cal-day-dragsel { outline: 2px solid var(--accent) !important; outline-offset: -2px; background: rgba(217,164,65,0.16) !important; }
-#dealsTable td.deal-act-cell {
-  padding: 8px 8px; text-align: center; white-space: nowrap; overflow: visible;
-}
-.deal-act-invoice {
-  display: inline-flex; align-items: center; gap: 5px; vertical-align: middle;
-  padding: 6px 10px; border-radius: 6px; cursor: pointer;
-  font: 700 11px/1 var(--font-sans); letter-spacing: .01em;
-  background: transparent; color: var(--accent);
-  border: 1px solid rgba(217,164,65,0.45);
-  transition: background .12s, color .12s;
-}
-.deal-act-invoice:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
-.deal-act-del {
-  display: inline-flex; align-items: center; justify-content: center; vertical-align: middle;
-  width: 27px; height: 27px; margin-left: 5px; border-radius: 6px; cursor: pointer;
-  background: transparent; color: var(--muted); border: 1px solid var(--border);
-  transition: background .12s, color .12s, border-color .12s;
-}
-.deal-act-del:hover { color: #fff; background: var(--negative); border-color: var(--negative); }
 /* Invoice # cell: number on its own line (never truncated), file badge below */
-#dealsTable td.deal-cell-inv { white-space: normal; overflow: visible; }
 .deal-inv-filed-badge {
   display: inline-block; margin-top: 4px; padding: 2px 7px; border-radius: 20px;
   font: 700 10px/1.6 var(--font-mono); background: var(--positive-soft); color: var(--positive);
@@ -4068,12 +4048,6 @@ tbody tr:last-child td { border-bottom: none; }
 
 /* Dark filter bar */
 [data-theme="dark"] .filter-bar,
-[data-theme="dark"] .deal-filter-card {
-  background: var(--card);
-  border-color: var(--border);
-  border-left-color: var(--primary);
-}
-
 /* Dark modal */
 [data-theme="dark"] .modal {
   background: var(--surface);
@@ -4687,225 +4661,6 @@ tbody tr:last-child td { border-bottom: none; }
 ══════════════════════════════════════════ */
 
 /* Last invoice banner */
-.deal-inv-banner {
-  display: none;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 12px 18px;
-  margin-bottom: 10px;
-  font-size: 0.85rem;
-}
-.deal-inv-label { color: var(--muted); }
-.deal-inv-link  { font-weight: 700; color: var(--primary); text-decoration: none; }
-.deal-inv-link:hover { text-decoration: underline; }
-.deal-inv-arrow { color: var(--muted); }
-.deal-inv-next  { font-weight: 700; font-family: var(--font-mono); color: var(--text); }
-.deal-inv-copy  { margin-left: 2px; padding: 3px 12px !important; font-size: 0.78rem !important; }
-
-/* Filter cards */
-.deal-filter-card {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-left: 4px solid var(--accent);
-  border-radius: var(--radius);
-  padding: 12px 16px;
-  margin-bottom: 10px;
-}
-.deal-filter-actions { margin-bottom: 16px; }
-.deal-add-btn { margin-left: auto; }
-
-/* Separator between year and quarter groups */
-.deal-q-sep { width: 1px; height: 24px; background: var(--border); margin: 0 4px; }
-
-/* Year/Quarter pill buttons */
-.deal-q-filters { display: flex; gap: 4px; flex-wrap: wrap; }
-.deal-q-btn {
-  padding: 6px 14px;
-  border-radius: 20px;
-  font-size: 0.82rem;
-  font-weight: 600;
-  border: 1.5px solid var(--border);
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  transition: all .12s;
-  white-space: nowrap;
-}
-.deal-q-btn:hover { background: var(--bg); color: var(--text); border-color: var(--text); }
-.deal-q-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
-.deal-q-add { font-weight: 700; color: var(--primary) !important; border-style: dashed !important; }
-.deal-range-wrap { display: flex; align-items: center; gap: 6px; }
-.deal-range-label { font: 600 10px/1 var(--font-mono); color: var(--muted); text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
-.deal-range-input {
-  background: var(--surface); border: 1.5px solid var(--border); border-radius: 7px;
-  color: var(--text); font: 500 11px/1 var(--font-mono); padding: 5px 8px;
-  outline: none; cursor: pointer; transition: border-color .15s;
-}
-.deal-range-input:focus { border-color: var(--primary); }
-.deal-range-to { font: 700 11px/1 var(--font-mono); color: var(--muted); }
-.deal-range-clear {
-  background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3); border-radius: 6px;
-  color: var(--negative); font: 700 10px/1 var(--font-mono); padding: 4px 7px;
-  cursor: pointer; transition: background .15s;
-}
-.deal-range-clear:hover { background: rgba(239,68,68,0.22); }
-
-/* Search + select inputs inside filter card */
-.deal-search-input {
-  border: 1.5px solid var(--border);
-  border-radius: 9px;
-  padding: 8px 12px;
-  font-size: 0.85rem;
-  font-family: inherit;
-  outline: none;
-  background: var(--bg-2);
-  color: var(--text);
-  min-width: 200px;
-}
-.deal-search-input:focus { border-color: var(--accent); }
-.deal-select {
-  border: 1.5px solid var(--border);
-  border-radius: 9px;
-  padding: 8px 12px;
-  font-size: 0.85rem;
-  font-family: inherit;
-  background: var(--bg-2);
-  color: var(--text);
-}
-
-/* ── Stat summary cards ── */
-.deal-stat-cards {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-  margin-bottom: 16px;
-}
-@media (max-width: 900px) { .deal-stat-cards { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 480px) { .deal-stat-cards { grid-template-columns: 1fr; } }
-.deal-stat-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 18px 18px;
-}
-.deal-stat-label {
-  font: 600 9.5px/1.4 var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  color: var(--muted);
-  max-width: 70px;
-  flex-shrink: 0;
-}
-.deal-stat-value {
-  font-size: 20px;
-  font-weight: 800;
-  line-height: 1;
-  color: var(--text);
-  letter-spacing: -0.5px;
-  text-align: right;
-  min-width: 0;
-  white-space: nowrap;
-}
-.deal-stat-card.ds--green  { border-left: 4px solid var(--positive); }
-.deal-stat-card.ds--green  .deal-stat-value { color: var(--positive); }
-.deal-stat-card.ds--alert  { border-left: 4px solid var(--warning); }
-.deal-stat-card.ds--alert  .deal-stat-value { color: var(--warning); }
-.deal-stat-card.ds--indigo { border-left: 4px solid var(--accent); }
-.deal-stat-card.ds--indigo .deal-stat-value { color: var(--accent); }
-
-/* ── Deals table card ── */
-.deal-table-card { padding: 0; overflow: hidden; }
-
-#dealsTable {
-  table-layout: fixed;
-  width: 100%;
-  border-collapse: collapse;
-}
-
-/* Right-align numeric columns, center icon columns */
-#dealsTable .dt-r { text-align: right !important; }
-#dealsTable .dt-c { text-align: center !important; }
-
-#dealsTable thead th {
-  overflow: hidden;
-  white-space: normal;
-  word-break: normal;      /* wrap at spaces only — never split a word like SIGNED */
-  overflow-wrap: normal;
-  line-height: 1.25;
-  vertical-align: bottom;
-  padding: 10px 10px;
-  background: var(--bg-2);
-  color: var(--text-2);
-  font: 600 10.5px/1.25 var(--font-mono);
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  border-bottom: 1px solid var(--border);
-}
-
-#dealsTable td {
-  padding: 14px 10px;
-  vertical-align: middle;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 14px;
-  color: var(--text);
-}
-
-/* Notes column: wrap to 2 lines */
-#dealsTable td:nth-child(11) {
-  white-space: normal;
-  word-break: break-word;
-  vertical-align: top;
-  padding-top: 16px;
-  font-size: 13px;
-  color: var(--muted);
-}
-
-/* Editable cell */
-#dealsTable td.deal-cell-edit { cursor: pointer; }
-
-/* Row states */
-.deal-row-paid    { background: rgba(22,163,74,.12) !important; }
-.deal-row-paid td { border-bottom-color: rgba(22,163,74,.2) !important; }
-.deal-row-flagged { background: rgba(234,179,8,.07) !important; }
-.deal-row-issue   { background: rgba(234,88,12,.07) !important; }
-.deal-row-urgent  { background: rgba(220,38,38,.12) !important; }
-.deal-row-highlight { outline: 3px solid var(--primary); outline-offset: -1px; }
-
-.deal-company-flagged { background: rgba(234,179,8,.25); border-radius: 4px; padding: 2px 4px; }
-.deal-cell-issue { color: #ea580c; font-weight: 700; }
-
-.deal-initials-badge {
-  display: inline-block; background: var(--primary); color: #fff;
-  border-radius: 20px; padding: 1px 5px; font-size: 0.6rem; font-weight: 700;
-  vertical-align: middle; margin-left: 2px; letter-spacing: 0.2px; max-width: 44px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-
-.deal-inv-num {
-  font-family: var(--font-mono); font-size: 0.72rem; color: var(--text);
-  display: inline-block; max-width: 138px; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; vertical-align: middle;
-}
-
-.deal-totals-row { background: var(--bg-2) !important; }
-.deal-totals-row td { border-top: 2px solid var(--border) !important; padding: 10px 12px !important; }
-
-.port-card-companies { font-size: 0.75rem; color: var(--text); border-top: 1px solid var(--border); padding-top: 6px; }
-
 /* ── Revenue Intelligence Panel ──────────────────────────────────────────── */
 .ri-card {
   position: relative;
@@ -5367,12 +5122,6 @@ tbody tr:last-child td { border-bottom: none; }
 .ri-evt-counts { font-size: 0.7rem; font-weight: 700; white-space: nowrap; }
 
 /* ── Deal table inline editing ─────────────────────────────────────────────── */
-.deal-cell-edit {
-  cursor: pointer;
-  transition: background .1s;
-}
-.deal-cell-edit:hover { background: rgba(217,164,65,.07) !important; }
-.deal-cell-toggle:hover { background: rgba(217,164,65,.07) !important; }
 
 .deal-inline-input {
   border: 1.5px solid var(--primary);
@@ -5400,17 +5149,9 @@ tbody tr:last-child td { border-bottom: none; }
 }
 
 /* ── Row colour highlights — solid fills ───────────────────────────────────── */
-.deal-row-paid,     .deal-row-paid td     { background: rgba(22,163,74,.18)   !important; }
-.deal-row-flagged,  .deal-row-flagged td  { background: rgba(234,179,8,.18)   !important; }
-.deal-row-issue,    .deal-row-issue td    { background: rgba(234,88,12,.18)   !important; }
-.deal-row-urgent,   .deal-row-urgent td   { background: rgba(220,38,38,.22)   !important; }
-.deal-row-selected, .deal-row-selected td { background: rgba(217,164,65,.15)  !important; outline: 1px solid rgba(217,164,65,.4); }
 
-[data-theme="dark"] .deal-row-paid td     { background: rgba(22,163,74,.22)   !important; }
-[data-theme="dark"] .deal-row-flagged td  { background: rgba(234,179,8,.2)    !important; }
-[data-theme="dark"] .deal-row-issue td    { background: rgba(234,88,12,.2)    !important; }
-[data-theme="dark"] .deal-row-urgent td   { background: rgba(220,38,38,.26)   !important; }
-[data-theme="dark"] .deal-row-selected td { background: rgba(217,164,65,.22)  !important; }
+
+
 
 /* ── Colour picker popup ────────────────────────────────────────────────────── */
 .deal-color-picker {
@@ -5443,31 +5184,7 @@ tbody tr:last-child td { border-bottom: none; }
 .dcp-btn:first-child .dcp-label { color: var(--muted); }
 
 /* Deal notes cell */
-.deal-notes-cell {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  font-size: 0.78rem;
-  color: var(--muted);
-  cursor: pointer;
-  white-space: normal;
-}
 /* Month cell display */
-/* Month over year, so it fits the narrow column without truncating:  Sep
-                                                                        2026 */
-.deal-month-disp {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  font-size: 13px;
-  line-height: 1.15;
-  white-space: nowrap;
-  color: var(--text-2);
-  font-weight: 500;
-}
-.deal-month-yr { font: 600 10.5px/1 var(--font-mono); color: var(--muted); letter-spacing: .3px; }
 
 /* Deal period: month + year as one segmented control */
 .deal-period { display: flex; align-items: stretch; }
@@ -5488,31 +5205,13 @@ tbody tr:last-child td { border-bottom: none; }
   color: var(--muted);
 }
 /* Partial-pay orange only applies to that td, not the whole row */
-.deal-row-paid td.deal-cell-partial {
-  background: rgba(234,88,12,.32) !important;
-}
-
-/* Allow deal rows to wrap to 2 lines */
-#dealsTable td.deal-num { white-space: nowrap; word-break: normal; }
-.deal-month-disp { white-space: nowrap; }
-.deal-initials-badge { white-space: nowrap; }
-
 .deal-cell-orange,
 .deal-row-paid td.deal-cell-orange,
 .deal-row-flagged td.deal-cell-orange,
 [data-theme="dark"] .deal-row-paid td.deal-cell-orange,
 [data-theme="dark"] .deal-row-flagged td.deal-cell-orange { background: rgba(234,88,12,0.55) !important; }
 
-.deal-cell-company {
-  cursor: pointer;
-  transition: background 0.1s;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.deal-cell-company:hover { background: rgba(217,164,65,0.08) !important; }
-.deal-co-link { color: var(--primary); font-size: 14px; font-weight: 700; }
-[data-theme="dark"] .deal-co-link { color: #d9a441; }
+
 
 /* ── Cancelled deals section ── */
 #cancelledTable thead th { background: rgba(239,68,68,0.06); }
@@ -6111,3 +5810,215 @@ tbody tr { transition: background .14s var(--ease); }
 }
 .deal-refile-banner.hidden { display: none; }
 .deal-refile-text { font: 500 12.5px/1.5 var(--font-sans); color: var(--text); }
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Deal ledger
+   One quiet table, in the register of an accounts ledger: hairlines rather
+   than fills, tabular figures, a row tint that says only "paid" or "flagged",
+   and every control (checkbox, row actions) kept off the page until the row
+   is under the pointer. Colour is spent on three things: money received
+   (green), money still owed (amber), and the flag.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root {
+  --ledger-line:     rgba(26,31,46,.08);
+  --ledger-hover:    rgba(26,31,46,.035);
+  --ledger-paid:     rgba(16,150,110,.08);
+  --ledger-paid-fg:  #158a63;
+  --ledger-flag:     rgba(234,160,30,.14);
+  --ledger-partial:  rgba(234,160,30,.26);
+  --ledger-edit:     rgba(217,164,65,.12);
+}
+[data-theme="dark"] {
+  --ledger-line:     rgba(255,255,255,.06);
+  --ledger-hover:    rgba(255,255,255,.03);
+  --ledger-paid:     rgba(95,211,150,.10);
+  --ledger-paid-fg:  #5fd396;
+  --ledger-flag:     rgba(234,170,60,.11);
+  --ledger-partial:  rgba(234,170,60,.24);
+  --ledger-edit:     rgba(217,164,65,.16);
+}
+
+/* Last-invoice line: a sentence, not a panel. */
+.deal-inv-banner {
+  display: none; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 2px 2px 10px; font: 400 12.5px/1.4 var(--font-sans); color: var(--muted);
+}
+.deal-inv-label { color: var(--muted); }
+.deal-inv-link  { font-weight: 600; color: var(--text); text-decoration: none; }
+.deal-inv-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.deal-inv-arrow { color: var(--dim); }
+.deal-inv-next  { font-weight: 600; font-family: var(--font-mono); font-size: 12px; color: var(--text); }
+.deal-inv-copy  { margin-left: 2px; padding: 2px 10px !important; font-size: 11px !important; }
+
+/* Toolbar: two rows of controls with no box around them. */
+.deal-filter-card {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  background: transparent; border: none; padding: 0; margin-bottom: 10px;
+}
+.deal-filter-actions { margin-bottom: 14px; }
+.deal-add-btn { margin-left: auto; }
+.deal-q-sep { width: 1px; height: 20px; background: var(--border); margin: 0 6px; }
+.deal-q-filters { display: flex; gap: 4px; flex-wrap: wrap; }
+.deal-q-btn {
+  padding: 5px 11px; border-radius: 6px; white-space: nowrap; cursor: pointer;
+  font: 500 12px/1.2 var(--font-sans); color: var(--muted);
+  background: var(--surface); border: 1px solid var(--border);
+  transition: color .12s, border-color .12s, background .12s;
+}
+.deal-q-btn:hover { color: var(--text); border-color: var(--border-bright); }
+.deal-q-btn.active { background: var(--text); color: var(--surface); border-color: var(--text); }
+.deal-q-add { color: var(--dim) !important; border-style: dashed !important; }
+.deal-range-wrap { display: flex; align-items: center; gap: 6px; }
+.deal-range-label { font: 600 10px/1 var(--font-mono); color: var(--dim); text-transform: uppercase; letter-spacing: .06em; white-space: nowrap; }
+.deal-range-input {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); font: 500 11px/1 var(--font-mono); padding: 5px 8px;
+  outline: none; cursor: pointer; transition: border-color .15s;
+}
+.deal-range-input:focus { border-color: var(--text); }
+.deal-range-to { font: 600 11px/1 var(--font-mono); color: var(--dim); }
+.deal-range-clear {
+  background: transparent; border: 1px solid var(--border); border-radius: 6px;
+  color: var(--muted); font: 600 10px/1 var(--font-mono); padding: 4px 7px; cursor: pointer;
+}
+.deal-range-clear:hover { color: var(--negative); border-color: var(--negative); }
+.deal-search-input, .deal-select {
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px;
+  font: 400 12.5px/1.3 var(--font-sans); background: var(--surface); color: var(--text); outline: none;
+}
+.deal-search-input { min-width: 220px; }
+.deal-search-input:focus, .deal-select:focus { border-color: var(--text); }
+
+/* The four figures above the ledger: the number first, what it is beneath. */
+.deal-stat-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
+@media (max-width: 900px) { .deal-stat-cards { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 480px) { .deal-stat-cards { grid-template-columns: 1fr; } }
+.deal-stat-card {
+  display: block; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 14px 16px 12px;
+}
+.deal-stat-value {
+  font: 600 22px/1.1 var(--font-sans); letter-spacing: -0.01em; color: var(--text);
+  font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.deal-stat-label { margin-top: 5px; font: 400 11.5px/1.3 var(--font-sans); color: var(--muted); }
+.deal-stat-label small { color: var(--dim); font-size: 10.5px; margin-left: 4px; }
+.deal-stat-card.ds--paid .deal-stat-value { color: var(--ledger-paid-fg); }
+.deal-stat-card.ds--remaining .deal-stat-value { color: var(--warning); }
+.deal-stat-card.ds--remaining.is-clear .deal-stat-value { color: var(--muted); }
+.deal-stat-card.ds--vat { cursor: pointer; }
+.deal-stat-card.ds--vat:hover { border-color: var(--border-bright); }
+
+/* The ledger itself. */
+.deal-table-card { padding: 0; overflow: hidden; border-radius: 10px; }
+#dealsTable { table-layout: fixed; width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+#dealsTable .dt-r { text-align: right !important; }
+#dealsTable .dt-c { text-align: center !important; }
+#dealsTable thead th {
+  padding: 9px 10px; vertical-align: middle; text-align: left;
+  background: var(--surface); color: var(--muted);
+  font: 600 10.5px/1.3 var(--font-sans); letter-spacing: .07em; text-transform: uppercase;
+  border-bottom: 1px solid var(--border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#dealsTable thead th svg { vertical-align: -2px; }
+#dealsTable td {
+  padding: 8px 10px; height: 42px; vertical-align: middle;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 400 13px/1.35 var(--font-sans); color: var(--text);
+  border-bottom: 1px solid var(--ledger-line);
+}
+#dealsTable tbody tr:last-child td { border-bottom: none; }
+#dealsTable tbody tr:hover td { background: var(--ledger-hover); }
+#dealsTable td.deal-cell-edit { cursor: pointer; }
+#dealsTable td.deal-cell-edit:hover { background: var(--ledger-edit); }
+#dealsTable td.deal-num { white-space: nowrap; }
+
+/* Row states: a tint, never a fill. */
+.deal-row-paid td     { background: var(--ledger-paid); }
+.deal-row-flagged td  { background: var(--ledger-flag); }
+.deal-row-issue td    { background: var(--ledger-flag); }
+.deal-row-urgent td   { background: var(--negative-soft); }
+.deal-row-selected td { background: var(--accent-soft); }
+.deal-row-selected td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+.deal-row-highlight td { box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
+#dealsTable td.deal-cell-partial { background: var(--ledger-partial) !important; }
+.deal-cell-orange,
+.deal-row-paid td.deal-cell-orange,
+.deal-row-flagged td.deal-cell-orange { background: rgba(234,88,12,.42) !important; }
+
+/* First cell: the flag, and a checkbox that appears when it could be wanted. */
+#dealsTable td.deal-td-mark { padding: 0 2px 0 10px; text-align: left; overflow: visible; }
+.deal-select-cb {
+  width: 13px; height: 13px; margin: 0 5px 0 0; vertical-align: middle; cursor: pointer;
+  accent-color: var(--text); opacity: 0; transition: opacity .1s;
+}
+#dealsTable tbody tr:hover .deal-select-cb, .deal-row-selected .deal-select-cb,
+#dealsTableBody.has-selection .deal-select-cb { opacity: 1; }
+.deal-flag {
+  background: none; border: none; padding: 2px; cursor: pointer; line-height: 0;
+  vertical-align: middle; color: var(--dim); opacity: .55; transition: opacity .1s, color .1s;
+}
+.deal-flag svg { width: 13px; height: 13px; }
+.deal-flag:hover, .deal-flag.is-on { opacity: 1; color: var(--warning); }
+.deal-flag.is-on svg { fill: currentColor; }
+
+/* Month signed as "Sep 26"; "for 2027" beneath it only when the programme
+   year is a different one. The cell clips rather than ellipsising, so a chip
+   that does not fit is cut, never turned into a stray dot. */
+#dealsTable td.deal-td-month { color: var(--text-2); font-weight: 500; text-overflow: clip; padding-right: 4px; }
+.deal-month-disp { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 3px; white-space: nowrap; line-height: 1.1; }
+.deal-month-yr { color: var(--dim); font-weight: 400; }
+.deal-month-disp .deal-month-for { margin-left: 0; padding: 1px 5px; font-size: 9.5px; }
+
+.deal-cell-company { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deal-co-link { font-weight: 600; font-size: 13px; color: var(--text); }
+.deal-cell-company:hover .deal-co-link { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--dim); }
+
+.deal-figure { font-weight: 600; }
+.deal-paid-fig { color: var(--ledger-paid-fg); font-weight: 500; }
+.deal-paid-part { color: var(--warning); font-weight: 600; }
+.deal-muted { color: var(--dim); }
+#dealsTable td.deal-td-date, #dealsTable td.deal-td-bank { color: var(--text-2); }
+.deal-inv-num { font-size: 12.5px; color: var(--text-2); letter-spacing: .01em; }
+
+/* Files on record, and the signed copy. */
+#dealsTable td.deal-td-files { text-align: center; cursor: pointer; }
+.deal-files { display: inline-flex; align-items: center; gap: 3px; font: 500 11px/1 var(--font-sans); color: var(--muted); }
+.deal-files svg { width: 13px; height: 13px; }
+.deal-files.is-none { color: var(--dim); }
+.deal-files.is-todo { color: var(--warning); font-weight: 700; }
+#dealsTable td.deal-td-signed { text-align: center; cursor: pointer; }
+.deal-tick {
+  display: inline-flex; width: 16px; height: 16px; border-radius: 50%; align-items: center; justify-content: center;
+  background: var(--positive-soft); color: var(--ledger-paid-fg);
+}
+.deal-tick svg { width: 10px; height: 10px; }
+.deal-by { font: 600 11px/1 var(--font-sans); letter-spacing: .05em; color: var(--muted); }
+#dealsTable td.deal-td-notes { color: var(--muted); font-size: 12.5px; }
+.deal-notes-cell { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Row actions live on hover. */
+#dealsTable td.deal-act-cell { text-align: right; padding-right: 8px; white-space: nowrap; overflow: visible; }
+.deal-act-invoice, .deal-act-del {
+  display: inline-flex; align-items: center; justify-content: center; vertical-align: middle;
+  width: 26px; height: 26px; padding: 0; margin-left: 2px; border-radius: 6px; cursor: pointer;
+  background: transparent; border: 1px solid transparent; color: var(--muted);
+  opacity: 0; transition: opacity .1s, color .12s, border-color .12s, background .12s;
+}
+#dealsTable tbody tr:hover .deal-act-invoice, #dealsTable tbody tr:hover .deal-act-del,
+.deal-act-invoice:focus-visible, .deal-act-del:focus-visible { opacity: 1; }
+.deal-act-invoice:hover { color: var(--text); border-color: var(--border); background: var(--surface); }
+.deal-act-del:hover { color: var(--negative); border-color: var(--negative-soft); background: var(--negative-soft); }
+
+.deal-totals-row td {
+  background: var(--surface-2) !important; border-top: 1px solid var(--border) !important;
+  padding: 9px 10px !important; font: 600 12.5px/1.3 var(--font-sans); color: var(--text-2);
+}
+.deal-totals-row .deal-figure { color: var(--text); }
+.deal-hint { margin: 8px 2px 0; font: 400 11.5px/1.5 var(--font-sans); color: var(--dim); }
+
+@media (max-width: 1100px) {
+  #dealsTable col:nth-child(8), #dealsTable th:nth-child(8), #dealsTable td:nth-child(8),
+  #dealsTable col:nth-child(9), #dealsTable th:nth-child(9), #dealsTable td:nth-child(9) { display: none; }
+}
