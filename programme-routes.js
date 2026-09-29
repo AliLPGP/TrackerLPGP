@@ -24,6 +24,15 @@ function createProgrammeRouter({ q, requireAuth, requireAdminOrManager }) {
 
   const guards = [requireAuth, requireAdminOrManager].filter(Boolean);
 
+  // The year a row belongs to: its programme year when set, else the year of
+  // its date. A row with neither belongs to no year and can never be renamed
+  // into the programme -- only created rows and dated rows can.
+  function rowYear(row) {
+    if (row.programme_year != null) return Number(row.programme_year);
+    if (row.event_date) return Number(String(row.event_date).slice(0, 4));
+    return null;
+  }
+
   async function loadRows() {
     const { rows } = await q(`
       SELECT pe.id, pe.name, pe.event_date, pe.location, pe.notes, pe.producer,
@@ -83,20 +92,33 @@ function createProgrammeRouter({ q, requireAuth, requireAdminOrManager }) {
           const row = existing.find((r) => r.id === rowId);
           if (!row) { results.push({ key: canon.key, outcome: 'row-not-found' }); continue; }
           if (row.programme_key) { results.push({ key: canon.key, outcome: 'row-already-linked' }); continue; }
+          // Only a row from the programme's own year can become one of its
+          // events. A 2026 row carries 2026 deals; renaming it would move
+          // last year's money into next year's programme.
+          if (rowYear(row) !== programme.PROGRAMME_YEAR) {
+            results.push({ key: canon.key, outcome: 'row-wrong-year', id: rowId });
+            continue;
+          }
           // The old name is kept in notes, so nobody has to remember that
           // "OPS Miami" is what this event used to be called.
           const note = row.name && row.name !== canon.name
             ? [row.notes, `Previously "${row.name}"`].filter(Boolean).join(' · ')
             : row.notes || '';
+          // The same two guards again, inside the statement: a row that was
+          // linked or re-dated since this request's snapshot is left alone,
+          // and zero rows back means exactly that.
           const { rows } = await q(
             `UPDATE portfolio_events
                SET name=?, event_date=?, location=CASE WHEN COALESCE(location,'')='' THEN ? ELSE location END,
                    producer=?, date_tbc=?, programme_year=?, programme_key=?, notes=?
-             WHERE id=? RETURNING id`,
-            [fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], note, rowId]
+             WHERE id=? AND programme_key IS NULL
+               AND COALESCE(programme_year, EXTRACT(YEAR FROM event_date)::int) = ?
+             RETURNING id`,
+            [fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], note, rowId, programme.PROGRAMME_YEAR]
           );
+          if (!rows.length) { results.push({ key: canon.key, outcome: 'row-changed-underneath', id: rowId }); continue; }
           linked.add(pkey);
-          results.push({ key: canon.key, outcome: 'renamed', id: rows[0] && rows[0].id, deals_kept: row.deal_count });
+          results.push({ key: canon.key, outcome: 'renamed', id: rows[0].id, deals_kept: row.deal_count });
         } else if (d.action === 'create') {
           const { rows } = await q(
             `INSERT INTO portfolio_events (name, event_date, location, producer, date_tbc, programme_year, programme_key, created_by)
@@ -114,6 +136,24 @@ function createProgrammeRouter({ q, requireAuth, requireAdminOrManager }) {
       // Partial progress is reported rather than hidden: each decision is its
       // own statement, so whatever ran before the failure has really run.
       res.status(500).json({ error: e.message, results });
+    }
+  });
+
+  // Undo a link. Clears programme_key only: the name, date, producer and every
+  // allocation stay exactly as they are, and the row goes back to being a
+  // candidate the panel can suggest again.
+  router.post('/2027/unlink', ...guards, async (req, res) => {
+    const rowId = Number.parseInt(req.body && req.body.row_id, 10);
+    if (!Number.isInteger(rowId)) return res.status(400).json({ error: 'row_id is required' });
+    try {
+      const { rows } = await q(
+        `UPDATE portfolio_events SET programme_key = NULL WHERE id = ? AND programme_key IS NOT NULL RETURNING id`,
+        [rowId]
+      );
+      if (!rows.length) return res.status(404).json({ error: 'That row is not linked to the programme' });
+      res.json({ ok: true, id: rows[0].id });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
     }
   });
 

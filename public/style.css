@@ -4404,7 +4404,7 @@ tbody tr:last-child td { border-bottom: none; }
 .pf-hero-fig { font: 700 40px/1 var(--font-mono); letter-spacing: -1.5px; color: var(--text); font-feature-settings: "tnum"; }
 .pf-hero-sub { font: 400 13px/1.4 var(--font-sans); color: var(--muted); }
 .pf-hero-sub b { font: 600 13px/1 var(--font-mono); color: var(--text); }
-.pf-meter { position: relative; height: 10px; border-radius: 999px; background: var(--border); margin-top: 14px; max-width: 760px; overflow: hidden; }
+.pf-meter { position: relative; height: 10px; border-radius: 0 4px 4px 0; background: var(--border); margin-top: 14px; max-width: 760px; overflow: hidden; }
 .pf-meter-fill { height: 100%; width: 0; background: var(--accent); border-radius: 0 4px 4px 0; transition: width .7s var(--ease); }
 .pf-hero-note { margin-top: 8px; font: 400 12px/1.4 var(--font-sans); color: var(--muted); }
 .pf-hero-note b { font: 600 12px/1 var(--font-mono); color: var(--text); }
@@ -4427,15 +4427,15 @@ tbody tr:last-child td { border-bottom: none; }
 .pf-series-n { font: 400 11px/1 var(--font-sans); color: var(--muted); flex-shrink: 0; }
 .pf-series-val { font: 600 13px/1 var(--font-mono); color: var(--text); flex-shrink: 0; font-feature-settings: "tnum"; }
 .pf-series-val small { font: 400 11px/1 var(--font-mono); color: var(--muted); }
-.pf-track { position: relative; height: 10px; border-radius: 999px; background: var(--border); margin-top: 6px; }
+.pf-track { position: relative; height: 10px; border-radius: 0 4px 4px 0; background: var(--border); margin-top: 6px; }
 .pf-bar { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 0 4px 4px 0; background: var(--accent); transition: width .7s var(--ease); }
-.pf-mark { position: absolute; top: -3px; width: 2px; height: 16px; border-radius: 1px; background: var(--text); opacity: .7; }
+.pf-mark { position: absolute; top: -3px; width: 2px; height: 16px; border-radius: 1px; background: var(--text); box-shadow: 0 0 0 1px var(--surface); }
 .pf-tip {
-  display: none; position: absolute; right: 0; top: 100%; z-index: 5; margin-top: 6px; width: 230px;
+  display: none; position: absolute; right: 0; bottom: 100%; z-index: 5; margin-bottom: 6px; width: 230px;
   background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
-  box-shadow: var(--shadow); font: 400 12px/1.3 var(--font-sans); color: var(--text);
-}
-.pf-series-row:hover .pf-tip { display: block; }
+  box-shadow: var(--shadow); font: 400 12px/1.3 var(--font-sans); color: var(--text); pointer-events: none; }
+.pf-series-row:hover .pf-tip, .pf-series-row:focus-within .pf-tip { display: block; }
+.pf-series-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
 .pf-tip-title { font-weight: 600; margin-bottom: 4px; }
 .pf-tip-row { display: flex; justify-content: space-between; gap: 10px; margin-top: 4px; }
 .pf-tip-row span:first-child { color: var(--muted); }
@@ -6081,3 +6081,27 @@ tbody tr { transition: background .14s var(--ease); }
   white-space: nowrap;
 }
 .deal-event-check-item .deal-event-when--tbc { color: var(--dim); font-style: italic; }
+.pf-prog-unlink {
+  margin-left: 8px; padding: 2px 7px;
+  font: 600 10px/1 var(--font-mono); letter-spacing: .3px; text-transform: uppercase;
+  color: var(--muted); background: transparent; border: 1px solid var(--border); border-radius: 5px; cursor: pointer;
+}
+.pf-prog-unlink:hover { color: var(--negative); border-color: var(--negative); }
+.pf-prog-select--undecided { border-color: var(--warning); }
+
+/* ── Deal: month signed vs programme year ───────────────────────────────── */
+.deal-period-grid { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; }
+.deal-prog-warn { color: var(--warning); font-weight: 600; }
+/* Month cell: "Sep 2026" plus "for 2027" when the programme year differs. */
+.deal-month-for {
+  display: inline-block; margin-left: 6px; padding: 2px 6px;
+  font: 600 10px/1 var(--font-mono); letter-spacing: .3px;
+  color: var(--accent); background: var(--accent-soft); border-radius: 4px; white-space: nowrap;
+}
+.deal-refile-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+  margin-bottom: 12px; padding: 10px 14px;
+  background: var(--warning-soft); border: 1px solid var(--warning); border-radius: 8px;
+}
+.deal-refile-banner.hidden { display: none; }
+.deal-refile-text { font: 500 12.5px/1.5 var(--font-sans); color: var(--text); }

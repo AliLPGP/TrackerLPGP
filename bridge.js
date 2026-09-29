@@ -605,6 +605,26 @@ function createBridgeRouter({ q, ensureDb, insertDealEvents }) {
     };
   }
 
+  /**
+   * The programme year the allocated events agree on, or null. Each event's
+   * year is its programme_year, else the year of its date; dated events that
+   * disagree, or no dated events, give null and the caller keeps what it had.
+   */
+  async function programmeYearForEvents(fields) {
+    const ids = [
+      ...(fields.event_packages ?? []).map((p) => Number(p.event_id)),
+      ...(fields.event_ids ?? []).map(Number),
+    ].filter((n) => Number.isInteger(n) && n > 0);
+    if (!ids.length) return null;
+    const { rows } = await q(
+      `SELECT DISTINCT COALESCE(programme_year, EXTRACT(YEAR FROM event_date)::int) AS y
+         FROM portfolio_events WHERE id IN (${ids.map(() => '?').join(',')})`,
+      ids
+    );
+    const years = [...new Set(rows.map((r) => (r.y == null ? null : Number(r.y))).filter((y) => y != null))];
+    return years.length === 1 ? years[0] : null;
+  }
+
   /** Every referenced event must exist, or the allocation would dangle. */
   async function assertEventsExist(fields) {
     const ids = [
@@ -663,6 +683,8 @@ function createBridgeRouter({ q, ensureDb, insertDealEvents }) {
         }
       }
 
+      if (f.fiscal_year == null) f.fiscal_year = await programmeYearForEvents(f);
+
       const { rows } = await q(
         `INSERT INTO deals (title, company, contact_name, amount, currency, stage, notes,
            paid_inc_vat, tax_vat, invoice_date, paid_date, bank, invoice_number,
@@ -713,6 +735,10 @@ function createBridgeRouter({ q, ensureDb, insertDealEvents }) {
             .status(409)
             .json({ error: `Invoice ${f.invoice_number} is already on deal #${clash[0].id}.` });
         }
+      }
+
+      if (f.fiscal_year == null && (f.event_packages || f.event_ids)) {
+        f.fiscal_year = await programmeYearForEvents(f);
       }
 
       await q(

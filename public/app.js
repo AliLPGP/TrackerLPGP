@@ -26,20 +26,19 @@ function currencySymbol(c) { return c === 'AED' ? 'AED ' : c === 'PHP' ? '₱' :
  *   opts.long  -> "25 Feb 2027" / "Sep 2027 · day TBC" / "2027 · date TBC"
  *   default    -> "Feb 27" / "Sep 27 · TBC" / "2027 TBC"
  */
+const EVENT_MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 function fmtEventDate(ev, opts = {}) {
   const tbc  = ev.date_tbc || '';
   const year = ev.programme_year || (ev.event_date ? String(ev.event_date).slice(0, 4) : '');
-  if (!ev.event_date) return year ? `${year}${opts.long ? ' · date TBC' : ' TBC'}` : (opts.long ? 'Date TBC' : 'TBC');
-  const d = new Date(String(ev.event_date).slice(0, 10) + 'T12:00:00');
-  if (isNaN(d.getTime())) return opts.long ? 'Date TBC' : 'TBC';
-  if (tbc === 'day') {
-    return opts.long
-      ? d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }) + ' · day TBC'
-      : d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) + ' · TBC';
+  // "date TBC" means the stored date, if any, is a placeholder: show the year only.
+  if (!ev.event_date || tbc === 'date') {
+    return year ? `${year}${opts.long ? ' \u00b7 date TBC' : ' TBC'}` : (opts.long ? 'Date TBC' : 'TBC');
   }
-  return opts.long
-    ? d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
-    : d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' });
+  const m = String(ev.event_date).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return opts.long ? 'Date TBC' : 'TBC';
+  const y = m[1], mon = EVENT_MONTHS_SHORT[parseInt(m[2], 10) - 1] || '', day = parseInt(m[3], 10);
+  if (tbc === 'day') return opts.long ? `${mon} ${y} \u00b7 day TBC` : `${mon} ${y.slice(2)} \u00b7 TBC`;
+  return opts.long ? `${day} ${mon} ${y}` : `${mon} ${y.slice(2)}`;
 }
 
 // Salary FX. One table, used by both the overview band and the summary table
@@ -752,7 +751,7 @@ function renderRevenueIntelPanel(deals, expiring, evtRevData) {
     const paidC  = clients.filter(c => (parseFloat(c.paid_inc_vat)||0) >= (parseFloat(c.amount)||0) && (parseFloat(c.amount)||0) > 0).length;
     const partC  = clients.filter(c => { const p=parseFloat(c.paid_inc_vat)||0; const a=parseFloat(c.amount)||0; return p>0 && p<a; }).length;
     const unpC   = clients.filter(c => (parseFloat(c.paid_inc_vat)||0) === 0).length;
-    const evtDate = ev.event_date ? new Date(ev.event_date).toLocaleDateString('en-GB',{month:'short',year:'2-digit'}) : '';
+    const evtDate = (ev.event_date || ev.programme_year) ? fmtEventDate(ev) : '';
 
     // Client dots
     const dotHtml = clients.slice(0,12).map(c => {
@@ -4707,15 +4706,24 @@ const PORT_PRODUCERS = ['Gio & Karam', 'Tara & Maryam', 'Fidak', 'Santos', 'Arj 
 // Series ids match the sales CRM's events catalogue, so the two apps agree on
 // which portfolio an event belongs to. The chart index is the series' hue
 // (--chart-N) and follows the entity everywhere: never cycled, never repainted.
+// One CFO/COO portfolio, not three. The order is the display order in every
+// chart and it is the one order in which each neighbouring pair of hues stays
+// apart under red-green colour blindness (validated on both card surfaces);
+// every series keeps the hue it always had.
 const PORT_SERIES = [
-  { id: 'private-debt',        code: '01', name: 'Private Debt Fundraising Series',        short: 'Private Debt',        chart: 1 },
-  { id: 'cfo-private-markets', code: '02', name: 'CFO / COO Private Markets Series',       short: 'CFO Private Markets', chart: 2 },
-  { id: 'cfo-pe-debt',         code: '03', name: 'CFO / COO Private Equity & Debt Series', short: 'CFO PE & Debt',       chart: 3 },
-  { id: 'cfo-pe',              code: '04', name: 'CFO / COO Private Equity',               short: 'CFO Private Equity',  chart: 4 },
-  { id: 'operating-partners',  code: '05', name: 'Operating Partners Conference Series',   short: 'Operating Partners',  chart: 5 },
-  { id: 'data-tech',           code: '06', name: 'Data & Technology Forum Series',         short: 'Data & Technology',   chart: 6 },
-  { id: 'operational-fund',    code: '07', name: 'Operational Fund Summit Series',         short: 'Operational Fund',    chart: 7 },
+  { id: 'private-debt',       code: '01', name: 'Private Debt Fundraising Series',      short: 'Private Debt',       chart: 1 },
+  { id: 'cfo-coo',            code: '02', name: 'CFO / COO Series',                     short: 'CFO / COO',          chart: 2 },
+  { id: 'operational-fund',   code: '03', name: 'Operational Fund Summit Series',       short: 'Operational Fund',   chart: 7 },
+  { id: 'operating-partners', code: '04', name: 'Operating Partners Conference Series', short: 'Operating Partners', chart: 5 },
+  { id: 'data-tech',          code: '05', name: 'Data & Technology Forum Series',       short: 'Data & Technology',  chart: 6 },
 ];
+// Ids stored by earlier versions all fold into the one CFO/COO series.
+const PORT_LEGACY_SERIES = { 'cfo-private-markets': 'cfo-coo', 'cfo-pe-debt': 'cfo-coo', 'cfo-pe': 'cfo-coo' };
+function portNormaliseSeries(id) {
+  if (!id) return null;
+  if (PORT_SERIES_MAP[id]) return id;
+  return PORT_LEGACY_SERIES[id] || null;
+}
 const PORT_SERIES_MAP = Object.fromEntries(PORT_SERIES.map(s => [s.id, s]));
 
 /**
@@ -4728,8 +4736,10 @@ function portGuessSeries(eventName) {
   if (n.includes('operational fund')) return 'operational-fund';
   if (n.includes('operating partners')) return 'operating-partners';
   if (n.includes('data') && (n.includes('tech') || n.includes('ai'))) return 'data-tech';
-  if (n.includes('cfo') && (n.includes('private debt') || n.includes('private equity'))) return 'cfo-pe-debt';
-  if (n.includes('cfo') && n.includes('private markets')) return 'cfo-private-markets';
+  // Every CFO/COO conference -- Private Markets, Private Equity or Private
+  // Debt -- is the one CFO/COO series, and the word decides before the
+  // "private debt" rule can claim a CFO/COO Private Debt event for fundraising.
+  if (/\bcfo\b/.test(n) || /\bcoo\b/.test(n)) return 'cfo-coo';
   if (n.includes('private debt') || n.includes('sports investing')) return 'private-debt';
   // tracker shorthand
   if (/\bops\b/.test(n)) return 'operating-partners';
@@ -4738,8 +4748,7 @@ function portGuessSeries(eventName) {
   // cities hosting exactly one 2027 event
   if (n.includes('berlin')) return 'private-debt';
   if (n.includes('lux')) return 'operational-fund';
-  if (n.includes('switzerland') || n.includes('zurich')) return 'cfo-private-markets';
-  if (/\bcfo\b/.test(n)) return 'cfo-private-markets';
+  if (n.includes('switzerland') || n.includes('zurich')) return 'cfo-coo';
   return null;
 }
 
@@ -4748,7 +4757,7 @@ function portSeriesFor(ev) {
   const items = _programme2027.data && _programme2027.data.items;
   if (ev.programme_key && items) {
     const it = items.find(i => i.programme_key === ev.programme_key);
-    if (it && it.series) return it.series;
+    if (it && it.series) return portNormaliseSeries(it.series) || it.series;
   }
   return portGuessSeries(ev.name);
 }
@@ -4790,8 +4799,9 @@ async function loadPortfolio() {
     renderPortfolioGrid();
   } catch { showToast('Failed to load portfolio', 'error'); }
   // The series of a linked row comes from the programme, so it is fetched
-  // alongside; the grid re-renders when it lands.
-  if (_programme2027.status === 'idle') loadProgramme2027();
+  // alongside and refreshed on every reload: a row edited or deleted here
+  // must not leave the panel holding a stale suggestion or row id.
+  if (_programme2027.status !== 'loading') loadProgramme2027();
 }
 
 async function loadProgramme2027() {
@@ -4927,14 +4937,14 @@ function renderPortfolioGrid() {
       <div class="pf-series">${seriesRows.map(r => {
         const w = r.allocated / seriesScale * 100;
         const pw = Math.min(100, r.paid / seriesScale * 100);
-        return `<div class="pf-series-row">
+        return `<div class="pf-series-row" tabindex="0">
           <div class="pf-series-top">
             <span class="pf-series-name"><span class="pf-chip" style="background:${r.color}"></span><span class="pf-series-short">${esc(r.short)}</span><span class="pf-series-n">${r.events} event${r.events === 1 ? '' : 's'}</span></span>
             <span class="pf-series-val">${fmtGBP(r.allocated)} <small>· ${fmtGBP(r.paid)} paid</small></span>
           </div>
           <div class="pf-track">
             <div class="pf-bar pf-anim" data-pct="${w}" style="background:${r.color}"></div>
-            ${r.allocated > 0 ? `<span class="pf-mark" style="left:calc(${pw}% - 1px)" title="Paid ${fmtGBP(r.paid)}"></span>` : ''}
+            ${r.paid > 0 && r.paid < r.allocated ? `<span class="pf-mark" style="left:calc(${pw}% - 1px)" title="Paid ${fmtGBP(r.paid)}"></span>` : ''}
           </div>
           <div class="pf-tip">
             <div class="pf-tip-title">${esc(r.name)}</div>
@@ -5141,12 +5151,21 @@ function viewEventDeals(eventId, eventName) {
 // a rename keeps the row (and every deal on it), a create adds a row.
 
 function programmeDefaultDecision(item) {
-  if (item.status === 'suggested') return 'rename';
+  if (item.status === 'suggested') return '';        // a person must choose
   if (item.status === 'missing') return 'create';
   return 'linked';
 }
 function programmeDecision(item) {
   return _programmeDecisions[item.key] || programmeDefaultDecision(item);
+}
+function programmeUndecided() {
+  const items = (_programme2027.data && _programme2027.data.items) || [];
+  return items.filter(it => it.status === 'suggested' && !programmeDecision(it)).length;
+}
+function acceptAllSuggestedRenames() {
+  const items = (_programme2027.data && _programme2027.data.items) || [];
+  items.forEach(it => { if (it.status === 'suggested' && it.suggestion) _programmeDecisions[it.key] = 'rename'; });
+  renderPortfolioGrid();
 }
 function setProgrammeDecision(key, action) {
   _programmeDecisions[key] = action;
@@ -5156,7 +5175,11 @@ function setProgrammeDecision(key, action) {
   if (btn || status) {
     const { renames, creates } = programmeTally();
     const n = renames + creates;
-    if (btn) { btn.textContent = `Apply ${n} decision${n === 1 ? '' : 's'}`; btn.disabled = n === 0; }
+    const undecided = programmeUndecided();
+    if (btn) {
+      btn.textContent = undecided ? `Choose for ${undecided} matched event${undecided === 1 ? '' : 's'} first` : `Apply ${n} decision${n === 1 ? '' : 's'}`;
+      btn.disabled = n === 0 || undecided > 0;
+    }
     if (status) status.innerHTML = programmeTallyText(renames, creates);
   }
 }
@@ -5207,17 +5230,19 @@ function renderProgrammePanel() {
   const decisionCell = (it) => {
     if (it.status === 'linked') {
       const r = it.row || {};
-      return `<span class="pf-prog-linked">Linked to #${r.id} · <b>${esc(r.name || '')}</b></span>`;
+      return `<span class="pf-prog-linked">Linked to #${r.id} · <b>${esc(r.name || '')}</b>` +
+        ` <button class="pf-prog-unlink" onclick="unlinkProgrammeRow(${parseInt(r.id, 10) || 0}, ${JSON.stringify(String(r.name || ''))})" title="Undo this link. The event, its date and its deals stay exactly as they are; it just stops counting as this programme entry.">Unlink</button></span>`;
     }
     const d = programmeDecision(it);
     const opt = (v, label) => `<option value="${v}"${d === v ? ' selected' : ''}>${label}</option>`;
     if (it.status === 'suggested' && it.suggestion) {
       const s = it.suggestion;
       const n = parseInt(s.deal_count) || 0;
-      return `<select class="pf-prog-select" onchange="setProgrammeDecision('${esc(it.key)}', this.value)">` +
-        opt('rename', `Rename "${esc(s.name)}" (keeps its ${n} deal${n === 1 ? '' : 's'})`) +
-        opt('create', 'Create as new event') +
-        opt('skip', 'Skip') +
+      return `<select class="pf-prog-select${d ? '' : ' pf-prog-select--undecided'}" onchange="setProgrammeDecision('${esc(it.key)}', this.value)">` +
+        opt('', `Is this "${esc(s.name)}"? Choose\u2026`) +
+        opt('rename', `Yes \u2014 rename it (keeps its ${n} deal${n === 1 ? '' : 's'})`) +
+        opt('create', 'No \u2014 create as a new event') +
+        opt('skip', 'Skip for now') +
       `</select>`;
     }
     return `<select class="pf-prog-select" onchange="setProgrammeDecision('${esc(it.key)}', this.value)">` +
@@ -5240,6 +5265,7 @@ function renderProgrammePanel() {
 
   const { renames, creates } = programmeTally();
   const n = renames + creates;
+  const undecided = programmeUndecided();
   const notRunning = (data.not_running || []);
   return `<section class="pf-panel" id="pfProgramme">
     ${hd(_portYearFilter !== '2027' ? `<button class="btn btn-ghost btn-sm" onclick="togglePortfolioProgramme()">Hide</button>` : '')}
@@ -5250,10 +5276,28 @@ function renderProgrammePanel() {
     </table></div>
     <div class="pf-prog-actions">
       <span class="pf-prog-status" id="pfApplyStatus">${programmeTallyText(renames, creates)}</span>
-      <button class="btn btn-primary btn-sm" id="pfApplyBtn" onclick="applyProgramme2027()"${n === 0 ? ' disabled' : ''}>Apply ${n} decision${n === 1 ? '' : 's'}</button>
+      ${c.suggested ? `<button class="btn btn-ghost btn-sm" onclick="acceptAllSuggestedRenames()" title="Sets every matched event to Yes. You can still change any row before applying.">Accept all ${c.suggested} matches</button>` : ''}
+      <button class="btn btn-primary btn-sm" id="pfApplyBtn" onclick="applyProgramme2027()"${(n === 0 || undecided > 0) ? ' disabled' : ''}>${undecided ? `Choose for ${undecided} matched event${undecided === 1 ? '' : 's'} first` : `Apply ${n} decision${n === 1 ? '' : 's'}`}</button>
     </div>
     ${notRunning.length ? `<p class="pf-prog-foot">Not running in 2027: ${notRunning.map(esc).join(', ')}. Listed so nobody re-creates ${notRunning.length === 1 ? 'it' : 'them'} by hand.</p>` : ''}
   </section>`;
+}
+
+/** Undo a confirmed link. Clears the programme key only; nothing else moves. */
+async function unlinkProgrammeRow(rowId, rowName) {
+  if (!rowId) return;
+  if (!confirm(`Unlink "${rowName}" from the 2027 programme?\n\nThe event keeps its name, date and every deal. It simply stops counting as this programme entry, and the panel can suggest it again.`)) return;
+  try {
+    const res = await fetch('/api/programme/2027/unlink', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ row_id: rowId }),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) { showToast(out.error || 'Could not unlink', 'error'); return; }
+    showToast('Unlinked. The event itself is unchanged.', 'success');
+  } catch (e) {
+    showToast('Could not unlink: ' + e.message, 'error');
+  }
+  await loadPortfolio();
 }
 
 async function applyProgramme2027() {
@@ -5287,8 +5331,9 @@ async function applyProgramme2027() {
     if (!res.ok || !out.ok) {
       showToast(`Programme apply stopped: ${out.error || `HTTP ${res.status}`} (${done})`, 'error', 7000);
     } else {
-      const other = results.length - count('renamed') - count('created') - count('skipped');
-      showToast(`2027 programme applied: ${done}${other ? `, ${other} left as they were` : ''}`, 'success', 6000);
+      const held = count('row-wrong-year') + count('row-changed-underneath') + count('row-already-linked');
+      const other = results.length - count('renamed') - count('created') - count('skipped') - held;
+      showToast(`2027 programme applied: ${done}${held ? `, ${held} not renamed (row changed or from another year)` : ''}${other ? `, ${other} left as they were` : ''}`, held ? 'warning' : 'success', 7000);
     }
   } catch (e) {
     showToast('Could not apply the programme: ' + e.message, 'error');
@@ -5339,9 +5384,12 @@ async function savePortfolioEvent() {
   const name = document.getElementById('portName').value.trim();
   if (!name) { showToast('Event name is required', 'error'); return; }
   const dateTbc = document.getElementById('portDateTbc').value;
-  const date = document.getElementById('portDate').value || null;
-  if (!date && dateTbc !== 'date') { showToast('Pick a date, or mark the date as TBC', 'error'); return; }
-  const yearRaw = document.getElementById('portYear').value;
+  const picked = document.getElementById('portDate').value || null;
+  if (!picked && dateTbc !== 'date') { showToast('Pick a date, or mark the date as TBC', 'error'); return; }
+  // "Date TBC" means there is no date. A day left in the box is not sent, so
+  // no placeholder can ever be printed as a booking; its year still counts.
+  const date = dateTbc === 'date' ? null : picked;
+  const yearRaw = document.getElementById('portYear').value || (dateTbc === 'date' && picked ? picked.slice(0, 4) : '');
   const year = yearRaw ? parseInt(yearRaw, 10) : null;
   if (yearRaw && (isNaN(year) || year < 2000 || year > 2100)) { showToast('Programme year must be a four-digit year', 'error'); return; }
   if (!date && !year) { showToast('An event with no date needs a programme year to be filed under', 'error'); return; }
@@ -5407,7 +5455,34 @@ let _lastInvoiceId = null;
 let _nextInvoiceNum = null;
 let _importRows = [];
 
+/** Deals filed under a different year from their events, offered as one fix. */
+async function checkDealsToRefile() {
+  const el = document.getElementById('dealRefileBanner');
+  if (!el) return;
+  try {
+    const res = await fetch('/api/deals/refile-by-events');
+    if (!res.ok) { el.classList.add('hidden'); return; }
+    const { deals } = await res.json();
+    if (!deals || !deals.length) { el.classList.add('hidden'); return; }
+    const sample = deals.slice(0, 3).map(d => `${esc(d.company)} (${d.fiscal_year || 'no year'} \u2192 ${d.events_year})`).join(', ');
+    el.innerHTML = `<span class="deal-refile-text"><b>${deals.length}</b> deal${deals.length === 1 ? ' is' : 's are'} filed under a different year from ${deals.length === 1 ? 'its' : 'their'} events: ${sample}${deals.length > 3 ? ` and ${deals.length - 3} more` : ''}.</span>` +
+      `<button class="btn btn-primary btn-sm" onclick="refileDealsByEvents(${deals.length})">Refile ${deals.length} by ${deals.length === 1 ? 'its' : 'their'} events</button>`;
+    el.classList.remove('hidden');
+  } catch { el.classList.add('hidden'); }
+}
+async function refileDealsByEvents(n) {
+  if (!confirm(`Refile ${n} deal${n === 1 ? '' : 's'} under the year of ${n === 1 ? 'its' : 'their'} events?\n\nOnly the year tab changes. The month signed, the amounts and the allocations stay as they are.`)) return;
+  try {
+    const res = await fetch('/api/deals/refile-by-events', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) { showToast(out.error || 'Could not refile', 'error'); return; }
+    showToast(`${(out.refiled || []).length} deal${(out.refiled || []).length === 1 ? '' : 's'} refiled by ${(out.refiled || []).length === 1 ? 'its' : 'their'} events`, 'success');
+  } catch (e) { showToast('Could not refile: ' + e.message, 'error'); }
+  loadDeals();
+}
+
 async function loadDeals() {
+  checkDealsToRefile();
   try {
     const [dealsRes, invRes] = await Promise.all([
       fetch('/api/deals'),
@@ -5798,12 +5873,15 @@ function dealCellClick(td) {
       if (done) return; done = true;
       const month = parseInt(periodMonth.value, 10), year = parseInt(periodYear.value, 10);
       td.innerHTML = originalHTML;
-      // Two columns, one meaning: write both so the cell and the year tab agree
+      // The month signed is one fact; the programme year (the year tab) is
+      // another and is not touched here. A deal with no programme year yet
+      // takes this year, so it still lands on a tab.
+      const cur = dealsData.find(d => d.id === id);
       const ok = await dealPatchField(id, 'deal_month', dealMonthText(month, year))
-              && await dealPatchField(id, 'fiscal_year', year);
+              && (cur && cur.fiscal_year ? true : await dealPatchField(id, 'fiscal_year', year));
       if (ok) {
         const idx = dealsData.findIndex(d => d.id === id);
-        if (idx !== -1) { dealsData[idx].deal_month = dealMonthText(month, year); dealsData[idx].fiscal_year = year; }
+        if (idx !== -1) { dealsData[idx].deal_month = dealMonthText(month, year); if (!dealsData[idx].fiscal_year) dealsData[idx].fiscal_year = year; }
         renderDealsTable();
       }
     };
@@ -7930,6 +8008,7 @@ async function openDealModal(id, defaultStage) {
     const evRes = await fetch('/api/portfolio-events');
     _evs = await evRes.json();
   } catch { _evs = []; }
+  _dealEvsCache = Array.isArray(_evs) ? _evs : [];
 
   if (id) {
     const d = dealsData.find(x => x.id === id);
@@ -7948,8 +8027,13 @@ async function openDealModal(id, defaultStage) {
     // date, then when the deal was created); year from wherever the tab comes from
     const parsed = parseDealMonth(d.deal_month);
     const fallbackDt = new Date(d.invoice_date || d.created_at || Date.now());
+    // Signed month/year come from deal_month; the programme year is its own
+    // field and, on an existing deal, counts as chosen.
+    _dealProgYearTouched = !!d.fiscal_year;
+    const progSel = document.getElementById('dealProgrammeYear');
+    if (progSel && d.fiscal_year) progSel.innerHTML = `<option value="${d.fiscal_year}">${d.fiscal_year}</option>`;
     setDealPeriod(parsed ? parsed.month : fallbackDt.getMonth() + 1,
-                  dealYearOf(d) || String(fallbackDt.getFullYear()));
+                  parsed ? String(parsed.year) : (dealYearOf(d) || String(fallbackDt.getFullYear())));
     document.getElementById('dealInvSent').value = d.invoice_agreement_sent ? 'true' : 'false';
     document.getElementById('dealSigReceived').value = d.signature_received ? 'true' : 'false';
     document.getElementById('dealNotes').value = d.notes || '';
@@ -7976,7 +8060,10 @@ async function openDealModal(id, defaultStage) {
     // Period defaults to this month, in whichever year tab is open — so a deal
     // added while viewing 2027 lands in 2027, not only under All Years
     const now = new Date();
-    setDealPeriod(now.getMonth() + 1, _dealYearFilter !== 'all' ? _dealYearFilter : String(now.getFullYear()));
+    _dealProgYearTouched = false;
+    // Signed month is now; the programme year follows the events once picked
+    // (and the open year tab until then).
+    setDealPeriod(now.getMonth() + 1, String(now.getFullYear()));
     document.getElementById('dealInvSent').value = 'false';
     document.getElementById('dealSigReceived').value = 'false';
     document.getElementById('dealNotes').value = '';
@@ -8030,6 +8117,7 @@ async function openDealModal(id, defaultStage) {
   const searchEl = document.getElementById('dealEventsSearch');
   if (searchEl) searchEl.value = '';
   updateDealSplitPreview();
+  updateDealProgrammeYear();
   if (_dealPackageMode) { _dealPackageMode = false; toggleDealPackageMode(); }
   openModal('dealModal');
 }
@@ -8087,27 +8175,92 @@ function fillPeriodSelects(monthSel, yearSel, month, year) {
   yearSel.value = String(year);
 }
 
+// A deal has two years that are usually the same and sometimes are not: the
+// month it was signed ("Sep 2026", stored as deal_month) and the programme
+// year it is for (2027, stored as fiscal_year -- the year tab). A deal signed
+// in September 2026 for a 2027 event is a 2027 deal. The programme year is
+// derived from the events picked and can be overridden; the signed month
+// never decides it once an event is picked.
+let _dealProgYearTouched = false;   // person chose the programme year by hand
+let _dealEvsCache = [];             // the events the picker was rendered from
+
 function setDealPeriod(month, year) {
   fillPeriodSelects(document.getElementById('dealPeriodMonth'), document.getElementById('dealPeriodYear'), month, year);
   updateDealPeriodHint();
+  updateDealProgrammeYear();
 }
 
 function getDealPeriod() {
   const month = parseInt(document.getElementById('dealPeriodMonth').value, 10);
   const year  = parseInt(document.getElementById('dealPeriodYear').value, 10);
-  return { month, year, deal_month: dealMonthText(month, year), fiscal_year: year };
+  const progSel = document.getElementById('dealProgrammeYear');
+  const prog = progSel && progSel.value ? parseInt(progSel.value, 10) : year;
+  return { month, year, deal_month: dealMonthText(month, year), fiscal_year: prog };
 }
 
 function updateDealPeriodHint() {
   const hint = document.getElementById('dealPeriodHint');
   if (!hint) return;
   const { month, year } = getDealPeriod();
-  hint.innerHTML = `${DEAL_MONTHS[month - 1]} ${year} · shows under the <b>${year}</b> tab`;
+  hint.textContent = `Signed ${DEAL_MONTHS[month - 1]} ${year}`;
 }
 
 function onDealPeriodChange() {
   _dealPeriodTouched = true;
   updateDealPeriodHint();
+  updateDealProgrammeYear();
+}
+
+/** The year the picked events agree on, or null when none / they disagree. */
+function dealProgrammeYearFromEvents() {
+  const ids = Array.from(document.querySelectorAll('#dealEventsCheckboxes input[type="checkbox"]:checked')).map(cb => parseInt(cb.value, 10));
+  const years = new Set();
+  ids.forEach(id => {
+    const ev = _dealEvsCache.find(e => e.id === id);
+    if (!ev) return;
+    const y = ev.programme_year || (ev.event_date ? parseInt(String(ev.event_date).slice(0, 4), 10) : null);
+    if (y) years.add(y);
+  });
+  return { year: years.size === 1 ? [...years][0] : null, picked: ids.length, spread: years.size > 1 };
+}
+
+function onDealProgrammeYearChange() {
+  _dealProgYearTouched = true;
+  updateDealProgrammeYear();
+}
+
+/**
+ * Fill and explain the programme year. Precedence when the person has not
+ * chosen one: the events picked, then the year tab that is open, then the
+ * month signed. A chosen year is kept, and the hint says so if the events
+ * disagree with it rather than silently overriding either.
+ */
+function updateDealProgrammeYear() {
+  const sel = document.getElementById('dealProgrammeYear');
+  const hint = document.getElementById('dealProgrammeYearHint');
+  if (!sel) return;
+  const { year: signedYear } = getDealPeriod();
+  const fromEvents = dealProgrammeYearFromEvents();
+  const tabYear = _dealYearFilter !== 'all' ? parseInt(_dealYearFilter, 10) : null;
+  let value = sel.value ? parseInt(sel.value, 10) : null;
+  if (!_dealProgYearTouched) value = fromEvents.year || tabYear || signedYear;
+  const options = dealYearOptions(value);
+  if (fromEvents.year) options.push(String(fromEvents.year));
+  const uniq = [...new Set(options)].sort((a, b) => b.localeCompare(a));
+  sel.innerHTML = uniq.map(y => `<option value="${y}">${y}</option>`).join('');
+  sel.value = String(value);
+  if (!hint) return;
+  if (fromEvents.spread) {
+    hint.innerHTML = `<span class="deal-prog-warn">The events you picked span more than one year</span> · filed under <b>${value}</b>`;
+  } else if (fromEvents.year && fromEvents.year !== value) {
+    hint.innerHTML = `<span class="deal-prog-warn">The events you picked are ${fromEvents.year}</span> · filed under <b>${value}</b>`;
+  } else if (fromEvents.year) {
+    hint.innerHTML = `From the event${fromEvents.picked === 1 ? '' : 's'} you picked · shows under the <b>${value}</b> tab`;
+  } else if (value !== signedYear) {
+    hint.innerHTML = `Shows under the <b>${value}</b> tab, signed in ${signedYear}`;
+  } else {
+    hint.innerHTML = `Shows under the <b>${value}</b> tab · pick events to set it from them`;
+  }
 }
 
 // Entering an invoice date proposes its month and year as the period — unless
@@ -8127,8 +8280,12 @@ function dealPeriodDisplayHtml(d) {
   const parsed = parseDealMonth(d.deal_month);
   const monthNum = parsed ? parsed.month : (d.invoice_date ? parseInt(String(d.invoice_date).slice(5, 7), 10) : 0);
   if (!monthNum) return d.deal_month ? `<span class="deal-month-disp">${esc(d.deal_month)}</span>` : '<span style="color:var(--muted)">—</span>';
-  const year = dealYearOf(d);
-  return `<span class="deal-month-disp">${DEAL_MONTHS[monthNum - 1]}${year ? ` <span class="deal-month-yr">${year}</span>` : ''}</span>`;
+  const signedYear = parsed ? parsed.year : (d.invoice_date ? parseInt(String(d.invoice_date).slice(0, 4), 10) : null);
+  const progYear = dealYearOf(d);
+  const differs = signedYear && progYear && String(signedYear) !== String(progYear);
+  return `<span class="deal-month-disp">${DEAL_MONTHS[monthNum - 1]}${signedYear ? ` <span class="deal-month-yr">${signedYear}</span>` : ''}` +
+    (differs ? `<span class="deal-month-for" title="Signed ${DEAL_MONTHS[monthNum - 1]} ${signedYear}, for the ${progYear} programme">for ${progYear}</span>` : '') +
+    `</span>`;
 }
 
 function setDealPayment(value) {
@@ -8152,6 +8309,7 @@ function onDealEventCheck(cb) {
   const item = cb.closest('.deal-event-check-item');
   if (item) item.classList.toggle('selected', cb.checked);
   updateDealSplitPreview();
+  updateDealProgrammeYear();
 }
 
 function filterDealEvents() {
@@ -9185,7 +9343,7 @@ function ekFilterEvents() {
   if (!matches.length) { dd.classList.add('hidden'); return; }
   dd.classList.remove('hidden');
   dd.innerHTML = matches.slice(0, 25).map(e =>
-    `<div class="ek-event-dd-item" onclick="ekSelectEvent(${e.id},${JSON.stringify(e.name + (e.event_date?' ('+e.event_date.slice(0,10)+')':''))})">${esc(e.name)}${e.event_date?` <span style="color:var(--muted);font-size:0.75rem">(${e.event_date.slice(0,10)})</span>`:''}</div>`
+    `<div class="ek-event-dd-item" onclick="ekSelectEvent(${e.id},${JSON.stringify(e.name + ((e.event_date || e.programme_year)?' ('+fmtEventDate(e)+')':''))})">${esc(e.name)}${(e.event_date || e.programme_year)?` <span style="color:var(--muted);font-size:0.75rem">(${esc(fmtEventDate(e))})</span>`:''}</div>`
   ).join('');
 }
 
@@ -9222,7 +9380,7 @@ function ekEmpFilterEvents() {
   if (!matches.length) { dd.classList.add('hidden'); return; }
   dd.classList.remove('hidden');
   dd.innerHTML = matches.slice(0, 25).map(e =>
-    `<div class="ek-event-dd-item" onclick="ekEmpSelectEvent(${e.id},${JSON.stringify(e.name + (e.event_date?' ('+e.event_date.slice(0,10)+')':''))})">${esc(e.name)}${e.event_date?` <span style="color:var(--muted);font-size:0.75rem">(${e.event_date.slice(0,10)})</span>`:''}</div>`
+    `<div class="ek-event-dd-item" onclick="ekEmpSelectEvent(${e.id},${JSON.stringify(e.name + ((e.event_date || e.programme_year)?' ('+fmtEventDate(e)+')':''))})">${esc(e.name)}${(e.event_date || e.programme_year)?` <span style="color:var(--muted);font-size:0.75rem">(${esc(fmtEventDate(e))})</span>`:''}</div>`
   ).join('');
 }
 
@@ -9268,7 +9426,7 @@ async function renderKitsList() {
       return `<div class="card" style="padding:14px 18px;margin-bottom:8px;display:flex;align-items:center;gap:14px">
         <div style="flex:1;min-width:0">
           <div style="font:600 14px/1 var(--font-sans)">${esc(k.event_name)}</div>
-          <div style="font-size:0.75rem;color:var(--muted);margin-top:3px">${k.event_date?k.event_date.slice(0,10):''}</div>
+          <div style="font-size:0.75rem;color:var(--muted);margin-top:3px">${(k.event_date || k.programme_year)?esc(fmtEventDate(k, {long:true})):''}</div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           ${k.agenda_file ? '<span class="ek-badge ek-badge--agenda">📋 Agenda</span>' : ''}
@@ -9583,7 +9741,7 @@ function renderEmployeeKitCard(k) {
 
   return `<div class="card" style="padding:20px;margin-bottom:16px">
     <div style="font:700 16px/1 var(--font-sans);margin-bottom:4px">${esc(k.event_name)}</div>
-    <div style="font-size:0.75rem;color:var(--muted);margin-bottom:16px">${k.event_date?k.event_date.slice(0,10):''}</div>
+    <div style="font-size:0.75rem;color:var(--muted);margin-bottom:16px">${(k.event_date || k.programme_year)?esc(fmtEventDate(k, {long:true})):''}</div>
     ${agendaSection}
     ${matRows ? `<div style="font:700 11px/1 var(--font-sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;margin-top:4px">🎨 Materials</div>${matRows}` : ''}
   </div>`;

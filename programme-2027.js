@@ -27,15 +27,29 @@ const PROGRAMME_YEAR = 2027;
 
 const PRODUCERS = ['Gio & Karam', 'Tara & Maryam', 'Fidak', 'Santos', 'Arj & Leena'];
 
+// One CFO/COO portfolio: the Private Markets, Private Equity and Private Debt
+// CFO/COO conferences are one series, not three. The order below is the
+// display order in every chart, and it is not the order of importance: it is
+// the one order in which each neighbouring pair of series hues stays apart
+// under red-green colour blindness (validated with the dataviz palette
+// checker on both apps' light and dark card surfaces). Every series keeps the
+// hue it had, so nobody has to relearn which colour is which.
 const SERIES = {
-  'private-debt':        { code: '01', name: 'Private Debt Fundraising Series',          short: 'Private Debt' },
-  'cfo-private-markets': { code: '02', name: 'CFO / COO Private Markets Series',         short: 'CFO Private Markets' },
-  'cfo-pe-debt':         { code: '03', name: 'CFO / COO Private Equity & Debt Series',   short: 'CFO PE & Debt' },
-  'cfo-pe':              { code: '04', name: 'CFO / COO Private Equity',                 short: 'CFO Private Equity' },
-  'operating-partners':  { code: '05', name: 'Operating Partners Conference Series',     short: 'Operating Partners' },
-  'data-tech':           { code: '06', name: 'Data & Technology Forum Series',           short: 'Data & Technology' },
-  'operational-fund':    { code: '07', name: 'Operational Fund Summit Series',           short: 'Operational Fund' },
+  'private-debt':       { code: '01', name: 'Private Debt Fundraising Series',      short: 'Private Debt',        chart: 1 },
+  'cfo-coo':            { code: '02', name: 'CFO / COO Series',                     short: 'CFO / COO',           chart: 2 },
+  'operational-fund':   { code: '03', name: 'Operational Fund Summit Series',       short: 'Operational Fund',    chart: 7 },
+  'operating-partners': { code: '04', name: 'Operating Partners Conference Series', short: 'Operating Partners',  chart: 5 },
+  'data-tech':          { code: '05', name: 'Data & Technology Forum Series',       short: 'Data & Technology',   chart: 6 },
 };
+
+// Ids that earlier versions of both apps stored. They all fold into the one
+// CFO/COO series; anything still carrying them reads correctly.
+const LEGACY_SERIES = { 'cfo-private-markets': 'cfo-coo', 'cfo-pe-debt': 'cfo-coo', 'cfo-pe': 'cfo-coo' };
+function normaliseSeries(id) {
+  if (!id) return null;
+  if (SERIES[id]) return id;
+  return LEGACY_SERIES[id] || null;
+}
 
 // key, name, producer, series, location, date (YYYY-MM-DD or null), tbc ('' | 'day' | 'date')
 const EVENTS = [
@@ -55,17 +69,17 @@ const EVENTS = [
   { key: 'ops-retreat',         name: 'Operating Partners Retreat',                                           producer: 'Tara & Maryam', series: 'operating-partners',  location: '',                    date: '2027-11-01', tbc: 'day' },
 
   // Fidak -- 5
-  { key: 'cfo-pm-miami',        name: '4th Annual CFO/COO Private Markets Miami',                             producer: 'Fidak',         series: 'cfo-private-markets', location: 'Miami, USA',          date: '2027-05-01', tbc: 'day' },
-  { key: 'cfo-pd-london',       name: '9th Annual CFO/COO Private Debt London',                               producer: 'Fidak',         series: 'cfo-pe-debt',         location: 'London, UK',          date: '2027-07-01', tbc: 'day' },
-  { key: 'cfo-pm-los-angeles',  name: '4th Annual CFO/COO Private Markets Los Angeles',                       producer: 'Fidak',         series: 'cfo-private-markets', location: 'Los Angeles, USA',    date: '2027-10-01', tbc: 'day' },
-  { key: 'cfo-pm-chicago',      name: '9th Annual CFO/COO Private Markets Chicago',                           producer: 'Fidak',         series: 'cfo-private-markets', location: 'Chicago, USA',        date: '2027-10-01', tbc: 'day' },
-  { key: 'cfo-pd-new-york',     name: '8th Annual CFO/COO Private Debt New York',                             producer: 'Fidak',         series: 'cfo-pe-debt',         location: 'New York, USA',       date: '2027-11-01', tbc: 'day' },
+  { key: 'cfo-pm-miami',        name: '4th Annual CFO/COO Private Markets Miami',                             producer: 'Fidak',         series: 'cfo-coo', location: 'Miami, USA',          date: '2027-05-01', tbc: 'day' },
+  { key: 'cfo-pd-london',       name: '9th Annual CFO/COO Private Debt London',                               producer: 'Fidak',         series: 'cfo-coo',                location: 'London, UK',          date: '2027-07-01', tbc: 'day' },
+  { key: 'cfo-pm-los-angeles',  name: '4th Annual CFO/COO Private Markets Los Angeles',                       producer: 'Fidak',         series: 'cfo-coo', location: 'Los Angeles, USA',    date: '2027-10-01', tbc: 'day' },
+  { key: 'cfo-pm-chicago',      name: '9th Annual CFO/COO Private Markets Chicago',                           producer: 'Fidak',         series: 'cfo-coo', location: 'Chicago, USA',        date: '2027-10-01', tbc: 'day' },
+  { key: 'cfo-pd-new-york',     name: '8th Annual CFO/COO Private Debt New York',                             producer: 'Fidak',         series: 'cfo-coo',                location: 'New York, USA',       date: '2027-11-01', tbc: 'day' },
 
   // Santos -- 5
-  { key: 'cfo-pm-switzerland',  name: '4th Annual CFO/COO Private Markets Switzerland',                       producer: 'Santos',        series: 'cfo-private-markets', location: 'Switzerland',         date: '2027-03-18', tbc: '' },
-  { key: 'cfo-pm-san-francisco',name: '5th Annual CFO/COO Private Markets San Francisco',                     producer: 'Santos',        series: 'cfo-private-markets', location: 'San Francisco, USA',  date: '2027-06-01', tbc: 'day' },
-  { key: 'cfo-pe-london',       name: '9th Annual CFO/COO Private Equity London',                             producer: 'Santos',        series: 'cfo-pe-debt',         location: 'London, UK',          date: '2027-07-01', tbc: 'day' },
-  { key: 'cfo-pe-new-york',     name: '8th Annual CFO/COO Private Equity New York',                           producer: 'Santos',        series: 'cfo-pe-debt',         location: 'New York, USA',       date: '2027-11-01', tbc: 'day' },
+  { key: 'cfo-pm-switzerland',  name: '4th Annual CFO/COO Private Markets Switzerland',                       producer: 'Santos',        series: 'cfo-coo', location: 'Switzerland',         date: '2027-03-18', tbc: '' },
+  { key: 'cfo-pm-san-francisco',name: '5th Annual CFO/COO Private Markets San Francisco',                     producer: 'Santos',        series: 'cfo-coo', location: 'San Francisco, USA',  date: '2027-06-01', tbc: 'day' },
+  { key: 'cfo-pe-london',       name: '9th Annual CFO/COO Private Equity London',                             producer: 'Santos',        series: 'cfo-coo',                location: 'London, UK',          date: '2027-07-01', tbc: 'day' },
+  { key: 'cfo-pe-new-york',     name: '8th Annual CFO/COO Private Equity New York',                           producer: 'Santos',        series: 'cfo-coo',                location: 'New York, USA',       date: '2027-11-01', tbc: 'day' },
   { key: 'ofs-luxembourg',      name: 'Operational Fund Summit Luxembourg',                                   producer: 'Santos',        series: 'operational-fund',    location: 'Luxembourg',          date: '2027-11-01', tbc: 'day' },
 
   // Arj & Leena -- 4
@@ -120,13 +134,11 @@ const CITY_ALIASES = {
   'luxembourg': ['luxembourg', 'lux'],
 };
 const SERIES_ALIASES = {
-  'operating-partners':  ['operating partners', 'ops', 'op summit'],
-  'data-tech':           ['data', 'tech', 'ai'],
-  'private-debt':        ['private debt', 'pd', 'sports'],
-  'cfo-private-markets': ['private markets', 'cfo'],
-  'cfo-pe-debt':         ['private equity', 'private debt', 'pe', 'pd', 'cfo'],
-  'cfo-pe':              ['private equity', 'pe', 'cfo'],
-  'operational-fund':    ['operational fund', 'ofs', 'lux'],
+  'operating-partners': ['operating partners', 'ops', 'op summit'],
+  'data-tech':          ['data', 'tech', 'ai'],
+  'private-debt':       ['private debt', 'pd', 'sports'],
+  'cfo-coo':            ['cfo', 'coo', 'private markets'],
+  'operational-fund':   ['operational fund', 'ofs', 'lux'],
 };
 
 function tokens(s) {
@@ -227,4 +239,4 @@ function reconcile(existingRows) {
   });
 }
 
-module.exports = { PROGRAMME_YEAR, PRODUCERS, SERIES, EVENTS, NOT_RUNNING, programmeKey, reconcile, suggestionScore };
+module.exports = { PROGRAMME_YEAR, PRODUCERS, SERIES, LEGACY_SERIES, normaliseSeries, EVENTS, NOT_RUNNING, programmeKey, reconcile, suggestionScore };
