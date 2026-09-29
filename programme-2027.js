@@ -159,6 +159,26 @@ function seriesWords(canon) {
   return SERIES_ALIASES[canon.series] || [];
 }
 
+/**
+ * A row's date as 'YYYY-MM-DD', whatever shape the driver handed it over in.
+ * Neon parses a DATE column into a JavaScript Date, whose string form begins
+ * "Mon Feb 01 2027", so slicing the year off the raw value silently yields
+ * NaN and no row ever counts as this year's. Everything here goes through
+ * this one function instead.
+ */
+function isoDate(value) {
+  if (value == null || value === '') return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString().slice(0, 10);
+  const m = String(value).match(/^(\d{4}-\d{2}-\d{2})/);
+  return m ? m[1] : null;
+}
+
+function rowYear(row) {
+  if (row.programme_year != null && row.programme_year !== '') return Number(row.programme_year);
+  const d = isoDate(row.event_date);
+  return d ? Number(d.slice(0, 4)) : null;
+}
+
 function suggestionScore(canon, row) {
   const name = `${row.name || ''} ${row.location || ''}`;
   let score = 0;
@@ -174,9 +194,10 @@ function suggestionScore(canon, row) {
   const rowIsCfo = /\bcfo\b/i.test(name);
   if (canonIsCfo !== rowIsCfo) score -= 2;
 
-  if (canon.date && row.event_date) {
+  const rowDate = isoDate(row.event_date);
+  if (canon.date && rowDate) {
     const cm = canon.date.slice(0, 7);
-    const rm = String(row.event_date).slice(0, 7);
+    const rm = rowDate.slice(0, 7);
     if (cm === rm) score += 2;
     else if (cm.slice(0, 4) === rm.slice(0, 4)) score -= 1;
   }
@@ -199,11 +220,7 @@ function reconcile(existingRows) {
   const byKey = new Map();
   for (const r of existingRows) if (r.programme_key) byKey.set(r.programme_key, r);
 
-  const candidates = existingRows.filter((r) => {
-    if (r.programme_key) return false;
-    const y = r.programme_year || (r.event_date ? Number(String(r.event_date).slice(0, 4)) : null);
-    return y === PROGRAMME_YEAR;
-  });
+  const candidates = existingRows.filter((r) => !r.programme_key && rowYear(r) === PROGRAMME_YEAR);
 
   // Every (event, row) pair above the floor, best first, then take each pair
   // only if neither side is spoken for. This way "PD NYC" goes to the Private
@@ -248,4 +265,4 @@ function reconcile(existingRows) {
   });
 }
 
-module.exports = { PROGRAMME_YEAR, PRODUCERS, SERIES, LEGACY_SERIES, normaliseSeries, EVENTS, NOT_RUNNING, programmeKey, reconcile, suggestionScore };
+module.exports = { PROGRAMME_YEAR, PRODUCERS, SERIES, LEGACY_SERIES, normaliseSeries, EVENTS, NOT_RUNNING, programmeKey, reconcile, suggestionScore, isoDate, rowYear };
