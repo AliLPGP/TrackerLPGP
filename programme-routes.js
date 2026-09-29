@@ -34,11 +34,7 @@ function createProgrammeRouter({ q, requireAuth, requireAdminOrManager }) {
   // The year a row belongs to: its programme year when set, else the year of
   // its date. A row with neither belongs to no year and can never be renamed
   // into the programme -- only created rows and dated rows can.
-  function rowYear(row) {
-    if (row.programme_year != null) return Number(row.programme_year);
-    if (row.event_date) return Number(String(row.event_date).slice(0, 4));
-    return null;
-  }
+  const { rowYear, isoDate } = programme;
 
   // Which date survives when a row takes on a programme entry (a rename) or
   // is folded into one (a merge). The entry wins when it names a day. When it
@@ -46,7 +42,7 @@ function createProgrammeRouter({ q, requireAuth, requireAdminOrManager }) {
   // (15 April, not a 1st-of-the-month placeholder), the row knows more than
   // the entry does, and its day is kept.
   function keptDate(target, row) {
-    const rowDate = row.event_date ? String(row.event_date).slice(0, 10) : null;
+    const rowDate = isoDate(row.event_date);
     const rowIsPlaceholder = !rowDate || row.date_tbc || rowDate.endsWith('-01');
     if (rowIsPlaceholder) return { date: target.date, tbc: target.tbc };
     if (target.tbc === 'date' || !target.date) return { date: rowDate, tbc: '' };
@@ -58,7 +54,7 @@ function createProgrammeRouter({ q, requireAuth, requireAdminOrManager }) {
 
   async function loadRows() {
     const { rows } = await q(`
-      SELECT pe.id, pe.name, pe.event_date, pe.location, pe.notes, pe.producer,
+      SELECT pe.id, pe.name, to_char(pe.event_date, 'YYYY-MM-DD') AS event_date, pe.location, pe.notes, pe.producer,
              pe.date_tbc, pe.programme_year, pe.programme_key,
              COUNT(DISTINCT de.deal_id) AS deal_count
       FROM portfolio_events pe
@@ -189,7 +185,7 @@ function createProgrammeRouter({ q, requireAuth, requireAdminOrManager }) {
           // The survivor learns what the old row knew: a real day when it
           // only had the month, a location when it had none, and the old
           // name, so "OPS Miami" is still findable.
-          const kept = keptDate({ date: into.event_date ? String(into.event_date).slice(0, 10) : null, tbc: into.date_tbc || '' }, row);
+          const kept = keptDate({ date: isoDate(into.event_date), tbc: into.date_tbc || '' }, row);
           const marker = `Merged "${row.name}" (#${row.id}`;
           const note = String(into.notes || '').includes(marker)
             ? into.notes

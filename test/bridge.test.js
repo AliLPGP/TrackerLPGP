@@ -442,6 +442,24 @@ const server = app.listen(0, async () => {
   check('an unlinked row becomes a suggestion again', prog.items.find((i) => i.key === 'ops-new-york').suggestion?.id === 12);
   check('unlinking an unlinked row is a 404', (await fetch(`${pbase}/unlink`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ row_id: 11 }) })).status === 404);
 
+  console.log('\nProgramme dates as the driver returns them');
+  {
+    const programme = require('../programme-2027');
+    // Neon hands a DATE column back as a JavaScript Date; the reconciler must
+    // still see the row as a 2027 row and suggest it.
+    const asDates = programme.reconcile([
+      { id: 90, name: 'OPS Miami', event_date: new Date('2027-02-01T00:00:00Z'), location: '', producer: '', date_tbc: '', programme_year: null, programme_key: null, deal_count: 2 },
+      { id: 91, name: '2nd Annual Operating Partners Miami', event_date: new Date('2027-02-25T00:00:00Z'), location: 'Miami, USA', producer: 'Gio & Karam', date_tbc: '', programme_year: 2027, programme_key: '2027:ops-miami', deal_count: 0 },
+    ]);
+    const miami = asDates.find((i) => i.key === 'ops-miami');
+    check('a Date-typed 2027 row is still a candidate', miami.status === 'linked' && miami.duplicate?.id === 90, JSON.stringify(miami.duplicate));
+    check('rowYear reads a Date object', programme.rowYear({ event_date: new Date('2027-04-15T00:00:00Z') }) === 2027);
+    check('isoDate handles Date, ISO string and rubbish', programme.isoDate(new Date('2027-04-15T00:00:00Z')) === '2027-04-15' && programme.isoDate('2027-04-15T00:00:00.000Z') === '2027-04-15' && programme.isoDate('soon') === null);
+    // The reconcile read itself asks Postgres for text, so the route never
+    // depends on the driver's parsing.
+    check('the reconcile read asks for the date as text', /to_char\(pe\.event_date, 'YYYY-MM-DD'\) AS event_date/.test(require('fs').readFileSync(require('path').join(__dirname, '..', 'programme-routes.js'), 'utf8')));
+  }
+
   console.log('\nProgramme merge');
   const decide = async (decisions) => (await fetch(`${pbase}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ decisions }) })).json();
