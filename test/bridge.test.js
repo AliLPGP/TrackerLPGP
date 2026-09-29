@@ -3,6 +3,7 @@
 process.env.OPS_BRIDGE_KEY = 'test-secret-key';
 const express = require('express');
 const { createBridgeRouter } = require('../bridge.js');
+const { createProgrammeRouter } = require('../programme-routes');
 
 // Two deals for Barings (one per event cycle), one for BlackRock, one cancelled.
 const DEAL_ROWS = [
@@ -43,7 +44,12 @@ process.env.OPS_BRIDGE_WRITE_KEY = 'test-write-key';
 
 // Mutable state so writes are observable. Deliberately minimal — it models the
 // three tables the bridge touches, not Postgres.
-const DB = { deals: [...DEAL_ROWS], allocations: [], nextId: 5 };
+const DB = { deals: [...DEAL_ROWS], allocations: [], nextId: 5, events: [
+  { id: 10, name: 'Berlin',        event_date: '2026-05-12', location: 'Waldorf', notes: '', producer: '', date_tbc: '', programme_year: null, programme_key: null, deal_count: 2 },
+  { id: 11, name: 'CFO Miami',     event_date: '2026-09-02', location: 'Four Seasons', notes: '', producer: '', date_tbc: '', programme_year: null, programme_key: null, deal_count: 1 },
+  { id: 12, name: 'Ops NYC',       event_date: '2027-01-20', location: '', notes: '', producer: '', date_tbc: '', programme_year: null, programme_key: null, deal_count: 1 },
+  { id: 13, name: 'PD NYC (Womens)', event_date: '2027-04-01', location: '', notes: 'womens', producer: '', date_tbc: '', programme_year: null, programme_key: null, deal_count: 0 },
+], nextEventId: 14 };
 const EVENT_IDS = [10, 11, 12];
 
 async function q(sql, params = []) {
@@ -93,6 +99,25 @@ async function q(sql, params = []) {
     if (deal) { deal.invoice1_name = name; deal.invoice1_data = data; }
     return { rows: deal ? [{ id: deal.id }] : [] };
   }
+  // The reconcile read and the bridge's /events read both join deal_events;
+  // only the bridge one sums allocations.
+  if (/pe\.programme_key,\s*COUNT\(DISTINCT de\.deal_id\)/i.test(sql) && !/allocated_total/i.test(sql)) {
+    return { rows: DB.events.map((e) => ({ ...e, deal_count: String(e.deal_count) })) };
+  }
+  if (/^\s*UPDATE portfolio_events\s+SET name=/i.test(sql)) {
+    const [name, event_date, location, producer, date_tbc, programme_year, programme_key, notes, id] = params;
+    const ev = DB.events.find((e) => e.id === Number(id));
+    if (!ev) return { rows: [] };
+    Object.assign(ev, { name, event_date, producer, date_tbc, programme_year, programme_key, notes });
+    if (!ev.location) ev.location = location;
+    return { rows: [{ id: ev.id }] };
+  }
+  if (/^\s*INSERT INTO portfolio_events/i.test(sql)) {
+    const [name, event_date, location, producer, date_tbc, programme_year, programme_key] = params;
+    const ev = { id: DB.nextEventId++, name, event_date, location, notes: '', producer, date_tbc, programme_year, programme_key, deal_count: 0 };
+    DB.events.push(ev);
+    return { rows: [{ id: ev.id }] };
+  }
   if (/SELECT id FROM portfolio_events WHERE id IN/i.test(sql)) {
     return { rows: params.filter((p) => EVENT_IDS.includes(Number(p))).map((id) => ({ id })) };
   }
@@ -119,7 +144,7 @@ async function readQuery(sql, params = []) {
   if (/FROM deals d/i.test(sql)) return { rows: DB.deals };
   if (/SELECT\s+\(SELECT COUNT/i.test(sql)) return { rows: [{ deals: 4, events: 3, allocations: 4 }] };
   if (/FROM portfolio_events pe/i.test(sql)) {
-    return { rows: [{ id: 10, name: 'Berlin', event_date: '2026-05-12', location: 'Waldorf', notes: '', deal_count: 2, allocated_total: '11000.00', allocated_paid: '11000.00' }] };
+    return { rows: [{ id: 10, name: 'Berlin', event_date: '2026-05-12', location: 'Waldorf', notes: '', producer: 'Arj & Leena', date_tbc: 'day', programme_year: 2026, programme_key: null, deal_count: 2, allocated_total: '11000.00', allocated_paid: '11000.00' }] };
   }
   if (/FROM deal_events de/i.test(sql)) {
     return { rows: [{ deal_id: 1, company: 'Barings LLC', currency: 'GBP', stage: 'Won', paid_inc_vat: '4800.00', contact_name: 'Jane Doe', initials: 'JS', allocated_amount: '2000.00', package_label: 'Gold' }] };
@@ -129,6 +154,7 @@ async function readQuery(sql, params = []) {
 
 const app = express();
 app.use('/api/bridge', createBridgeRouter({ q, ensureDb: async () => {} }));
+app.use('/api/programme', createProgrammeRouter({ q, requireAuth: (req, _res, next) => { req.admin = { id: 1 }; next(); }, requireAdminOrManager: null }));
 const server = app.listen(0, async () => {
   const base = `http://127.0.0.1:${server.address().port}/api/bridge`;
   const KEY = { 'x-ops-key': 'test-secret-key' };
@@ -176,6 +202,10 @@ const server = app.listen(0, async () => {
   console.log('\nOther routes');
   check('deals/:id returns a shaped deal', (await (await fetch(`${base}/deals/1`, { headers: KEY })).json()).invoice_number === 'INV-1042');
   check('events returns numbers not strings', typeof (await (await fetch(`${base}/events`, { headers: KEY })).json())[0].allocated_total === 'number');
+  const evs = await (await fetch(`${base}/events`, { headers: KEY })).json();
+  check('events carry the producer team', evs[0].producer === 'Arj & Leena', JSON.stringify(evs[0]));
+  check('events say when a day is still TBC', evs[0].date_tbc === 'day');
+  check('events carry the programme year as a number', evs[0].programme_year === 2026);
   const sponsors = await (await fetch(`${base}/events/10/sponsors`, { headers: KEY })).json();
   check('event sponsors listed', sponsors[0].company === 'Barings LLC');
   check('sponsor carries the signer\'s initials', sponsors[0].initials === 'JS', JSON.stringify(sponsors[0]));
@@ -283,6 +313,40 @@ const server = app.listen(0, async () => {
     (await post(`/deals/${created.id}/invoice/3`, { name: 'a', data: 'b' })).status === 400
   );
   check('missing data → 400', (await post(`/deals/${created.id}/invoice/1`, { name: 'a' })).status === 400);
+
+  console.log('\nProgramme reconcile');
+  const pbase = `http://127.0.0.1:${server.address().port}/api/programme/2027`;
+  let prog = await (await fetch(pbase)).json();
+  check('all 25 confirmed events listed', prog.items.length === 25, String(prog.items.length));
+  const opsNy = prog.items.find((i) => i.key === 'ops-new-york');
+  const pdNy  = prog.items.find((i) => i.key === 'pd-new-york');
+  const sports = prog.items.find((i) => i.key === 'sports-new-york');
+  check('shorthand "Ops NYC" suggested for Operating Partners New York', opsNy?.suggestion?.id === 12, JSON.stringify(opsNy?.suggestion));
+  check('"PD NYC (Womens)" suggested for Private Debt New York', pdNy?.suggestion?.id === 13, JSON.stringify(pdNy?.suggestion));
+  check('Sports Investing does not steal the PD row', sports?.suggestion == null, JSON.stringify(sports?.suggestion));
+  check('the 2026 Berlin row is never suggested', !prog.items.some((i) => i.suggestion?.id === 10));
+  check('nothing is applied by merely reading', DB.events.find((e) => e.id === 12).name === 'Ops NYC');
+
+  const applied = await (await fetch(`${pbase}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ decisions: [
+      { key: 'ops-new-york', action: 'rename', row_id: 12 },
+      { key: 'pd-berlin',    action: 'create' },
+      { key: 'sports-new-york', action: 'skip' },
+    ] }) })).json();
+  const renamed = DB.events.find((e) => e.id === 12);
+  check('rename keeps the id and the deals', renamed.name === '3rd Annual Operating Partners New York' && renamed.deal_count === 1, JSON.stringify(renamed));
+  check('rename records the old name', /Previously "Ops NYC"/.test(renamed.notes), renamed.notes);
+  check('rename links the programme key', renamed.programme_key === '2027:ops-new-york');
+  check('rename carries producer and date', renamed.producer === 'Tara & Maryam' && renamed.event_date === '2027-05-19');
+  check('create inserts a linked row', DB.events.some((e) => e.programme_key === '2027:pd-berlin' && e.producer === 'Arj & Leena'));
+  check('skip does nothing', applied.results.find((r) => r.key === 'sports-new-york').outcome === 'skipped');
+
+  const again = await (await fetch(`${pbase}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ decisions: [{ key: 'ops-new-york', action: 'rename', row_id: 12 }, { key: 'pd-berlin', action: 'create' }] }) })).json();
+  check('re-applying is a no-op', again.results.every((r) => r.outcome === 'already-linked'), JSON.stringify(again.results));
+  check('no duplicate row from the second create', DB.events.filter((e) => e.programme_key === '2027:pd-berlin').length === 1);
+  prog = await (await fetch(pbase)).json();
+  check('linked rows report as linked', prog.items.find((i) => i.key === 'ops-new-york').status === 'linked');
 
   console.log(`\n${pass} passed, ${fail} failed`);
   server.close();

@@ -10,6 +10,7 @@ const Docxtemplater = require('docxtemplater');
 const { sql, initDb } = require('./database');
 const { registerWasteman } = require('./wasteman');
 const { createBridgeRouter } = require('./bridge');
+const { createProgrammeRouter } = require('./programme-routes');
 
 // Email transporter — configured via env vars; silently disabled if not set
 function createMailTransport() {
@@ -469,6 +470,9 @@ async function calcExcessDeductions(empId, year, annualSalary, allowance) {
 // OPS_BRIDGE_KEY secret rather than an admin cookie — the caller is a server,
 // not a browser. Mounted before the auth routes so it never inherits them.
 app.use('/api/bridge', createBridgeRouter({ q, ensureDb, insertDealEvents }));
+// The confirmed programme, reconciled against existing events. Admin-only:
+// applying it renames rows that deals are allocated to.
+app.use('/api/programme', createProgrammeRouter({ q, requireAuth, requireAdminOrManager }));
 
 // ─── AUTH ────────────────────────────────────────────────────────────────────
 
@@ -1943,22 +1947,41 @@ app.get('/api/portfolio-events/:id/deals', requireAuth, requireAdminOrManager, a
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// The three programme fields a person can edit. programme_key is deliberately
+// not among them: it is set by the programme loader and only by it, so a typo
+// in the edit form can never unlink a row from the programme.
+function portfolioEventFields(body) {
+  const tbc = ['', 'day', 'date'].includes(body.date_tbc) ? body.date_tbc : '';
+  const year = Number.parseInt(body.programme_year, 10);
+  return {
+    name: body.name,
+    event_date: body.event_date || null,
+    location: body.location || '',
+    notes: body.notes || '',
+    producer: body.producer || '',
+    date_tbc: tbc,
+    programme_year: Number.isFinite(year) ? year : null,
+  };
+}
 app.post('/api/portfolio-events', requireAuth, requireAdminOrManager, async (req, res) => {
   try {
-    const { name, event_date, location, notes } = req.body;
+    const f = portfolioEventFields(req.body);
     const { rows } = await q(
-      `INSERT INTO portfolio_events (name, event_date, location, notes, created_by) VALUES (?,?,?,?,?) RETURNING *`,
-      [name, event_date||null, location||'', notes||'', req.admin.id]
+      `INSERT INTO portfolio_events (name, event_date, location, notes, producer, date_tbc, programme_year, created_by)
+       VALUES (?,?,?,?,?,?,?,?) RETURNING *`,
+      [f.name, f.event_date, f.location, f.notes, f.producer, f.date_tbc, f.programme_year, req.admin.id]
     );
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.put('/api/portfolio-events/:id', requireAuth, requireAdminOrManager, async (req, res) => {
   try {
-    const { name, event_date, location, notes } = req.body;
+    const f = portfolioEventFields(req.body);
     const { rows } = await q(
-      `UPDATE portfolio_events SET name=?, event_date=?, location=?, notes=? WHERE id=? RETURNING *`,
-      [name, event_date||null, location||'', notes||'', req.params.id]
+      `UPDATE portfolio_events
+         SET name=?, event_date=?, location=?, notes=?, producer=?, date_tbc=?, programme_year=?
+       WHERE id=? RETURNING *`,
+      [f.name, f.event_date, f.location, f.notes, f.producer, f.date_tbc, f.programme_year, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     res.json(rows[0]);

@@ -17,6 +17,60 @@ const MONTHS = ['','January','February','March','April','May','June',
                 'July','August','September','October','November','December'];
 
 function currencySymbol(c) { return c === 'AED' ? 'AED ' : c === 'PHP' ? '₱' : '£'; }
+
+/**
+ * How an event's date reads, honestly. A confirmed day prints as a day; a
+ * month with the day still to be confirmed prints as the month; no date at
+ * all prints as the programme year with "date TBC". The 1st of the month is
+ * how a TBC month is stored, never how it is shown.
+ *   opts.long  -> "25 Feb 2027" / "Sep 2027 · day TBC" / "2027 · date TBC"
+ *   default    -> "Feb 27" / "Sep 27 · TBC" / "2027 TBC"
+ */
+function fmtEventDate(ev, opts = {}) {
+  const tbc  = ev.date_tbc || '';
+  const year = ev.programme_year || (ev.event_date ? String(ev.event_date).slice(0, 4) : '');
+  if (!ev.event_date) return year ? `${year}${opts.long ? ' · date TBC' : ' TBC'}` : (opts.long ? 'Date TBC' : 'TBC');
+  const d = new Date(String(ev.event_date).slice(0, 10) + 'T12:00:00');
+  if (isNaN(d.getTime())) return opts.long ? 'Date TBC' : 'TBC';
+  if (tbc === 'day') {
+    return opts.long
+      ? d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }) + ' · day TBC'
+      : d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) + ' · TBC';
+  }
+  return opts.long
+    ? d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+    : d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' });
+}
+
+// Salary FX. One table, used by both the overview band and the summary table
+// below it, so the two can never quote different rates for the same money.
+const SAL_FX = { GBP: 1, AED: 1 / 4.67, PHP: 0.0138 };
+const salFxToGBP = (v, c) => v * (SAL_FX[c] || 1);
+
+/**
+ * What a person should have been paid by now, in their own currency.
+ *
+ * Salaries land monthly, so this counts whole months rather than days -- on
+ * the 21st of September, September's payment is due, and someone who has had
+ * it is not "behind" just because the month has nine days left. The window is
+ * the person's own: a mid-year starter is measured from their start month, so
+ * they are never shown as behind for months they did not work.
+ */
+function salaryExpectedByNow(row, year, now) {
+  const effective = (parseFloat(row.net_remaining) || 0) + (parseFloat(row.total_paid) || 0);
+  if (effective <= 0) return 0;
+  const y = parseInt(year, 10);
+  const curY = now.getFullYear();
+  if (y < curY) return effective;   // the year is over; all of it fell due
+  if (y > curY) return 0;           // hasn't started
+
+  const inYear = (d) => d && String(d).slice(0, 4) === String(y);
+  const startM = inYear(row.start_date)       ? parseInt(String(row.start_date).slice(5, 7), 10) : 1;
+  const endM   = inYear(row.termination_date) ? parseInt(String(row.termination_date).slice(5, 7), 10) : 12;
+  const span   = Math.max(1, endM - startM + 1);
+  const due    = Math.min(span, Math.max(0, (now.getMonth() + 1) - startM + 1));
+  return effective * (due / span);
+}
 function fmtMoney(amount, currency) { return currencySymbol(currency) + Number(amount || 0).toLocaleString('en-GB', {minimumFractionDigits:2}); }
 function fmt(n) { return Number(n||0).toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2}); }
 
@@ -1967,9 +2021,6 @@ async function loadSalaryPage() {
     });
     const TYPE_LABEL = { payroll: 'Payroll', self_employed: 'Self-Employed' };
     const TYPE_CLASS  = { payroll: 'payroll', self_employed: 'self-employed' };
-    const SAL_FX = { GBP: 1, AED: 1/4.67, PHP: 0.0138 };
-    const salFxToGBP = (v, c) => v * (SAL_FX[c] || 1);
-    const AED_TO_GBP = SAL_FX.AED; // kept for legacy references below
 
     // ── Summary table ──
     const allActive = activeRows;
@@ -1978,9 +2029,152 @@ async function loadSalaryPage() {
     const gtDeduct  = allActive.reduce((s, e) => s + salFxToGBP((parseFloat(e.excess_deduction)||0)+(parseFloat(e.total_office_deductions)||0), e.currency || 'GBP'), 0);
     const gtRemain  = allActive.reduce((s, e) => s + Math.max(0, salFxToGBP(parseFloat(e.net_remaining) || 0, e.currency || 'GBP')), 0);
     const hasMultiCurrency = groups.some(g => g.currency !== 'GBP');
-    const gtPaidPct = gtTarget > 0 ? Math.min(100, Math.round(gtPaid / gtTarget * 100)) : 0;
+    const gtPaidPct = (gtTarget - gtDeduct) > 0 ? Math.min(100, Math.round(gtPaid / (gtTarget - gtDeduct) * 100)) : 0;
     const fmtN = (v, sym) => sym + v.toLocaleString('en-GB', {maximumFractionDigits:0});
     const fmtGBP = v => '£' + v.toLocaleString('en-GB', {maximumFractionDigits:0});
+
+    // ── Overview: what is still to pay, per group ──────────────────────────
+    // Not filtered by the type tab on purpose. An overview that changed every
+    // time you clicked a tab would not be an overview; this answers "what is
+    // left across the whole team" whichever tab is open. The year, employee
+    // and search filters do apply, because those narrow who you are asking
+    // about rather than which slice of them you are looking at.
+    const ovRows = searched.filter(e => !e.is_terminated);
+    const ovNow  = new Date();
+
+    // Fixed list, fixed order. Payroll appears even when nobody is on it, so
+    // "nothing owed on payroll" is a visible answer rather than a missing
+    // tile. Anyone the list does not claim -- a currency we have not seen
+    // before -- still gets a tile rather than being dropped.
+    const OV_DEFS = [
+      { key: 'payroll', label: 'Payroll',
+        match: r => r.employment_type === 'payroll' },
+      { key: 'se_gbp',  label: 'Self-Employed',
+        match: r => r.employment_type === 'self_employed' && (r.currency || 'GBP') === 'GBP' },
+      { key: 'se_php',  label: 'Self-Employed · PHP',
+        match: r => r.employment_type === 'self_employed' && r.currency === 'PHP' },
+    ];
+    const ovClaimed = new Set();
+    const ovGroups = OV_DEFS.map(d => {
+      const rows = ovRows.filter(d.match);
+      rows.forEach(r => ovClaimed.add(r.employee_id));
+      return { key: d.key, label: d.label, rows };
+    });
+    const ovExtra = {};
+    ovRows.filter(r => !ovClaimed.has(r.employee_id)).forEach(r => {
+      const cur = r.currency || 'GBP';
+      const k = `${r.employment_type}_${cur}`;
+      (ovExtra[k] = ovExtra[k] || {
+        key: k,
+        label: `${TYPE_LABEL[r.employment_type] || r.employment_type}${cur !== 'GBP' ? ' · ' + cur : ''}`,
+        rows: []
+      }).rows.push(r);
+    });
+    Object.values(ovExtra).forEach(g => ovGroups.push(g));
+
+    // Each person's effective target is rebuilt as remaining + paid, so it is
+    // the server's own figure rather than a second formula that could drift.
+    const ovEffective = r => (parseFloat(r.net_remaining) || 0) + (parseFloat(r.total_paid) || 0);
+    // Owed counts only the people who are actually behind. Overpaying one
+    // person is not cash you get to hold back from another, so overpayment is
+    // reported on its own line instead of quietly shrinking the bill.
+    const ovOwedOf  = r => Math.max(0, parseFloat(r.net_remaining) || 0);
+    const ovOverOf  = r => Math.max(0, -(parseFloat(r.net_remaining) || 0));
+    const ovPaidOf  = r => parseFloat(r.total_paid) || 0;
+
+    const ovMonth = MONTHS[ovNow.getMonth() + 1].slice(0, 3);
+    const ovTiles = ovGroups.map(g => {
+      const curs  = [...new Set(g.rows.map(r => r.currency || 'GBP'))];
+      // A group in one currency is reported in it. A group spanning several
+      // can only be added up in GBP, and says so.
+      const mixed = curs.length > 1;
+      const cur   = mixed ? 'GBP' : (curs[0] || 'GBP');
+      const sym   = currencySymbol(cur);
+      const sum   = pick => g.rows.reduce(
+        (a, r) => a + (mixed ? salFxToGBP(pick(r), r.currency || 'GBP') : pick(r)), 0);
+
+      const owed = sum(ovOwedOf);
+      const over = sum(ovOverOf);
+      const eff  = sum(ovEffective);
+      const paid = sum(ovPaidOf);
+      const exp  = sum(r => salaryExpectedByNow(r, year, ovNow));
+
+      const pctPaid = eff > 0 ? Math.min(100, Math.round(paid / eff * 100)) : 0;
+      const pctExp  = eff > 0 ? Math.min(100, Math.round(exp  / eff * 100)) : 0;
+      const due     = g.rows.filter(r => unpaidSet.has(r.employee_id)).length;
+      const showGBP = !mixed && cur !== 'GBP' && owed > 0;
+      const money   = v => sym + Math.round(v).toLocaleString('en-GB');
+
+      if (!g.rows.length) {
+        return `<article class="sal-ov-tile sal-ov-tile--empty">
+          <div class="sal-ov-t-head">
+            <span class="sal-ov-t-name">${esc(g.label)}</span>
+            <span class="sal-ov-t-count">none</span>
+          </div>
+          <div class="sal-ov-t-owed sal-ov-t-owed--none">Nobody on this group</div>
+        </article>`;
+      }
+
+      return `<article class="sal-ov-tile">
+        <div class="sal-ov-t-head">
+          <span class="sal-ov-t-name">${esc(g.label)}</span>
+          <span class="sal-ov-t-count">${g.rows.length} ${g.rows.length === 1 ? 'person' : 'people'}</span>
+        </div>
+        <div class="sal-ov-t-owed${owed <= 0 ? ' sal-ov-t-owed--done' : ''}">${owed > 0 ? money(owed) : 'Fully paid'}</div>
+        <div class="sal-ov-t-alt">${
+          owed <= 0 ? 'nothing outstanding'
+          : showGBP ? `${fmtGBP(salFxToGBP(owed, cur))} still owed`
+          : mixed ? 'still owed this year, mixed currencies in GBP'
+          : 'still owed this year'
+        }</div>
+        <div class="sal-ov-meter" role="img"
+             aria-label="${pctPaid}% paid, ${pctExp}% expected by the end of ${ovMonth}">
+          <span class="sal-ov-meter-fill" style="width:${pctPaid}%"></span>
+          <span class="sal-ov-meter-mark" style="left:${pctExp}%"></span>
+        </div>
+        <div class="sal-ov-t-foot">
+          <span class="sal-ov-t-pace">${pctPaid}% paid<span class="sal-ov-t-exp"> · ${pctExp}% expected by ${ovMonth}</span></span>
+          ${due > 0 ? `<span class="sal-ov-chip">${due} to pay</span>` : ''}
+        </div>
+        ${over > 0 ? `<div class="sal-ov-t-over">${money(over)} overpaid, kept separate</div>` : ''}
+      </article>`;
+    }).join('');
+
+    // Whole-team totals. GBP, because that is the only way to add them up.
+    const ovGbp     = pick => ovRows.reduce((a, r) => a + salFxToGBP(pick(r), r.currency || 'GBP'), 0);
+    const ovOwedGBP = ovGbp(ovOwedOf);
+    const ovOverGBP = ovGbp(ovOverOf);
+    const ovEffGBP  = ovGbp(ovEffective);
+    const ovPaidGBP = ovGbp(ovPaidOf);
+    const ovPct     = ovEffGBP > 0 ? Math.min(100, Math.round(ovPaidGBP / ovEffGBP * 100)) : 0;
+    const ovNonGBP  = [...new Set(ovRows.map(r => r.currency || 'GBP'))].filter(c => c !== 'GBP');
+
+    // Guard: a stale cached index.html would not have this element, and losing
+    // the overview must not take the rest of the salary page down with it.
+    const ovEl = document.getElementById('salaryOverview');
+    if (ovEl) ovEl.innerHTML = ovRows.length ? `
+      <section class="sal-ov">
+        <header class="sal-ov-head">
+          <div>
+            <div class="sal-ov-eyebrow">Overview</div>
+            <h3 class="sal-ov-title">Still to pay in ${year}</h3>
+            <p class="sal-ov-note">${ovRows.length} active ${ovRows.length === 1 ? 'person' : 'people'}${
+              ovOverGBP > 0 ? ` · ${fmtGBP(ovOverGBP)} overpaid elsewhere, not netted off` : ''}</p>
+          </div>
+          <div class="sal-ov-total">
+            <div class="sal-ov-total-label">All groups, in GBP</div>
+            <div class="sal-ov-total-value">${fmtGBP(ovOwedGBP)}</div>
+            <div class="sal-ov-total-note">${ovPaidGBP > ovEffGBP
+              ? `${fmtGBP(ovPaidGBP)} paid, ${fmtGBP(ovPaidGBP - ovEffGBP)} ahead of what is owed`
+              : `${fmtGBP(ovPaidGBP)} of ${fmtGBP(ovEffGBP)} paid · ${ovPct}%`}</div>
+          </div>
+        </header>
+        <div class="sal-ov-grid">${ovTiles}</div>
+        <p class="sal-ov-fx">
+          The bar fills to what has been paid; the notch is where the year says you should be by the end of ${ovMonth}.${
+          ovNonGBP.length ? ` GBP conversions use ${ovNonGBP.map(c => `1 ${c} = £${SAL_FX[c]}`).join(', ')}.` : ''}
+        </p>
+      </section>` : '';
 
     window._salGrpOpen = window._salGrpOpen || {};
     const tableRows = groups.map(g => {
@@ -1989,7 +2183,8 @@ async function loadSalaryPage() {
       const tPaid   = g.rows.reduce((a, b) => a + (parseFloat(b.total_paid) || 0), 0);
       const tDeduct = g.rows.reduce((a, b) => a + (parseFloat(b.excess_deduction)||0) + (parseFloat(b.total_office_deductions)||0), 0);
       const tRemain = g.rows.reduce((a, b) => a + (parseFloat(b.net_remaining) || 0), 0);
-      const pct     = tTarget > 0 ? Math.min(100, Math.round(tPaid / tTarget * 100)) : 0;
+      const tEffective = tTarget - tDeduct;   // what is actually owed, after deductions
+      const pct     = tEffective > 0 ? Math.min(100, Math.round(tPaid / tEffective * 100)) : 0;
       const isNonGBP = g.currency !== 'GBP';
       const groupLabel = `${TYPE_LABEL[g.type]}${g.currency !== 'GBP' ? ' · ' + g.currency : ''}`;
 
@@ -4489,11 +4684,87 @@ async function deleteSub(id) {
 }
 
 // ─── PORTFOLIO ────────────────────────────────────────────────────────────────
+//
+// The admin Portfolio page reads like the sales CRM's Event Performance page:
+// a headline figure with a meter, a KPI row, revenue by series, then the event
+// list grouped by producer team. Money here is GBP as the tracker stores it on
+// portfolio_events (total_pipeline = allocated, total_won = paid).
 
 let portfolioData = [];
 let _portYearFilter = String(new Date().getFullYear() + 1); // default to next year (2027)
 let _portExtraYears = new Set();
 let _portSearch = '';
+
+// The 2027 programme, as /api/programme/2027 last reported it. Nothing in it
+// is applied by reading it; decisions are collected here and only sent when
+// the person presses Apply.
+let _programme2027 = { status: 'idle', data: null, error: null };
+let _programmeDecisions = {};       // key -> 'rename' | 'create' | 'skip'
+let _portShowProgramme = false;     // show the panel outside the 2027 tab
+
+const PORT_PRODUCERS = ['Gio & Karam', 'Tara & Maryam', 'Fidak', 'Santos', 'Arj & Leena'];
+
+// Series ids match the sales CRM's events catalogue, so the two apps agree on
+// which portfolio an event belongs to. The chart index is the series' hue
+// (--chart-N) and follows the entity everywhere: never cycled, never repainted.
+const PORT_SERIES = [
+  { id: 'private-debt',        code: '01', name: 'Private Debt Fundraising Series',        short: 'Private Debt',        chart: 1 },
+  { id: 'cfo-private-markets', code: '02', name: 'CFO / COO Private Markets Series',       short: 'CFO Private Markets', chart: 2 },
+  { id: 'cfo-pe-debt',         code: '03', name: 'CFO / COO Private Equity & Debt Series', short: 'CFO PE & Debt',       chart: 3 },
+  { id: 'cfo-pe',              code: '04', name: 'CFO / COO Private Equity',               short: 'CFO Private Equity',  chart: 4 },
+  { id: 'operating-partners',  code: '05', name: 'Operating Partners Conference Series',   short: 'Operating Partners',  chart: 5 },
+  { id: 'data-tech',           code: '06', name: 'Data & Technology Forum Series',         short: 'Data & Technology',   chart: 6 },
+  { id: 'operational-fund',    code: '07', name: 'Operational Fund Summit Series',         short: 'Operational Fund',    chart: 7 },
+];
+const PORT_SERIES_MAP = Object.fromEntries(PORT_SERIES.map(s => [s.id, s]));
+
+/**
+ * Series from an event's name. A port of the sales CRM's guessSeries -- the
+ * rules must stay identical in both apps. Order matters; first match wins.
+ * Used only when a row carries no programme key.
+ */
+function portGuessSeries(eventName) {
+  const n = String(eventName || '').toLowerCase();
+  if (n.includes('operational fund')) return 'operational-fund';
+  if (n.includes('operating partners')) return 'operating-partners';
+  if (n.includes('data') && (n.includes('tech') || n.includes('ai'))) return 'data-tech';
+  if (n.includes('cfo') && (n.includes('private debt') || n.includes('private equity'))) return 'cfo-pe-debt';
+  if (n.includes('cfo') && n.includes('private markets')) return 'cfo-private-markets';
+  if (n.includes('private debt') || n.includes('sports investing')) return 'private-debt';
+  // tracker shorthand
+  if (/\bops\b/.test(n)) return 'operating-partners';
+  if (/\bdata\s*tech\b/.test(n)) return 'data-tech';
+  if (/\bpd\b/.test(n) || n.includes('fundraising') || n.includes('sports')) return 'private-debt';
+  // cities hosting exactly one 2027 event
+  if (n.includes('berlin')) return 'private-debt';
+  if (n.includes('lux')) return 'operational-fund';
+  if (n.includes('switzerland') || n.includes('zurich')) return 'cfo-private-markets';
+  if (/\bcfo\b/.test(n)) return 'cfo-private-markets';
+  return null;
+}
+
+/** The series a row belongs to: its programme key if linked, else a guess from its name. */
+function portSeriesFor(ev) {
+  const items = _programme2027.data && _programme2027.data.items;
+  if (ev.programme_key && items) {
+    const it = items.find(i => i.programme_key === ev.programme_key);
+    if (it && it.series) return it.series;
+  }
+  return portGuessSeries(ev.name);
+}
+
+/** A row belongs to its programme year even when its date is still TBC. */
+function portRowYear(ev) {
+  if (ev.programme_year) return Number(ev.programme_year);
+  if (ev.event_date) {
+    const y = parseInt(String(ev.event_date).slice(0, 4), 10);
+    if (!isNaN(y)) return y;
+  }
+  return null;
+}
+
+/** Whole pounds for figures and bar labels; the deals expander keeps pence. */
+function fmtGBP(n) { return '£' + Math.round(Number(n) || 0).toLocaleString('en-GB'); }
 
 function setPortYear(y) {
   _portYearFilter = y;
@@ -4518,203 +4789,327 @@ async function loadPortfolio() {
     if (!Array.isArray(portfolioData)) portfolioData = [];
     renderPortfolioGrid();
   } catch { showToast('Failed to load portfolio', 'error'); }
+  // The series of a linked row comes from the programme, so it is fetched
+  // alongside; the grid re-renders when it lands.
+  if (_programme2027.status === 'idle') loadProgramme2027();
+}
+
+async function loadProgramme2027() {
+  _programme2027 = { status: 'loading', data: null, error: null };
+  try {
+    const res = await fetch('/api/programme/2027');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    _programme2027 = { status: 'ready', data, error: null };
+    // Decisions are reset when the reconcile changes underneath them.
+    _programmeDecisions = {};
+  } catch (e) {
+    _programme2027 = { status: 'error', data: null, error: e.message || 'Could not load the programme' };
+  }
+  renderPortfolioGrid();
 }
 
 function portFilterCards(q) {
   _portSearch = (q || '').toLowerCase().trim();
-  document.querySelectorAll('.pec-card').forEach(c => {
-    c.style.display = !_portSearch || (c.dataset.name || '').includes(_portSearch) ? '' : 'none';
+  document.querySelectorAll('#portfolioGrid .pec-card').forEach(c => {
+    const hay = c.dataset.name || '';
+    c.style.display = !_portSearch || hay.includes(_portSearch) ? '' : 'none';
   });
+  // A team with nothing showing hides its header too.
+  document.querySelectorAll('#portfolioGrid .pf-group').forEach(g => {
+    const any = [...g.querySelectorAll('.pec-card')].some(c => c.style.display !== 'none');
+    g.style.display = any ? '' : 'none';
+  });
+}
+
+function togglePortfolioProgramme() {
+  _portShowProgramme = !_portShowProgramme;
+  renderPortfolioGrid();
 }
 
 function renderPortfolioGrid() {
   const grid  = document.getElementById('portfolioGrid');
   const empty = document.getElementById('portfolioEmpty');
+  if (!grid) return;
 
-  // Build year list — always include current and next year
+  // Year tabs: always this year and next, plus any year a row belongs to.
   const curYear = new Date().getFullYear();
   const yearsSet = new Set([curYear, curYear + 1]);
-  portfolioData.forEach(e => {
-    if (e.event_date) {
-      const y = parseInt(String(e.event_date).slice(0, 4));
-      if (!isNaN(y)) yearsSet.add(y);
-    }
-  });
+  portfolioData.forEach(e => { const y = portRowYear(e); if (y) yearsSet.add(y); });
   _portExtraYears.forEach(y => yearsSet.add(y));
   const years = [...yearsSet].sort((a, b) => b - a);
   if (_portYearFilter !== 'all' && !years.includes(parseInt(_portYearFilter))) _portYearFilter = String(years[0] || curYear);
 
-  // Filter by year
   const filtered = _portYearFilter === 'all'
     ? portfolioData
-    : portfolioData.filter(e => {
-        if (!e.event_date) return parseInt(_portYearFilter) === curYear;
-        return parseInt(String(e.event_date).slice(0, 4)) === parseInt(_portYearFilter);
-      });
+    : portfolioData.filter(e => (portRowYear(e) || curYear) === parseInt(_portYearFilter));
 
-  // Year tab strip + search + add button
-  const tabsHtml =
+  const is2027 = _portYearFilter === '2027';
+  const yearLabel = _portYearFilter === 'all' ? 'All years' : `${_portYearFilter} programme`;
+
+  const toolbarHtml =
     `<div class="deal-filter-card" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px">` +
       `<div class="deal-q-filters">` +
         years.map(y => `<button class="deal-q-btn${_portYearFilter === String(y) ? ' active' : ''}" onclick="setPortYear('${y}')">${y}</button>`).join('') +
         `<button class="deal-q-btn${_portYearFilter === 'all' ? ' active' : ''}" onclick="setPortYear('all')">All</button>` +
         `<button class="deal-q-btn" onclick="addPortYear()" title="Add year">+</button>` +
       `</div>` +
-      `<input class="port-search" id="portSearch" placeholder="Search events…" oninput="portFilterCards(this.value)" value="${esc(_portSearch)}">` +
+      `<input class="port-search" id="portSearch" style="width:260px" placeholder="Search events, cities, teams" oninput="portFilterCards(this.value)" value="${esc(_portSearch)}">` +
+      `<span style="flex:1"></span>` +
+      (!is2027 ? `<button class="btn btn-ghost btn-sm" onclick="togglePortfolioProgramme()">${_portShowProgramme ? 'Hide' : 'Show'} 2027 programme</button>` : '') +
       `<button class="btn btn-primary btn-sm" onclick="openPortfolioModal()">+ Add Event</button>` +
     `</div>`;
 
+  const programmeHtml = (is2027 || _portShowProgramme) ? renderProgrammePanel() : '';
+
   if (!filtered.length) {
-    grid.innerHTML = tabsHtml;
+    grid.innerHTML = toolbarHtml + programmeHtml;
     empty.classList.remove('hidden');
     return;
   }
   empty.classList.add('hidden');
 
-  // Summary bar
-  const totalWon      = filtered.reduce((a, e) => a + (parseFloat(e.total_won)      || 0), 0);
-  const totalPipeline = filtered.reduce((a, e) => a + (parseFloat(e.total_pipeline) || 0), 0);
-  const totalDeals    = filtered.reduce((a, e) => a + (parseInt(e.deal_count)        || 0), 0);
-  const outstanding   = Math.max(0, totalPipeline - totalWon);
-  const collectPct    = totalPipeline > 0 ? Math.round(totalWon / totalPipeline * 100) : 0;
+  // ── Roll-ups ──
+  const num = (v) => parseFloat(v) || 0;
+  const allocated   = filtered.reduce((a, e) => a + num(e.total_pipeline), 0);
+  const paid        = filtered.reduce((a, e) => a + num(e.total_won), 0);
+  const outstanding = Math.max(0, allocated - paid);
+  const deals       = filtered.reduce((a, e) => a + (parseInt(e.deal_count) || 0), 0);
+  const collectPct  = allocated > 0 ? Math.round(paid / allocated * 100) : 0;
+  const meterPct    = allocated > 0 ? Math.min(100, paid / allocated * 100) : 0;
 
-  const summaryHtml =
-    `<div class="port-summary-bar">` +
-      `<div class="psb-item"><span class="psb-lbl">Events</span><span class="psb-val">${filtered.length}</span></div>` +
-      `<div class="psb-item"><span class="psb-lbl">Revenue Won</span><span class="psb-val psb-green">£${fmt(totalWon)}</span></div>` +
-      `<div class="psb-item"><span class="psb-lbl">Outstanding</span><span class="psb-val${outstanding > 0 ? ' psb-amber' : ''}">£${fmt(outstanding)}</span></div>` +
-      `<div class="psb-item"><span class="psb-lbl">Deals</span><span class="psb-val">${totalDeals}</span></div>` +
-      `<div class="psb-item"><span class="psb-lbl">Collected</span><span class="psb-val" style="color:${collectPct >= 80 ? 'var(--positive)' : collectPct > 40 ? 'var(--warning)' : 'var(--muted)'}">${collectPct}%</span></div>` +
+  const heroHtml =
+    `<section class="pf-panel pf-hero">
+      <p class="pf-eyebrow">${esc(yearLabel)} · allocated to date</p>
+      <div class="pf-hero-row">
+        <p class="pf-hero-fig">${fmtGBP(allocated)}</p>
+        <p class="pf-hero-sub">of which <b>${fmtGBP(paid)}</b> paid</p>
+      </div>
+      <div class="pf-meter" role="img" aria-label="${collectPct}% of allocated is paid"><div class="pf-meter-fill pf-anim" data-pct="${meterPct}"></div></div>
+      <p class="pf-hero-note">${allocated > 0
+        ? `<b>${collectPct}%</b> collected · ${fmtGBP(outstanding)} outstanding across ${filtered.length} event${filtered.length === 1 ? '' : 's'}`
+        : `Nothing allocated yet across ${filtered.length} event${filtered.length === 1 ? '' : 's'}`}</p>
+    </section>`;
+
+  const kpi = (label, value, sub, tone) =>
+    `<div class="dss-card dss-card--${tone}"><div class="dss-label">${label}</div><div class="dss-value">${value}</div><div class="pf-kpi-sub">${sub}</div></div>`;
+  const kpiHtml =
+    `<div class="pf-kpis">` +
+      kpi('Events', filtered.length, `${deals} deal${deals === 1 ? '' : 's'} allocated`, 'neutral') +
+      kpi('Allocated', fmtGBP(allocated), 'sponsor money against these events', 'accent') +
+      kpi('Paid', fmtGBP(paid), 'invoiced and received', 'ok') +
+      kpi('Outstanding', fmtGBP(outstanding), outstanding > 0 ? 'allocated, not yet paid' : 'nothing owed', outstanding > 0 ? 'warn' : 'neutral') +
+      kpi('Collected', `${collectPct}%`, allocated > 0 ? 'of allocated is paid' : 'nothing allocated yet', 'neutral') +
     `</div>`;
 
-  // Sort by date ascending
-  const sorted = [...filtered].sort((a, b) => {
-    if (!a.event_date && !b.event_date) return 0;
-    if (!a.event_date) return 1;
-    if (!b.event_date) return -1;
-    return new Date(a.event_date) - new Date(b.event_date);
+  // ── Revenue by portfolio ──
+  const bySeries = new Map();
+  filtered.forEach(e => {
+    const id = portSeriesFor(e) || 'unassigned';
+    if (!bySeries.has(id)) bySeries.set(id, { id, allocated: 0, paid: 0, events: 0, deals: 0 });
+    const b = bySeries.get(id);
+    b.allocated += num(e.total_pipeline); b.paid += num(e.total_won); b.events += 1; b.deals += parseInt(e.deal_count) || 0;
   });
+  const seriesRows = [
+    ...PORT_SERIES.filter(s => bySeries.has(s.id)).map(s => ({ ...bySeries.get(s.id), short: s.short, name: s.name, color: `var(--chart-${s.chart})` })),
+    ...(bySeries.has('unassigned') ? [{ ...bySeries.get('unassigned'), short: 'Unassigned', name: 'No series yet', color: 'var(--dim)' }] : []),
+  ];
+  const seriesScale = Math.max(1, ...seriesRows.map(r => r.allocated));
+  const seriesHtml =
+    `<section class="pf-panel">
+      <div class="pf-panel-hd">
+        <div>
+          <h2 class="pf-panel-title">Revenue by portfolio</h2>
+          <p class="pf-panel-desc">Allocated per programme series. The tick on each bar is how much of it has been paid.</p>
+        </div>
+        <p class="pf-panel-aside">Amounts in GBP</p>
+      </div>
+      <div class="pf-series">${seriesRows.map(r => {
+        const w = r.allocated / seriesScale * 100;
+        const pw = Math.min(100, r.paid / seriesScale * 100);
+        return `<div class="pf-series-row">
+          <div class="pf-series-top">
+            <span class="pf-series-name"><span class="pf-chip" style="background:${r.color}"></span><span class="pf-series-short">${esc(r.short)}</span><span class="pf-series-n">${r.events} event${r.events === 1 ? '' : 's'}</span></span>
+            <span class="pf-series-val">${fmtGBP(r.allocated)} <small>· ${fmtGBP(r.paid)} paid</small></span>
+          </div>
+          <div class="pf-track">
+            <div class="pf-bar pf-anim" data-pct="${w}" style="background:${r.color}"></div>
+            ${r.allocated > 0 ? `<span class="pf-mark" style="left:calc(${pw}% - 1px)" title="Paid ${fmtGBP(r.paid)}"></span>` : ''}
+          </div>
+          <div class="pf-tip">
+            <div class="pf-tip-title">${esc(r.name)}</div>
+            <div class="pf-tip-row"><span>Allocated</span><span>${fmtGBP(r.allocated)}</span></div>
+            <div class="pf-tip-row"><span>Paid</span><span>${fmtGBP(r.paid)}</span></div>
+            <div class="pf-tip-row"><span>Outstanding</span><span>${fmtGBP(Math.max(0, r.allocated - r.paid))}</span></div>
+            <div class="pf-tip-row"><span>Events</span><span>${r.events}</span></div>
+            <div class="pf-tip-row"><span>Deals</span><span>${r.deals}</span></div>
+          </div>
+        </div>`;
+      }).join('') || '<div class="pf-empty">No events allocated yet.</div>'}</div>
+    </section>`;
 
-  grid.innerHTML = tabsHtml + summaryHtml + `<div class="pec-list">${sorted.map(renderPortfolioEventCard).join('')}</div>`;
+  // ── Event list by producer team ──
+  const byProducer = new Map();
+  filtered.forEach(e => {
+    const k = e.producer || '';
+    if (!byProducer.has(k)) byProducer.set(k, []);
+    byProducer.get(k).push(e);
+  });
+  const producerRank = (p) => { const i = PORT_PRODUCERS.indexOf(p); return i === -1 ? PORT_PRODUCERS.length : i; };
+  const producers = [...byProducer.keys()].sort((a, b) => {
+    if (!a) return 1; if (!b) return -1;
+    return producerRank(a) - producerRank(b) || a.localeCompare(b);
+  });
+  // Dated first, soonest first; a month with the day TBC keeps its month;
+  // no date at all goes last.
+  const byDate = (a, b) => {
+    const ad = a.event_date && a.date_tbc !== 'date' ? String(a.event_date).slice(0, 10) : '';
+    const bd = b.event_date && b.date_tbc !== 'date' ? String(b.event_date).slice(0, 10) : '';
+    if (!ad && !bd) return String(a.name).localeCompare(String(b.name));
+    if (!ad) return 1;
+    if (!bd) return -1;
+    return ad.localeCompare(bd) || String(a.name).localeCompare(String(b.name));
+  };
+  const rowScale = Math.max(1, ...filtered.map(e => num(e.total_pipeline)));
+  const listHtml =
+    `<section class="pf-list">
+      <div class="pf-list-hd">
+        <h2 class="pf-panel-title">Events by producer team</h2>
+        <span class="pf-panel-aside">${filtered.length} event${filtered.length === 1 ? '' : 's'} · click a name for its sponsors</span>
+      </div>
+      ${producers.map(p => {
+        const evs = byProducer.get(p).sort(byDate);
+        const pAlloc = evs.reduce((a, e) => a + num(e.total_pipeline), 0);
+        const pPaid  = evs.reduce((a, e) => a + num(e.total_won), 0);
+        return `<div class="pf-group" data-producer="${esc(p.toLowerCase())}">
+          <div class="pf-group-hd">
+            <span class="pf-group-name">${p ? esc(p) : 'Other events'}</span>
+            <span class="pf-group-n">${evs.length} event${evs.length === 1 ? '' : 's'}</span>
+            <span class="pf-group-total">${fmtGBP(pAlloc)} <small>· ${fmtGBP(pPaid)} paid</small></span>
+          </div>
+          ${evs.map(e => renderPortfolioEventCard(e, rowScale)).join('')}
+        </div>`;
+      }).join('')}
+    </section>`;
 
-  // Animate progress bars after paint
+  grid.innerHTML = toolbarHtml + heroHtml + kpiHtml + seriesHtml + programmeHtml + listHtml;
+
+  // Bars grow in after paint.
   requestAnimationFrame(() => setTimeout(() => {
-    grid.querySelectorAll('.pec-bar').forEach(b => { b.style.width = (b.dataset.pct || 0) + '%'; });
-  }, 60));
+    grid.querySelectorAll('.pf-anim').forEach(b => { b.style.width = Math.max(b.dataset.pct > 0 ? 1.5 : 0, Number(b.dataset.pct) || 0) + '%'; });
+  }, 40));
 
-  // Re-apply any active search
   if (_portSearch) portFilterCards(_portSearch);
 }
 
-function renderPortfolioEventCard(ev) {
-  // Safe date parsing — works for both date-only strings and full ISO timestamps
-  const d = ev.event_date ? new Date(ev.event_date) : null;
-  const validDate  = d && !isNaN(d.getTime());
-  const dateChip   = validDate ? d.toLocaleDateString('en-GB', {month:'short', year:'2-digit'}) : null;
+const PF_ICON_PIN   = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>';
+const PF_ICON_USERS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>';
+const PF_ICON_CHEV  = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
 
-  const won        = parseFloat(ev.total_won) || 0;
-  const pipeline   = parseFloat(ev.total_pipeline) || 0;
+/** Series chip: colour square plus the short name in muted ink. Text never wears the hue. */
+function renderSeriesChip(seriesId) {
+  const s = seriesId && PORT_SERIES_MAP[seriesId];
+  if (!s) return `<span class="pf-series-chip"><span class="pf-chip"></span>Unassigned</span>`;
+  return `<span class="pf-series-chip" title="${esc(s.code)} · ${esc(s.name)}"><span class="pf-chip" style="background:var(--chart-${s.chart})"></span>${esc(s.short)}</span>`;
+}
+
+/**
+ * One event row. `scale` is the largest allocation in the visible list so
+ * bar lengths are comparable; the bar is one hue because the series chip
+ * already carries identity.
+ */
+function renderPortfolioEventCard(ev, scale) {
+  const won         = parseFloat(ev.total_won) || 0;
+  const pipeline    = parseFloat(ev.total_pipeline) || 0;
   const outstanding = Math.max(0, pipeline - won);
-  const dealCount  = parseInt(ev.deal_count) || 0;
-  const pct        = pipeline > 0 ? Math.min(100, Math.round(won / pipeline * 100)) : (won > 0 ? 100 : 0);
-  const barColor   = pct >= 100 ? 'var(--positive)' : pct > 60 ? 'var(--accent)' : pct > 30 ? 'var(--warning)' : 'var(--border)';
+  const dealCount   = parseInt(ev.deal_count) || 0;
+  const pct         = pipeline / Math.max(1, scale || pipeline) * 100;
+  const series      = portSeriesFor(ev);
+  const when        = fmtEventDate(ev, { long: true });
+  const isTbc       = !!ev.date_tbc || !ev.event_date;
+  const hay         = [ev.name, ev.location, ev.producer, series && PORT_SERIES_MAP[series] ? PORT_SERIES_MAP[series].short : ''].join(' ').toLowerCase();
 
-  return `<div class="pec-card" data-name="${esc((ev.name || '').toLowerCase())}">
-    <div class="pec-hd">
-      <div style="min-width:0;flex:1">
-        <div class="pec-name">${esc(ev.name)}</div>
-        <div class="pec-chips">
-          ${dateChip ? `<span class="pec-date-chip">${dateChip}</span>` : '<span class="pec-date-chip pec-date-tbd">TBD</span>'}
-          ${ev.location ? `<span class="pec-loc-chip">${esc(ev.location)}</span>` : ''}
-        </div>
+  return `<div class="pec-card pf-row" data-name="${esc(hay)}" data-id="${ev.id}">
+    <div class="pf-row-main">
+      <div class="pf-row-id">
+        <button type="button" class="pf-row-btn" onclick="togglePortfolioDeals(this,${ev.id})" aria-expanded="false">
+          <span class="pec-arrow">${PF_ICON_CHEV}</span>
+          <span class="pf-row-txt">
+            <span class="pf-row-name">${esc(ev.name)}</span>
+            <span class="pf-row-meta">
+              ${renderSeriesChip(series)}
+              ${ev.location ? `<span class="pf-meta-item">${PF_ICON_PIN}${esc(ev.location)}</span>` : ''}
+              <span class="pf-meta-item${isTbc ? ' pf-meta-tbc' : ''}">${esc(when)}</span>
+              <span class="pf-meta-item">${PF_ICON_USERS}${dealCount}</span>
+            </span>
+          </span>
+        </button>
       </div>
-      <div class="sub-actions" style="flex-shrink:0">
+      <div class="pf-row-figs-wrap">
+        <div class="pf-row-figs">
+          <span class="pf-row-alloc">${fmtGBP(pipeline)}</span>
+          <span class="pf-row-paid">${pipeline > 0
+            ? (outstanding > 0 ? `${fmtGBP(won)} paid · ${fmtGBP(outstanding)} owed` : 'fully paid')
+            : 'nothing allocated'}</span>
+        </div>
+        <div class="pf-track"><div class="pf-bar pf-anim" data-pct="${pct}"></div></div>
+      </div>
+      <div class="pf-row-actions sub-actions">
         <button class="sub-action-btn" onclick="openPortfolioModal(${ev.id})">Edit</button>
         <button class="sub-action-btn sub-action-btn--danger" onclick="deletePortfolioEvent(${ev.id})">Delete</button>
       </div>
     </div>
-
-    <div class="pec-stats pec-stats--3">
-      <div class="pec-stat">
-        <div class="pec-stat-lbl">Paid</div>
-        <div class="pec-stat-num pec-green">£${fmt(won)}</div>
-      </div>
-      <div class="pec-stat">
-        <div class="pec-stat-lbl">Outstanding</div>
-        <div class="pec-stat-num${outstanding > 0 ? ' pec-amber' : ''}">£${fmt(outstanding)}</div>
-      </div>
-      <div class="pec-stat">
-        <div class="pec-stat-lbl">Collected</div>
-        <div class="pec-stat-num" style="color:${pct >= 100 ? 'var(--positive)' : pct > 40 ? 'var(--warning)' : 'var(--muted)'}">${pct}%</div>
-      </div>
-    </div>
-
-    <div class="pec-bar-wrap"><div class="pec-bar" data-pct="${pct}" style="width:0%;background:${barColor}"></div></div>
-
-    ${ev.notes ? `<div class="pec-notes">${esc(ev.notes)}</div>` : ''}
-
-    <div class="pec-footer">
-      <button class="pec-deals-btn" onclick="togglePortfolioDeals(this,${ev.id})">
-        <span class="pec-arrow">▶</span>
-        ${dealCount} deal${dealCount !== 1 ? 's' : ''} linked
-      </button>
-      ${dealCount > 0 ? `<button class="sub-action-btn" style="font-size:10px;padding:4px 10px;margin-left:auto" onclick="viewEventDeals(${ev.id},'${esc(ev.name).replace(/'/g,"\\'")}')">View in Deals →</button>` : ''}
-    </div>
-    <div class="pec-deals-list" style="display:none"></div>
+    <div class="pec-deals-list"></div>
   </div>`;
 }
 
 async function togglePortfolioDeals(btn, eventId) {
-  const arrow = btn.querySelector('.pec-arrow');
-  const card  = btn.closest('.pec-card');
-  const list  = card ? card.querySelector('.pec-deals-list') : null;
-  if (!list) return;
-  const isOpen = list.style.display !== 'none';
+  const card = btn.closest('.pec-card');
+  const list = card ? card.querySelector('.pec-deals-list') : null;
+  if (!card || !list) return;
+  const isOpen = card.classList.contains('open');
+  const toggleBtn = card.querySelector('.pf-row-btn');
 
   if (isOpen) {
-    list.style.display = 'none';
-    if (arrow) arrow.style.transform = '';
+    card.classList.remove('open');
+    if (toggleBtn) toggleBtn.setAttribute('aria-expanded', 'false');
     return;
   }
+  card.classList.add('open');
+  if (toggleBtn) toggleBtn.setAttribute('aria-expanded', 'true');
+  if (list.dataset.loaded === String(eventId)) return;
 
-  if (arrow) arrow.style.transform = 'rotate(90deg)';
-  list.style.display = 'block';
-  list.style.cssText = 'border-top:1px solid var(--border);margin-top:10px;padding-top:6px';
-  list.innerHTML = '<div style="font-size:0.75rem;color:var(--muted);padding:4px 0">Loading…</div>';
+  const ev = portfolioData.find(x => x.id === eventId) || {};
+  const head = `<div class="pf-deals-hd"><span class="pf-eyebrow">Sponsoring this event</span>` +
+    `<button class="sub-action-btn" onclick="viewEventDeals(${eventId},'${esc(ev.name || '').replace(/'/g, "\\'")}')">View in Deals</button></div>`;
+  list.innerHTML = head + '<div class="pf-deals-msg">Loading from the deal tracker…</div>';
 
   try {
     const res = await fetch(`/api/portfolio-events/${eventId}/deals`);
     const deals = res.ok ? await res.json() : [];
+    list.dataset.loaded = String(eventId);
     if (!deals.length) {
-      list.innerHTML = '<div style="font-size:0.75rem;color:var(--muted)">No deals linked yet.</div>';
+      list.innerHTML = head + '<div class="pf-deals-msg">No sponsors allocated to this event yet.</div>';
       return;
     }
-    const symMap = { GBP:'£', USD:'$', AED:'AED ', PHP:'₱', EUR:'€' };
-    list.innerHTML = deals.map(d => {
-      const sym = symMap[d.currency] || '£';
+    const symMap = { GBP: '£', USD: '$', AED: 'AED ', PHP: '₱', EUR: '€', CHF: 'CHF ' };
+    list.innerHTML = head + `<div class="pf-deals">` + deals.map(d => {
+      const sym  = symMap[d.currency] || '£';
       const paid = parseFloat(d.paid_inc_vat) || 0;
-      const amt = parseFloat(d.amount) || 0;
+      const amt  = parseFloat(d.amount) || 0;
       const isPaid = paid > 0;
-      const isPartial = isPaid && paid < amt;
-      const statusDot = isPaid && !isPartial
-        ? `<span style="color:#16a34a;font-size:11px;font-weight:700">● Paid</span>`
-        : isPartial
-        ? `<span style="color:#d97706;font-size:11px;font-weight:700">● Part paid</span>`
-        : `<span style="color:var(--muted);font-size:11px">○ Unpaid</span>`;
-      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">
-        <div>
-          <div style="font:600 13px/1.3 var(--font-sans);color:var(--text)">${esc(d.company)}</div>
-          ${d.package_label ? `<div style="font:600 10px/1 var(--font-mono);color:var(--accent);margin-top:3px;text-transform:uppercase;letter-spacing:.03em">📦 ${esc(d.package_label)}</div>` : ''}
-          <div style="margin-top:2px">${statusDot}</div>
-        </div>
-        <div style="text-align:right;flex-shrink:0">
-          <div style="font:700 13px/1 var(--font-sans);color:var(--text)">${sym}${fmt(amt)}</div>
-          ${isPaid ? `<div style="font-size:11px;color:#16a34a;margin-top:2px">paid ${sym}${fmt(paid)}</div>` : ''}
-        </div>
+      const isPart = isPaid && paid < amt;
+      const state  = isPaid && !isPart ? 'Paid' : isPart ? `Part paid · ${sym}${fmt(paid)}` : 'Awaiting payment';
+      const dot    = isPaid && !isPart ? 'pf-deal-dot--paid' : isPart ? 'pf-deal-dot--part' : '';
+      const sub = [state, d.package_label, d.signed_by ? `signed by ${d.signed_by}` : ''].filter(Boolean).map(esc).join(' · ');
+      return `<div class="pf-deal">
+        <span class="pf-deal-dot ${dot}"></span>
+        <span class="pf-deal-body"><span class="pf-deal-co">${esc(d.company)}</span><span class="pf-deal-sub">${sub}</span></span>
+        <span class="pf-deal-amt">${sym}${fmt(amt)}</span>
       </div>`;
-    }).join('');
+    }).join('') + `</div>`;
   } catch {
-    list.innerHTML = '<div style="font-size:0.75rem;color:var(--negative)">Failed to load deals.</div>';
+    list.innerHTML = head + '<div class="pf-deals-msg pf-err">Failed to load deals.</div>';
   }
 }
 
@@ -4739,22 +5134,203 @@ function viewEventDeals(eventId, eventName) {
   else { loadDeals().then(apply); }
 }
 
+// ── 2027 programme panel ──
+//
+// The confirmed programme reconciled against what the tracker holds. Every
+// row shows what will happen and nothing happens until "Apply" is pressed:
+// a rename keeps the row (and every deal on it), a create adds a row.
+
+function programmeDefaultDecision(item) {
+  if (item.status === 'suggested') return 'rename';
+  if (item.status === 'missing') return 'create';
+  return 'linked';
+}
+function programmeDecision(item) {
+  return _programmeDecisions[item.key] || programmeDefaultDecision(item);
+}
+function setProgrammeDecision(key, action) {
+  _programmeDecisions[key] = action;
+  // Only the count on the Apply button changes; no need to redraw the page.
+  const btn = document.getElementById('pfApplyBtn');
+  const status = document.getElementById('pfApplyStatus');
+  if (btn || status) {
+    const { renames, creates } = programmeTally();
+    const n = renames + creates;
+    if (btn) { btn.textContent = `Apply ${n} decision${n === 1 ? '' : 's'}`; btn.disabled = n === 0; }
+    if (status) status.innerHTML = programmeTallyText(renames, creates);
+  }
+}
+function programmeTally() {
+  const items = (_programme2027.data && _programme2027.data.items) || [];
+  let renames = 0, creates = 0;
+  items.forEach(it => {
+    if (it.status === 'linked') return;
+    const d = programmeDecision(it);
+    if (d === 'rename' && it.suggestion) renames++;
+    else if (d === 'create') creates++;
+  });
+  return { renames, creates };
+}
+function programmeTallyText(renames, creates) {
+  if (!renames && !creates) return 'Nothing to apply';
+  return [renames ? `<b>${renames}</b> rename${renames === 1 ? '' : 's'}` : '', creates ? `<b>${creates}</b> new event${creates === 1 ? '' : 's'}` : '']
+    .filter(Boolean).join(' · ') + ' when applied';
+}
+
+function renderProgrammePanel() {
+  const p = _programme2027;
+  const hd = (aside) => `<div class="pf-panel-hd">
+      <div>
+        <h2 class="pf-panel-title">2027 programme</h2>
+        <p class="pf-panel-desc">The confirmed calendar, 25 events across 5 producer teams, checked against what the tracker already holds. Renaming keeps a row and every deal allocated to it; nothing changes until you apply.</p>
+      </div>
+      <div class="pf-panel-aside">${aside || ''}</div>
+    </div>`;
+
+  if (p.status === 'loading' || p.status === 'idle') {
+    return `<section class="pf-panel">${hd('')}<p class="pf-prog-status">Loading the programme…</p></section>`;
+  }
+  if (p.status === 'error') {
+    return `<section class="pf-panel">${hd(`<button class="btn btn-ghost btn-sm" onclick="loadProgramme2027()">Retry</button>`)}<p class="pf-prog-status">Could not load the programme: ${esc(p.error || '')}</p></section>`;
+  }
+
+  const data = p.data;
+  const c = data.counts || { linked: 0, suggested: 0, missing: 0 };
+  const seriesShort = (id) => (data.series && data.series[id] && data.series[id].short) || (PORT_SERIES_MAP[id] && PORT_SERIES_MAP[id].short) || id;
+  const statusLine =
+    `<p class="pf-prog-status">` +
+      `<span class="pf-prog-dot pf-prog-dot--linked"></span><b>${c.linked}</b> linked &nbsp;·&nbsp; ` +
+      `<span class="pf-prog-dot pf-prog-dot--suggested"></span><b>${c.suggested}</b> matched, awaiting your confirmation &nbsp;·&nbsp; ` +
+      `<span class="pf-prog-dot pf-prog-dot--missing"></span><b>${c.missing}</b> to create` +
+    `</p>`;
+
+  const decisionCell = (it) => {
+    if (it.status === 'linked') {
+      const r = it.row || {};
+      return `<span class="pf-prog-linked">Linked to #${r.id} · <b>${esc(r.name || '')}</b></span>`;
+    }
+    const d = programmeDecision(it);
+    const opt = (v, label) => `<option value="${v}"${d === v ? ' selected' : ''}>${label}</option>`;
+    if (it.status === 'suggested' && it.suggestion) {
+      const s = it.suggestion;
+      const n = parseInt(s.deal_count) || 0;
+      return `<select class="pf-prog-select" onchange="setProgrammeDecision('${esc(it.key)}', this.value)">` +
+        opt('rename', `Rename "${esc(s.name)}" (keeps its ${n} deal${n === 1 ? '' : 's'})`) +
+        opt('create', 'Create as new event') +
+        opt('skip', 'Skip') +
+      `</select>`;
+    }
+    return `<select class="pf-prog-select" onchange="setProgrammeDecision('${esc(it.key)}', this.value)">` +
+      opt('create', 'Create') + opt('skip', 'Skip') + `</select>`;
+  };
+
+  const rows = (data.items || []).map(it => {
+    const sid = it.series;
+    const s = PORT_SERIES_MAP[sid];
+    const chip = s
+      ? `<span class="pf-series-chip"><span class="pf-chip" style="background:var(--chart-${s.chart})"></span>${esc(seriesShort(sid))}</span>`
+      : renderSeriesChip(null);
+    return `<tr>
+      <td class="pf-td-name"><span class="pf-prog-dot pf-prog-dot--${esc(it.status)}" title="${esc(it.status)}"></span>${esc(it.name)}<div class="pf-row-meta">${chip}${it.location ? `<span class="pf-meta-item">${PF_ICON_PIN}${esc(it.location)}</span>` : ''}</div></td>
+      <td class="pf-td-muted">${esc(it.producer)}</td>
+      <td class="pf-td-muted">${esc(fmtEventDate({ event_date: it.date, date_tbc: it.tbc, programme_year: data.year || 2027 }, { long: true }))}</td>
+      <td>${decisionCell(it)}</td>
+    </tr>`;
+  }).join('');
+
+  const { renames, creates } = programmeTally();
+  const n = renames + creates;
+  const notRunning = (data.not_running || []);
+  return `<section class="pf-panel" id="pfProgramme">
+    ${hd(_portYearFilter !== '2027' ? `<button class="btn btn-ghost btn-sm" onclick="togglePortfolioProgramme()">Hide</button>` : '')}
+    ${statusLine}
+    <div class="pf-prog-scroll"><table class="pf-prog-table">
+      <thead><tr><th>Event</th><th>Producer</th><th>Date</th><th>Decision</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <div class="pf-prog-actions">
+      <span class="pf-prog-status" id="pfApplyStatus">${programmeTallyText(renames, creates)}</span>
+      <button class="btn btn-primary btn-sm" id="pfApplyBtn" onclick="applyProgramme2027()"${n === 0 ? ' disabled' : ''}>Apply ${n} decision${n === 1 ? '' : 's'}</button>
+    </div>
+    ${notRunning.length ? `<p class="pf-prog-foot">Not running in 2027: ${notRunning.map(esc).join(', ')}. Listed so nobody re-creates ${notRunning.length === 1 ? 'it' : 'them'} by hand.</p>` : ''}
+  </section>`;
+}
+
+async function applyProgramme2027() {
+  const items = (_programme2027.data && _programme2027.data.items) || [];
+  const decisions = [];
+  items.forEach(it => {
+    if (it.status === 'linked') return;
+    const d = programmeDecision(it);
+    if (d === 'rename' && it.suggestion) decisions.push({ key: it.key, action: 'rename', row_id: it.suggestion.id });
+    else if (d === 'create') decisions.push({ key: it.key, action: 'create' });
+  });
+  if (!decisions.length) { showToast('Nothing to apply', 'info'); return; }
+  const renames = decisions.filter(d => d.action === 'rename').length;
+  const creates = decisions.filter(d => d.action === 'create').length;
+  const summary = [
+    renames ? `rename ${renames} existing event${renames === 1 ? '' : 's'} to the confirmed name (their deals stay allocated)` : '',
+    creates ? `create ${creates} new event${creates === 1 ? '' : 's'}` : '',
+  ].filter(Boolean).join(' and ');
+  if (!confirm(`This will ${summary}. Skipped events are left as they are. Continue?`)) return;
+
+  const btn = document.getElementById('pfApplyBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Applying…'; }
+  try {
+    const res = await fetch('/api/programme/2027/apply', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decisions }),
+    });
+    const out = await res.json().catch(() => ({}));
+    const results = Array.isArray(out.results) ? out.results : [];
+    const count = (o) => results.filter(r => r.outcome === o).length;
+    const done = `${count('renamed')} renamed, ${count('created')} created`;
+    if (!res.ok || !out.ok) {
+      showToast(`Programme apply stopped: ${out.error || `HTTP ${res.status}`} (${done})`, 'error', 7000);
+    } else {
+      const other = results.length - count('renamed') - count('created') - count('skipped');
+      showToast(`2027 programme applied: ${done}${other ? `, ${other} left as they were` : ''}`, 'success', 6000);
+    }
+  } catch (e) {
+    showToast('Could not apply the programme: ' + e.message, 'error');
+  }
+  _programmeDecisions = {};
+  await loadPortfolio();
+  await loadProgramme2027();
+}
+
+// ── Edit form ──
+
+function portDateChanged() {
+  const tbc  = document.getElementById('portDateTbc');
+  const date = document.getElementById('portDate');
+  const hint = document.getElementById('portDateHint');
+  if (!tbc || !date || !hint) return;
+  const preview = fmtEventDate({ event_date: date.value || null, date_tbc: tbc.value, programme_year: parseInt(document.getElementById('portYear').value, 10) || null }, { long: true });
+  hint.textContent = tbc.value === 'date'
+    ? `Shown as "${preview}". The date is optional until it is confirmed.`
+    : tbc.value === 'day'
+      ? `Shown as "${preview}". Pick any day in the month; only the month is shown.`
+      : (date.value ? `Shown as "${preview}".` : '');
+}
+
 function openPortfolioModal(id) {
   document.getElementById('portEditId').value = id || '';
   document.getElementById('portfolioModalTitle').textContent = id ? 'Edit Event' : 'Add Event';
-  if (id) {
-    const ev = portfolioData.find(x => x.id === id);
-    if (!ev) return;
-    document.getElementById('portName').value = ev.name;
-    document.getElementById('portDate').value = ev.event_date ? ev.event_date.split('T')[0] : '';
-    document.getElementById('portLocation').value = ev.location || '';
-    document.getElementById('portNotes').value = ev.notes || '';
-  } else {
-    document.getElementById('portName').value = '';
-    document.getElementById('portDate').value = '';
-    document.getElementById('portLocation').value = '';
-    document.getElementById('portNotes').value = '';
+  const producerSel = document.getElementById('portProducer');
+  const ev = id ? portfolioData.find(x => x.id === id) : null;
+  if (id && !ev) return;
+  // A producer the select does not know (an older row) is still shown, not silently dropped.
+  if (ev && ev.producer && ![...producerSel.options].some(o => o.value === ev.producer)) {
+    producerSel.add(new Option(ev.producer, ev.producer));
   }
+  document.getElementById('portName').value     = ev ? ev.name : '';
+  document.getElementById('portDate').value     = ev && ev.event_date ? String(ev.event_date).slice(0, 10) : '';
+  document.getElementById('portDateTbc').value  = ev ? (ev.date_tbc || '') : '';
+  producerSel.value                             = ev ? (ev.producer || '') : '';
+  document.getElementById('portYear').value     = ev ? (ev.programme_year || '') : (_portYearFilter !== 'all' ? _portYearFilter : '');
+  document.getElementById('portLocation').value = ev ? (ev.location || '') : '';
+  document.getElementById('portNotes').value    = ev ? (ev.notes || '') : '';
+  portDateChanged();
   openModal('portfolioModal');
 }
 
@@ -4762,12 +5338,24 @@ async function savePortfolioEvent() {
   const id = document.getElementById('portEditId').value;
   const name = document.getElementById('portName').value.trim();
   if (!name) { showToast('Event name is required', 'error'); return; }
+  const dateTbc = document.getElementById('portDateTbc').value;
+  const date = document.getElementById('portDate').value || null;
+  if (!date && dateTbc !== 'date') { showToast('Pick a date, or mark the date as TBC', 'error'); return; }
+  const yearRaw = document.getElementById('portYear').value;
+  const year = yearRaw ? parseInt(yearRaw, 10) : null;
+  if (yearRaw && (isNaN(year) || year < 2000 || year > 2100)) { showToast('Programme year must be a four-digit year', 'error'); return; }
+  if (!date && !year) { showToast('An event with no date needs a programme year to be filed under', 'error'); return; }
+
   const saveBtn = document.querySelector('#portfolioModal .btn-primary');
   if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Saving…'; }
   const body = {
-    name, event_date: document.getElementById('portDate').value || null,
+    name,
+    event_date: date,
     location: document.getElementById('portLocation').value.trim(),
-    notes: document.getElementById('portNotes').value.trim()
+    notes: document.getElementById('portNotes').value.trim(),
+    producer: document.getElementById('portProducer').value || '',
+    date_tbc: dateTbc,
+    programme_year: year,
   };
   const method = id ? 'PUT' : 'POST';
   const url = id ? `/api/portfolio-events/${id}` : '/api/portfolio-events';
@@ -4775,8 +5363,8 @@ async function savePortfolioEvent() {
     const res = await fetch(url, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     if (!res.ok) { const e = await res.json().catch(() => ({})); showToast(e.error || 'Save failed', 'error'); return; }
     showToast(id ? 'Event updated' : 'Event added', 'success');
-    const savedDate = document.getElementById('portDate').value;
-    if (savedDate) { const y = parseInt(savedDate.slice(0, 4)); if (!isNaN(y)) _portYearFilter = String(y); }
+    const savedYear = year || (date ? parseInt(date.slice(0, 4), 10) : null);
+    if (savedYear) _portYearFilter = String(savedYear);
     closeModal('portfolioModal');
     loadPortfolio();
   } catch (e) {
@@ -7396,22 +7984,47 @@ async function openDealModal(id, defaultStage) {
     setDealPayment('');
   }
 
-  // Render checkbox list (sorted by date desc, then name)
-  const sortedEvs = [..._evs].sort((a, b) => {
-    if (!a.event_date && !b.event_date) return a.name.localeCompare(b.name);
-    if (!a.event_date) return 1;
-    if (!b.event_date) return -1;
-    return new Date(b.event_date) - new Date(a.event_date);
-  });
+  // Render the picker grouped by producer team, so "which of my events" is a
+  // glance rather than a scroll. Within a group: soonest first, undated last.
+  // Events with no producer (older years, hand-added rows) sit together at the
+  // end under "Other events" rather than being dropped.
   const container = document.getElementById('dealEventsCheckboxes');
   if (container) {
-    container.innerHTML = sortedEvs.map(ev => {
-      const label = esc(ev.name) + (ev.event_date ? ' <span style="color:var(--muted);font-size:11px">(' + new Date(ev.event_date + 'T12:00:00').toLocaleDateString('en-GB',{month:'short',year:'numeric'}) + ')</span>' : '');
-      const checked = _selectedEvIds.includes(ev.id) ? 'checked' : '';
-      return `<label class="deal-event-check-item${_selectedEvIds.includes(ev.id) ? ' selected' : ''}">
-        <input type="checkbox" value="${ev.id}" ${checked} onchange="onDealEventCheck(this)">
-        <span>${label}</span>
+    const byProducer = new Map();
+    for (const ev of _evs) {
+      const key = ev.producer || '';
+      if (!byProducer.has(key)) byProducer.set(key, []);
+      byProducer.get(key).push(ev);
+    }
+    const producerOrder = [...byProducer.keys()].sort((a, b) => {
+      if (!a) return 1; if (!b) return -1;             // unnamed group last
+      return a.localeCompare(b);
+    });
+    const byDate = (a, b) => {
+      if (!a.event_date && !b.event_date) return a.name.localeCompare(b.name);
+      if (!a.event_date) return 1;
+      if (!b.event_date) return -1;
+      return new Date(a.event_date) - new Date(b.event_date);
+    };
+    // The first <span> inside each label is the event's name. The package
+    // rows and the split preview read it, so the date lives in a second span.
+    const item = (ev) => {
+      const on = _selectedEvIds.includes(ev.id);
+      return `<label class="deal-event-check-item${on ? ' selected' : ''}" data-name="${esc(ev.name.toLowerCase())}">
+        <input type="checkbox" value="${ev.id}" ${on ? 'checked' : ''} onchange="onDealEventCheck(this)">
+        <span>${esc(ev.name)}</span>
+        <span class="deal-event-when${ev.date_tbc ? ' deal-event-when--tbc' : ''}">${esc(fmtEventDate(ev))}</span>
       </label>`;
+    };
+    container.innerHTML = producerOrder.map(prod => {
+      const evs = byProducer.get(prod).sort(byDate);
+      return `<div class="deal-event-group" data-producer="${esc(prod)}">
+        <div class="deal-event-group-hd">
+          <span>${prod ? esc(prod) : 'Other events'}</span>
+          <span class="deal-event-group-n">${evs.length}</span>
+        </div>
+        ${evs.map(item).join('')}
+      </div>`;
     }).join('') || '<div style="padding:12px;font:500 12px/1 var(--font-mono);color:var(--muted)">No events yet — add one in Portfolio first.</div>';
   }
   const searchEl = document.getElementById('dealEventsSearch');
@@ -7542,9 +8155,18 @@ function onDealEventCheck(cb) {
 }
 
 function filterDealEvents() {
-  const q = (document.getElementById('dealEventsSearch')?.value || '').toLowerCase();
-  document.querySelectorAll('#dealEventsCheckboxes .deal-event-check-item').forEach(item => {
-    item.style.display = item.querySelector('span').textContent.toLowerCase().includes(q) ? '' : 'none';
+  const q = (document.getElementById('dealEventsSearch')?.value || '').toLowerCase().trim();
+  document.querySelectorAll('#dealEventsCheckboxes .deal-event-group').forEach(group => {
+    let shown = 0;
+    const prod = (group.dataset.producer || '').toLowerCase();
+    group.querySelectorAll('.deal-event-check-item').forEach(item => {
+      // Matches on the event's name or its producer team, so "fidak" lists
+      // that team's five events.
+      const hit = !q || (item.dataset.name || '').includes(q) || prod.includes(q);
+      item.style.display = hit ? '' : 'none';
+      if (hit) shown++;
+    });
+    group.style.display = shown ? '' : 'none';
   });
 }
 

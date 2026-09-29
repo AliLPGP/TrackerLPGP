@@ -279,6 +279,10 @@
           </div>
         </div>
 
+        <!-- Overview: what is still to pay, per group. Deliberately above the
+             detail table and deliberately not filtered by the type tabs. -->
+        <div id="salaryOverview" style="margin-bottom:20px"></div>
+
         <!-- Totals strip -->
         <div id="salaryTotals" style="margin-bottom:24px"></div>
 
@@ -586,7 +590,7 @@
       <!-- ══ PORTFOLIO ══ -->
       <div class="page" id="page-portfolio">
         <div id="portfolioGrid"></div>
-        <div id="portfolioEmpty" class="empty-state hidden"><div class="icon">🎯</div><div>No events yet. Add your first event.</div></div>
+        <div id="portfolioEmpty" class="empty-state hidden"><div>No events in this year yet. Add one, or apply the 2027 programme.</div></div>
       </div>
 
       <!-- ══ DEAL TRACKER ══ -->
@@ -1664,14 +1668,33 @@
       <button class="modal-close" onclick="closeModal('portfolioModal')">✕</button>
     </div>
     <input type="hidden" id="portEditId">
+    <div class="form-group"><label>Event Name *</label><input type="text" id="portName" placeholder="e.g. 4th Annual CFO/COO Private Markets Miami"></div>
     <div class="form-row">
-      <div class="form-group"><label>Event Name *</label><input type="text" id="portName" placeholder="e.g. CFO Summit NYC"></div>
-      <div class="form-group"><label>Date</label><input type="date" id="portDate"></div>
+      <div class="form-group"><label>Date</label><input type="date" id="portDate" onchange="portDateChanged()"></div>
+      <div class="form-group"><label>Date is</label>
+        <select id="portDateTbc" onchange="portDateChanged()">
+          <option value="">Confirmed day</option>
+          <option value="day">Month only, day TBC</option>
+          <option value="date">Date TBC</option>
+        </select>
+      </div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label>Location</label><input type="text" id="portLocation" placeholder="City / Venue"></div>
+      <div class="form-group"><label>Producer</label>
+        <select id="portProducer">
+          <option value="">No producer</option>
+          <option value="Gio &amp; Karam">Gio &amp; Karam</option>
+          <option value="Tara &amp; Maryam">Tara &amp; Maryam</option>
+          <option value="Fidak">Fidak</option>
+          <option value="Santos">Santos</option>
+          <option value="Arj &amp; Leena">Arj &amp; Leena</option>
+        </select>
+      </div>
+      <div class="form-group"><label>Programme year</label><input type="number" id="portYear" min="2000" max="2100" step="1" placeholder="2027"></div>
     </div>
-    <div class="form-group"><label>Notes</label><textarea id="portNotes" rows="2" placeholder="Any notes…"></textarea></div>
+    <div class="form-group"><label>Location</label><input type="text" id="portLocation" placeholder="City, Country"></div>
+    <div class="form-group"><label>Notes</label><textarea id="portNotes" rows="2" placeholder="Any notes"></textarea></div>
+    <p class="pf-form-hint" id="portDateHint"></p>
     <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px">
       <button class="btn btn-ghost" onclick="closeModal('portfolioModal')">Cancel</button>
       <button class="btn btn-primary" onclick="savePortfolioEvent()">Save</button>

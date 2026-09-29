@@ -156,6 +156,8 @@ function shapeDeal(row) {
         event_name: e.event_name || '',
         event_date: e.event_date || null,
         location: e.location || '',
+        producer: e.producer || '',
+        date_tbc: e.date_tbc || '',
         allocated_amount: toNum(e.allocated_amount) ?? 0,
         package_label: e.package_label || '',
       })),
@@ -181,6 +183,8 @@ function summarizeCompany(companyName, deals) {
           event_name: e.event_name,
           event_date: e.event_date,
           location: e.location,
+          producer: e.producer || '',
+          date_tbc: e.date_tbc || '',
           allocated_amount: e.allocated_amount,
           package_labels: e.package_label ? [e.package_label] : [],
           deal_ids: [d.id],
@@ -230,6 +234,8 @@ const DEAL_SELECT = `
              'event_name', pe.name,
              'event_date', pe.event_date,
              'location', pe.location,
+             'producer', pe.producer,
+             'date_tbc', pe.date_tbc,
              'allocated_amount', de.allocated_amount,
              'package_label', de.package_label
            ) ORDER BY pe.event_date NULLS LAST, pe.name
@@ -352,6 +358,7 @@ function createBridgeRouter({ q, ensureDb, insertDealEvents }) {
     handle(async (_req, res) => {
       const { rows } = await q(`
         SELECT pe.id, pe.name, pe.event_date, pe.location, pe.notes,
+               pe.producer, pe.date_tbc, pe.programme_year, pe.programme_key,
                COUNT(DISTINCT de.deal_id) AS deal_count,
                COALESCE(SUM(de.allocated_amount), 0) AS allocated_total,
                COALESCE(SUM(CASE WHEN COALESCE(d.paid_inc_vat, 0) > 0
@@ -369,6 +376,12 @@ function createBridgeRouter({ q, ensureDb, insertDealEvents }) {
           event_date: r.event_date,
           location: r.location || '',
           notes: r.notes || '',
+          // Programme fields. date_tbc is '' | 'day' | 'date': the CRM must
+          // never print a made-up 1st of the month as if it were confirmed.
+          producer: r.producer || '',
+          date_tbc: r.date_tbc || '',
+          programme_year: r.programme_year == null ? null : Number(r.programme_year),
+          programme_key: r.programme_key || null,
           deal_count: Number(r.deal_count),
           allocated_total: toNum(r.allocated_total) ?? 0,
           allocated_paid: toNum(r.allocated_paid) ?? 0,
@@ -432,6 +445,8 @@ function createBridgeRouter({ q, ensureDb, insertDealEvents }) {
                 event_id: e.event_id,
                 event_name: e.event_name,
                 event_date: e.event_date,
+                producer: e.producer || '',
+                date_tbc: e.date_tbc || '',
                 allocated_amount: e.allocated_amount,
                 currency: e.currency,
                 deal_ids: e.deal_ids,
