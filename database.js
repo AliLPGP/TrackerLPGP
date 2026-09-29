@@ -310,6 +310,19 @@ async function runMigrations() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  // The confirmed programme (programme-2027.js) carries more than a name and
+  // a date: which producer team runs the event, whether the day is still to be
+  // confirmed (so the UI never shows a made-up 1st of the month), the year it
+  // is filed under even when no date exists yet, and a stable key that links
+  // the row to its entry in the programme so re-running the load renames in
+  // place instead of creating a duplicate.
+  await sql(`ALTER TABLE portfolio_events
+    ADD COLUMN IF NOT EXISTS producer TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS date_tbc TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS programme_year INT,
+    ADD COLUMN IF NOT EXISTS programme_key TEXT`);
+  await sql(`CREATE UNIQUE INDEX IF NOT EXISTS portfolio_events_programme_key
+    ON portfolio_events (programme_key) WHERE programme_key IS NOT NULL`);
 
   // ── Deals ──────────────────────────────────────────────────────────────────
   await sql(`

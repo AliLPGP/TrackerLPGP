@@ -18,6 +18,30 @@ const MONTHS = ['','January','February','March','April','May','June',
 
 function currencySymbol(c) { return c === 'AED' ? 'AED ' : c === 'PHP' ? '₱' : '£'; }
 
+/**
+ * How an event's date reads, honestly. A confirmed day prints as a day; a
+ * month with the day still to be confirmed prints as the month; no date at
+ * all prints as the programme year with "date TBC". The 1st of the month is
+ * how a TBC month is stored, never how it is shown.
+ *   opts.long  -> "25 Feb 2027" / "Sep 2027 · day TBC" / "2027 · date TBC"
+ *   default    -> "Feb 27" / "Sep 27 · TBC" / "2027 TBC"
+ */
+function fmtEventDate(ev, opts = {}) {
+  const tbc  = ev.date_tbc || '';
+  const year = ev.programme_year || (ev.event_date ? String(ev.event_date).slice(0, 4) : '');
+  if (!ev.event_date) return year ? `${year}${opts.long ? ' · date TBC' : ' TBC'}` : (opts.long ? 'Date TBC' : 'TBC');
+  const d = new Date(String(ev.event_date).slice(0, 10) + 'T12:00:00');
+  if (isNaN(d.getTime())) return opts.long ? 'Date TBC' : 'TBC';
+  if (tbc === 'day') {
+    return opts.long
+      ? d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }) + ' · day TBC'
+      : d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) + ' · TBC';
+  }
+  return opts.long
+    ? d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+    : d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' });
+}
+
 // Salary FX. One table, used by both the overview band and the summary table
 // below it, so the two can never quote different rates for the same money.
 const SAL_FX = { GBP: 1, AED: 1 / 4.67, PHP: 0.0138 };
@@ -7567,22 +7591,47 @@ async function openDealModal(id, defaultStage) {
     setDealPayment('');
   }
 
-  // Render checkbox list (sorted by date desc, then name)
-  const sortedEvs = [..._evs].sort((a, b) => {
-    if (!a.event_date && !b.event_date) return a.name.localeCompare(b.name);
-    if (!a.event_date) return 1;
-    if (!b.event_date) return -1;
-    return new Date(b.event_date) - new Date(a.event_date);
-  });
+  // Render the picker grouped by producer team, so "which of my events" is a
+  // glance rather than a scroll. Within a group: soonest first, undated last.
+  // Events with no producer (older years, hand-added rows) sit together at the
+  // end under "Other events" rather than being dropped.
   const container = document.getElementById('dealEventsCheckboxes');
   if (container) {
-    container.innerHTML = sortedEvs.map(ev => {
-      const label = esc(ev.name) + (ev.event_date ? ' <span style="color:var(--muted);font-size:11px">(' + new Date(ev.event_date + 'T12:00:00').toLocaleDateString('en-GB',{month:'short',year:'numeric'}) + ')</span>' : '');
-      const checked = _selectedEvIds.includes(ev.id) ? 'checked' : '';
-      return `<label class="deal-event-check-item${_selectedEvIds.includes(ev.id) ? ' selected' : ''}">
-        <input type="checkbox" value="${ev.id}" ${checked} onchange="onDealEventCheck(this)">
-        <span>${label}</span>
+    const byProducer = new Map();
+    for (const ev of _evs) {
+      const key = ev.producer || '';
+      if (!byProducer.has(key)) byProducer.set(key, []);
+      byProducer.get(key).push(ev);
+    }
+    const producerOrder = [...byProducer.keys()].sort((a, b) => {
+      if (!a) return 1; if (!b) return -1;             // unnamed group last
+      return a.localeCompare(b);
+    });
+    const byDate = (a, b) => {
+      if (!a.event_date && !b.event_date) return a.name.localeCompare(b.name);
+      if (!a.event_date) return 1;
+      if (!b.event_date) return -1;
+      return new Date(a.event_date) - new Date(b.event_date);
+    };
+    // The first <span> inside each label is the event's name. The package
+    // rows and the split preview read it, so the date lives in a second span.
+    const item = (ev) => {
+      const on = _selectedEvIds.includes(ev.id);
+      return `<label class="deal-event-check-item${on ? ' selected' : ''}" data-name="${esc(ev.name.toLowerCase())}">
+        <input type="checkbox" value="${ev.id}" ${on ? 'checked' : ''} onchange="onDealEventCheck(this)">
+        <span>${esc(ev.name)}</span>
+        <span class="deal-event-when${ev.date_tbc ? ' deal-event-when--tbc' : ''}">${esc(fmtEventDate(ev))}</span>
       </label>`;
+    };
+    container.innerHTML = producerOrder.map(prod => {
+      const evs = byProducer.get(prod).sort(byDate);
+      return `<div class="deal-event-group" data-producer="${esc(prod)}">
+        <div class="deal-event-group-hd">
+          <span>${prod ? esc(prod) : 'Other events'}</span>
+          <span class="deal-event-group-n">${evs.length}</span>
+        </div>
+        ${evs.map(item).join('')}
+      </div>`;
     }).join('') || '<div style="padding:12px;font:500 12px/1 var(--font-mono);color:var(--muted)">No events yet — add one in Portfolio first.</div>';
   }
   const searchEl = document.getElementById('dealEventsSearch');
@@ -7713,9 +7762,18 @@ function onDealEventCheck(cb) {
 }
 
 function filterDealEvents() {
-  const q = (document.getElementById('dealEventsSearch')?.value || '').toLowerCase();
-  document.querySelectorAll('#dealEventsCheckboxes .deal-event-check-item').forEach(item => {
-    item.style.display = item.querySelector('span').textContent.toLowerCase().includes(q) ? '' : 'none';
+  const q = (document.getElementById('dealEventsSearch')?.value || '').toLowerCase().trim();
+  document.querySelectorAll('#dealEventsCheckboxes .deal-event-group').forEach(group => {
+    let shown = 0;
+    const prod = (group.dataset.producer || '').toLowerCase();
+    group.querySelectorAll('.deal-event-check-item').forEach(item => {
+      // Matches on the event's name or its producer team, so "fidak" lists
+      // that team's five events.
+      const hit = !q || (item.dataset.name || '').includes(q) || prod.includes(q);
+      item.style.display = hit ? '' : 'none';
+      if (hit) shown++;
+    });
+    group.style.display = shown ? '' : 'none';
   });
 }
 
