@@ -4699,7 +4699,11 @@ let _portSearch = '';
 // the person presses Apply.
 let _programme2027 = { status: 'idle', data: null, error: null };
 let _programmeDecisions = {};       // key -> 'rename' | 'create' | 'skip'
-let _portShowProgramme = false;     // show the panel outside the 2027 tab
+// The 2027 programme panel is a tool for placing rows, not a fixture of the
+// page: once every confirmed event is linked it stays out of the way, opened
+// from the toolbar when wanted, and only a one-line notice appears when a
+// row needs a decision again. The choice is remembered per browser.
+let _portShowProgramme = (() => { try { return localStorage.getItem('portShowProgramme') === '1'; } catch { return false; } })();
 
 const PORT_PRODUCERS = ['Gio & Karam', 'Tara & Maryam', 'Fidak', 'Santos', 'Arj & Leena'];
 
@@ -4834,7 +4838,33 @@ function portFilterCards(q) {
 
 function togglePortfolioProgramme() {
   _portShowProgramme = !_portShowProgramme;
+  try { localStorage.setItem('portShowProgramme', _portShowProgramme ? '1' : '0'); } catch { /* private mode: not remembered */ }
   renderPortfolioGrid();
+}
+
+// What the programme still needs from a person, from the last reconcile.
+function programmePending() {
+  const p = _programme2027;
+  if (p.status !== 'ready' || !p.data) return null;
+  const c = p.data.counts || {};
+  const suggested = c.suggested || 0, missing = c.missing || 0, duplicates = c.duplicates || 0;
+  return { suggested, missing, duplicates, total: suggested + missing + duplicates };
+}
+
+// The panel folded to one line: shown only while something needs deciding.
+function renderProgrammeNotice() {
+  const p = _programme2027;
+  if (p.status === 'error') {
+    return `<div class="pf-prog-notice"><span class="pf-prog-dot pf-prog-dot--missing"></span><span>The 2027 programme could not be checked: ${esc(p.error || '')}</span><button class="btn btn-ghost btn-sm" onclick="loadProgramme2027()">Retry</button></div>`;
+  }
+  const pend = programmePending();
+  if (!pend || !pend.total) return '';
+  const parts = [
+    pend.suggested ? `${pend.suggested} matched, awaiting confirmation` : '',
+    pend.duplicates ? `${pend.duplicates} older row${pend.duplicates === 1 ? '' : 's'} look${pend.duplicates === 1 ? 's' : ''} like ${pend.duplicates === 1 ? 'a linked event' : 'linked events'}` : '',
+    pend.missing ? `${pend.missing} to create` : '',
+  ].filter(Boolean).join(' · ');
+  return `<div class="pf-prog-notice"><span class="pf-prog-dot pf-prog-dot--suggested"></span><span><b>2027 programme</b> · ${parts}</span><button class="btn btn-ghost btn-sm" onclick="togglePortfolioProgramme()">Review</button></div>`;
 }
 
 function renderPortfolioGrid() {
@@ -4854,7 +4884,6 @@ function renderPortfolioGrid() {
     ? portfolioData
     : portfolioData.filter(e => (portRowYear(e) || curYear) === parseInt(_portYearFilter));
 
-  const is2027 = _portYearFilter === '2027';
   const yearLabel = _portYearFilter === 'all' ? 'All years' : `${_portYearFilter} programme`;
 
   const toolbarHtml =
@@ -4866,11 +4895,11 @@ function renderPortfolioGrid() {
       `</div>` +
       `<input class="port-search" id="portSearch" style="width:260px" placeholder="Search events, cities, teams" oninput="portFilterCards(this.value)" value="${esc(_portSearch)}">` +
       `<span style="flex:1"></span>` +
-      (!is2027 ? `<button class="btn btn-ghost btn-sm" onclick="togglePortfolioProgramme()">${_portShowProgramme ? 'Hide' : 'Show'} 2027 programme</button>` : '') +
+      `<button class="btn btn-ghost btn-sm" onclick="togglePortfolioProgramme()">${_portShowProgramme ? 'Hide' : 'Show'} 2027 programme</button>` +
       `<button class="btn btn-primary btn-sm" onclick="openPortfolioModal()">+ Add Event</button>` +
     `</div>`;
 
-  const programmeHtml = (is2027 || _portShowProgramme) ? renderProgrammePanel() : '';
+  const programmeHtml = _portShowProgramme ? renderProgrammePanel() : renderProgrammeNotice();
 
   if (!filtered.length) {
     grid.innerHTML = toolbarHtml + programmeHtml;
@@ -5306,7 +5335,7 @@ function renderProgrammePanel() {
   const matches = (c.suggested || 0) + dups;
   const notRunning = (data.not_running || []);
   return `<section class="pf-panel" id="pfProgramme">
-    ${hd(_portYearFilter !== '2027' ? `<button class="btn btn-ghost btn-sm" onclick="togglePortfolioProgramme()">Hide</button>` : '')}
+    ${hd(`<button class="btn btn-ghost btn-sm" onclick="togglePortfolioProgramme()">Hide</button>`)}
     ${statusLine}
     <div class="pf-prog-scroll"><table class="pf-prog-table">
       <thead><tr><th>Event</th><th>Producer</th><th>Date</th><th>Decision</th></tr></thead>
