@@ -188,6 +188,11 @@ function suggestionScore(canon, row) {
  * Rows already linked by programme_key are matched by key and never
  * re-suggested elsewhere. Anything under the score floor gets no suggestion,
  * and the panel offers "create" instead.
+ *
+ * A linked event can still have an older row that is really the same event
+ * under its shorthand name ("OPS Miami" beside "2nd Annual Operating Partners
+ * Miami", once the latter was created rather than renamed). That row comes
+ * back as the event's `duplicate`, for a person to merge in or dismiss.
  */
 function reconcile(existingRows) {
   const SUGGEST_FLOOR = 4;
@@ -203,10 +208,11 @@ function reconcile(existingRows) {
   // Every (event, row) pair above the floor, best first, then take each pair
   // only if neither side is spoken for. This way "PD NYC" goes to the Private
   // Debt New York event it matches on three counts, not to the Sports forum
-  // that merely shares its city and happened to be listed earlier.
-  const unlinked = EVENTS.filter((c) => !byKey.has(programmeKey(c)));
+  // that merely shares its city and happened to be listed earlier. Linked
+  // events take part too, so one row is never both a rename for one event
+  // and a duplicate of another.
   const pairs = [];
-  for (const canon of unlinked) {
+  for (const canon of EVENTS) {
     for (const r of candidates) {
       const s = suggestionScore(canon, r);
       if (s >= SUGGEST_FLOOR) pairs.push({ canon, row: r, score: s });
@@ -224,10 +230,13 @@ function reconcile(existingRows) {
   return EVENTS.map((canon) => {
     const key = programmeKey(canon);
     const linked = byKey.get(key);
-    if (linked) {
-      return { ...canon, programme_key: key, status: 'linked', row: linked, suggestion: null, score: null };
-    }
     const best = chosen.get(canon.key) || null;
+    if (linked) {
+      return {
+        ...canon, programme_key: key, status: 'linked', row: linked, suggestion: null, score: null,
+        duplicate: best ? best.row : null, duplicate_score: best ? best.score : null,
+      };
+    }
     return {
       ...canon,
       programme_key: key,

@@ -117,6 +117,40 @@ async function q(sql, params = []) {
     if (!ev.location) ev.location = location;
     return { rows: [{ id: ev.id }] };
   }
+  // --- programme merge: three statements, each a no-op when there is nothing left to do ---
+  if (/^\s*WITH gone AS \(\s*DELETE FROM deal_events o/i.test(sql)) {
+    const [oldId, intoId] = params.map(Number);
+    const gone = DB.allocations.filter((a) => Number(a.event_id) === oldId
+      && DB.allocations.some((x) => Number(x.event_id) === intoId && x.deal_id === a.deal_id));
+    DB.allocations = DB.allocations.filter((a) => !gone.includes(a));
+    for (const g of gone) {
+      const kept = DB.allocations.find((x) => Number(x.event_id) === intoId && x.deal_id === g.deal_id);
+      kept.allocated_amount = Number(kept.allocated_amount) + Number(g.allocated_amount);
+      if (!kept.package_label) kept.package_label = g.package_label;
+    }
+    return { rows: gone.map((g) => ({ deal_id: g.deal_id })) };
+  }
+  if (/^\s*UPDATE deal_events SET event_id = \? WHERE event_id = \?/i.test(sql)) {
+    const [intoId, oldId] = params.map(Number);
+    const moved = DB.allocations.filter((a) => Number(a.event_id) === oldId);
+    moved.forEach((a) => { a.event_id = intoId; });
+    return { rows: moved.map((a) => ({ deal_id: a.deal_id })) };
+  }
+  if (/^\s*UPDATE portfolio_events\s+SET event_date=\?, date_tbc=\?, location=CASE/i.test(sql)) {
+    const [event_date, date_tbc, location, notes, id, programme_key] = params;
+    const ev = DB.events.find((e) => e.id === Number(id) && e.programme_key === programme_key);
+    if (!ev) return { rows: [] };
+    Object.assign(ev, { event_date, date_tbc, notes });
+    if (!ev.location) ev.location = location;
+    return { rows: [{ id: ev.id }] };
+  }
+  if (/^\s*DELETE FROM portfolio_events\s+WHERE id = \? AND programme_key IS NULL\s+AND NOT EXISTS/i.test(sql)) {
+    const id = Number(params[0]);
+    const ev = DB.events.find((e) => e.id === id && !e.programme_key);
+    if (!ev || DB.allocations.some((a) => Number(a.event_id) === id)) return { rows: [] };
+    DB.events = DB.events.filter((e) => e !== ev);
+    return { rows: [{ id }] };
+  }
   if (/^\s*UPDATE portfolio_events SET programme_key = NULL/i.test(sql)) {
     const ev = DB.events.find((e) => e.id === Number(params[0]) && e.programme_key);
     if (!ev) return { rows: [] };
@@ -407,6 +441,64 @@ const server = app.listen(0, async () => {
   prog = await (await fetch(pbase)).json();
   check('an unlinked row becomes a suggestion again', prog.items.find((i) => i.key === 'ops-new-york').suggestion?.id === 12);
   check('unlinking an unlinked row is a 404', (await fetch(`${pbase}/unlink`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ row_id: 11 }) })).status === 404);
+
+  console.log('\nProgramme merge');
+  const decide = async (decisions) => (await fetch(`${pbase}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ decisions }) })).json();
+  // The state a panel user can end up in: the confirmed event was created
+  // rather than renamed, so the old shorthand row still sits beside it with
+  // the deals on it.
+  await decide([{ key: 'ops-new-york', action: 'rename', row_id: 12 }]);   // re-link after the unlink check above
+  DB.events.push({ id: 30, name: 'OPS NYC', event_date: '2027-05-20', location: 'Convene', notes: '', producer: '', date_tbc: '', programme_year: null, programme_key: null, deal_count: 2 });
+  DB.allocations.push(
+    { deal_id: 2, event_id: 12, allocated_amount: 1500, package_label: 'Silver' },   // already on the linked row
+    { deal_id: 2, event_id: 30, allocated_amount: 500, package_label: '' },          // ...and on the old one too
+    { deal_id: 3, event_id: 30, allocated_amount: 2000, package_label: 'Gold' },
+  );
+  const sumAlloc = () => DB.allocations.reduce((a, x) => a + Number(x.allocated_amount), 0);
+  const allocBefore = sumAlloc();
+  prog = await (await fetch(pbase)).json();
+  const opsNyLinked = prog.items.find((i) => i.key === 'ops-new-york');
+  check('an older row beside a linked event is offered as its duplicate', opsNyLinked.status === 'linked' && opsNyLinked.duplicate?.id === 30, JSON.stringify(opsNyLinked.duplicate));
+  check('...and counted', prog.counts.duplicates === 1, String(prog.counts.duplicates));
+  check('...and not also suggested as a rename for another event', !prog.items.some((i) => i.suggestion?.id === 30));
+  check('reading changes nothing', DB.events.some((e) => e.id === 30) && sumAlloc() === allocBefore);
+
+  const merged = await decide([{ key: 'ops-new-york', action: 'merge', row_id: 30 }]);
+  const mergeRes = merged.results[0];
+  check('merge reports what moved', mergeRes.outcome === 'merged' && mergeRes.id === 12 && mergeRes.from_id === 30 && mergeRes.deals_moved === 2, JSON.stringify(mergeRes));
+  check('the old row is gone', !DB.events.some((e) => e.id === 30));
+  const survivor = DB.events.find((e) => e.id === 12);
+  check('the linked row keeps its id, name and key', survivor.programme_key === '2027:ops-new-york' && survivor.name === '3rd Annual Operating Partners New York');
+  const d2 = DB.allocations.filter((a) => a.deal_id === 2);
+  check('a deal on both rows becomes one allocation with the amounts added', d2.length === 1 && Number(d2[0].event_id) === 12 && Number(d2[0].allocated_amount) === 2000 && d2[0].package_label === 'Silver', JSON.stringify(d2));
+  const d3 = DB.allocations.find((a) => a.deal_id === 3);
+  check('a deal only on the old row moves as it is', Number(d3.event_id) === 12 && Number(d3.allocated_amount) === 2000 && d3.package_label === 'Gold', JSON.stringify(d3));
+  check('not a penny lost or invented', sumAlloc() === allocBefore, `${sumAlloc()} vs ${allocBefore}`);
+  check('the survivor keeps its confirmed date and its own location', survivor.event_date === '2027-05-19' && survivor.date_tbc === '' && survivor.location === 'New York, USA', JSON.stringify(survivor));
+  check('...and remembers the old name', /Merged "OPS NYC" \(#30, 2 deals\)/.test(survivor.notes), survivor.notes);
+  check('applying the same merge again finds nothing to do', (await decide([{ key: 'ops-new-york', action: 'merge', row_id: 30 }])).results[0].outcome === 'row-not-found');
+  check('no repeat of the merge note', (survivor.notes.match(/Merged "OPS NYC"/g) || []).length === 1, survivor.notes);
+
+  // The confirmed entry only says "May TBC"; the old row knew it was the 5th.
+  const createdMiami = (await decide([{ key: 'cfo-pm-miami', action: 'create' }])).results[0];
+  DB.events.push({ id: 31, name: 'CFO/COO Private Markets Miami', event_date: '2027-05-05', location: '', notes: '', producer: '', date_tbc: '', programme_year: null, programme_key: null, deal_count: 1 });
+  DB.allocations.push({ deal_id: 4, event_id: 31, allocated_amount: 3000, package_label: '' });
+  prog = await (await fetch(pbase)).json();
+  check('the shorthand Miami row is the created event\'s duplicate', prog.items.find((i) => i.key === 'cfo-pm-miami').duplicate?.id === 31);
+  const miami = (await decide([{ key: 'cfo-pm-miami', action: 'merge', row_id: 31 }])).results[0];
+  const miamiRow = DB.events.find((e) => e.id === createdMiami.id);
+  check('merge keeps the real day the list only calls TBC', miami.outcome === 'merged' && miamiRow.event_date === '2027-05-05' && miamiRow.date_tbc === '', JSON.stringify(miamiRow));
+  check('...and its deal came with it', Number(DB.allocations.find((a) => a.deal_id === 4).event_id) === createdMiami.id);
+
+  const guards = await decide([
+    { key: 'pd-london', action: 'merge', row_id: 11 },       // pd-london has no linked row
+    { key: 'cfo-pm-miami', action: 'merge', row_id: 11 },    // row 11 is a 2026 row
+    { key: 'cfo-pm-miami', action: 'merge', row_id: 12 },    // row 12 is itself linked
+  ]);
+  check('merging into an event with no linked row is refused', guards.results[0].outcome === 'not-linked', JSON.stringify(guards.results[0]));
+  check('a 2026 row is never merged into the 2027 programme', guards.results[1].outcome === 'row-wrong-year' && DB.events.some((e) => e.id === 11), JSON.stringify(guards.results[1]));
+  check('a linked row is never merged away', guards.results[2].outcome === 'row-already-linked' && DB.events.some((e) => e.id === 12), JSON.stringify(guards.results[2]));
 
   console.log(`\n${pass} passed, ${fail} failed`);
   server.close();

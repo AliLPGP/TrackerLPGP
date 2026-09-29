@@ -12,6 +12,12 @@
 -- second copy of each event next to the one your deals point at, which is the
 -- exact mistake the panel exists to prevent.
 --
+-- If that copy already exists (a confirmed event was created rather than
+-- renamed, and the old "OPS Miami" row still sits under "Other events" with
+-- its deals), the same panel offers a merge: the old row's deals move onto the
+-- linked row, a deal on both becomes one allocation with the amounts added,
+-- and the old row is removed. The linked row keeps its id.
+--
 -- What this file still does is safe to run on its own: it adds the columns the
 -- panel needs, for a database that has not started the app since they were
 -- introduced. The app adds them itself on boot; running this first is optional.
