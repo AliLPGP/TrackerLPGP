@@ -48,7 +48,7 @@ const DB = { deals: [...DEAL_ROWS], allocations: [], nextId: 5, events: [
   { id: 10, name: 'Berlin',        event_date: '2026-05-12', location: 'Waldorf', notes: '', producer: '', date_tbc: '', programme_year: null, programme_key: null, deal_count: 2 },
   { id: 11, name: 'CFO Miami',     event_date: '2026-09-02', location: 'Four Seasons', notes: '', producer: '', date_tbc: '', programme_year: null, programme_key: null, deal_count: 1 },
   { id: 12, name: 'Ops NYC',       event_date: '2027-01-20', location: '', notes: '', producer: '', date_tbc: '', programme_year: null, programme_key: null, deal_count: 1 },
-  { id: 13, name: 'PD NYC (Womens)', event_date: '2027-04-01', location: '', notes: 'womens', producer: '', date_tbc: '', programme_year: null, programme_key: null, deal_count: 0 },
+  { id: 13, name: 'PD NYC (Womens)', event_date: '2027-04-15', location: '', notes: 'womens', producer: '', date_tbc: '', programme_year: null, programme_key: null, deal_count: 0 },
 ], nextEventId: 14 };
 const EVENT_IDS = [10, 11, 12];
 
@@ -372,6 +372,12 @@ const server = app.listen(0, async () => {
   check('rename links the programme key', renamed.programme_key === '2027:ops-new-york');
   check('rename carries producer and date', renamed.producer === 'Tara & Maryam' && renamed.event_date === '2027-05-19');
   check('create inserts a linked row', DB.events.some((e) => e.programme_key === '2027:pd-berlin' && e.producer === 'Arj & Leena'));
+  // The list says "April TBC"; the row knows it is 15 April. The row wins.
+  const keepDay = await (await fetch(`${pbase}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ decisions: [{ key: 'pd-new-york', action: 'rename', row_id: 13 }] }) })).json();
+  const pdNyRow = DB.events.find((e) => e.id === 13);
+  check('rename keeps a real day the list only calls TBC', keepDay.results[0].outcome === 'renamed' && pdNyRow.event_date === '2027-04-15' && pdNyRow.date_tbc === '', JSON.stringify(pdNyRow));
+  check('...and still takes the confirmed name and team', pdNyRow.name === '13th Annual Private Debt New York' && pdNyRow.producer === 'Arj & Leena');
   check('skip does nothing', applied.results.find((r) => r.key === 'sports-new-york').outcome === 'skipped');
 
   const again = await (await fetch(`${pbase}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' },
@@ -400,7 +406,7 @@ const server = app.listen(0, async () => {
   check('unlink clears only the key', rowAfter.programme_key == null && rowAfter.name === rowBefore.name && rowAfter.event_date === rowBefore.event_date && rowAfter.deal_count === rowBefore.deal_count);
   prog = await (await fetch(pbase)).json();
   check('an unlinked row becomes a suggestion again', prog.items.find((i) => i.key === 'ops-new-york').suggestion?.id === 12);
-  check('unlinking an unlinked row is a 404', (await fetch(`${pbase}/unlink`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ row_id: 13 }) })).status === 404);
+  check('unlinking an unlinked row is a 404', (await fetch(`${pbase}/unlink`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ row_id: 11 }) })).status === 404);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   server.close();

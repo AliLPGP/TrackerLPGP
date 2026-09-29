@@ -87,6 +87,21 @@ function createProgrammeRouter({ q, requireAuth, requireAdminOrManager }) {
           programme.PROGRAMME_YEAR, pkey,
         ];
 
+        // Which date survives a rename. The confirmed list wins when it names
+        // a day. When it only says "May TBC" and the row already holds a real
+        // day in that month (15 April, not a 1st-of-the-month placeholder),
+        // the row knows more than the list does, and keeps its day.
+        const dateForRename = (row) => {
+          const rowDate = row.event_date ? String(row.event_date).slice(0, 10) : null;
+          const rowIsPlaceholder = !rowDate || row.date_tbc || rowDate.endsWith('-01');
+          if (rowIsPlaceholder) return { date: canon.date, tbc: canon.tbc };
+          if (canon.tbc === 'date') return { date: rowDate, tbc: '' };
+          if (canon.tbc === 'day' && canon.date && canon.date.slice(0, 7) === rowDate.slice(0, 7)) {
+            return { date: rowDate, tbc: '' };
+          }
+          return { date: canon.date, tbc: canon.tbc };
+        };
+
         if (d.action === 'rename') {
           const rowId = Number.parseInt(d.row_id, 10);
           const row = existing.find((r) => r.id === rowId);
@@ -107,6 +122,7 @@ function createProgrammeRouter({ q, requireAuth, requireAdminOrManager }) {
           // The same two guards again, inside the statement: a row that was
           // linked or re-dated since this request's snapshot is left alone,
           // and zero rows back means exactly that.
+          const kept = dateForRename(row);
           const { rows } = await q(
             `UPDATE portfolio_events
                SET name=?, event_date=?, location=CASE WHEN COALESCE(location,'')='' THEN ? ELSE location END,
@@ -114,7 +130,7 @@ function createProgrammeRouter({ q, requireAuth, requireAdminOrManager }) {
              WHERE id=? AND programme_key IS NULL
                AND COALESCE(programme_year, EXTRACT(YEAR FROM event_date)::int) = ?
              RETURNING id`,
-            [fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], note, rowId, programme.PROGRAMME_YEAR]
+            [fields[0], kept.date, fields[2], fields[3], kept.tbc, fields[5], fields[6], note, rowId, programme.PROGRAMME_YEAR]
           );
           if (!rows.length) { results.push({ key: canon.key, outcome: 'row-changed-underneath', id: rowId }); continue; }
           linked.add(pkey);
