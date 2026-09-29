@@ -5037,6 +5037,7 @@ function renderPortfolioEventCard(ev, scale) {
   const series      = portSeriesFor(ev);
   const when        = fmtEventDate(ev, { long: true });
   const isTbc       = !!ev.date_tbc || !ev.event_date;
+  const looksLike   = ev.programme_key ? '' : programmeLooksLike(ev.id);
   const hay         = [ev.name, ev.location, ev.producer, series && PORT_SERIES_MAP[series] ? PORT_SERIES_MAP[series].short : ''].join(' ').toLowerCase();
 
   return `<div class="pec-card pf-row" data-name="${esc(hay)}" data-id="${ev.id}">
@@ -5051,6 +5052,7 @@ function renderPortfolioEventCard(ev, scale) {
               ${ev.location ? `<span class="pf-meta-item">${PF_ICON_PIN}${esc(ev.location)}</span>` : ''}
               <span class="pf-meta-item${isTbc ? ' pf-meta-tbc' : ''}">${esc(when)}</span>
               <span class="pf-meta-item">${PF_ICON_USERS}${dealCount}</span>
+              ${looksLike ? `<span class="pf-meta-item pf-meta-dup" title="The 2027 programme panel above can fold this row into it">looks like ${esc(looksLike)}</span>` : ''}
             </span>
           </span>
         </button>
@@ -5153,18 +5155,25 @@ function viewEventDeals(eventId, eventName) {
 function programmeDefaultDecision(item) {
   if (item.status === 'suggested') return '';        // a person must choose
   if (item.status === 'missing') return 'create';
+  if (item.duplicate) return '';                     // linked, but an older row looks like it: choose
   return 'linked';
+}
+function programmeNeedsChoice(item) {
+  return item.status === 'suggested' ? !!item.suggestion : (item.status === 'linked' && !!item.duplicate);
 }
 function programmeDecision(item) {
   return _programmeDecisions[item.key] || programmeDefaultDecision(item);
 }
 function programmeUndecided() {
   const items = (_programme2027.data && _programme2027.data.items) || [];
-  return items.filter(it => it.status === 'suggested' && !programmeDecision(it)).length;
+  return items.filter(it => programmeNeedsChoice(it) && !programmeDecision(it)).length;
 }
 function acceptAllSuggestedRenames() {
   const items = (_programme2027.data && _programme2027.data.items) || [];
-  items.forEach(it => { if (it.status === 'suggested' && it.suggestion) _programmeDecisions[it.key] = 'rename'; });
+  items.forEach(it => {
+    if (it.status === 'suggested' && it.suggestion) _programmeDecisions[it.key] = 'rename';
+    else if (it.status === 'linked' && it.duplicate) _programmeDecisions[it.key] = 'merge';
+  });
   renderPortfolioGrid();
 }
 function setProgrammeDecision(key, action) {
@@ -5173,31 +5182,42 @@ function setProgrammeDecision(key, action) {
   const btn = document.getElementById('pfApplyBtn');
   const status = document.getElementById('pfApplyStatus');
   if (btn || status) {
-    const { renames, creates } = programmeTally();
-    const n = renames + creates;
+    const { renames, creates, merges } = programmeTally();
+    const n = renames + creates + merges;
     const undecided = programmeUndecided();
     if (btn) {
       btn.textContent = undecided ? `Choose for ${undecided} matched event${undecided === 1 ? '' : 's'} first` : `Apply ${n} decision${n === 1 ? '' : 's'}`;
       btn.disabled = n === 0 || undecided > 0;
     }
-    if (status) status.innerHTML = programmeTallyText(renames, creates);
+    if (status) status.innerHTML = programmeTallyText(renames, creates, merges);
   }
 }
 function programmeTally() {
   const items = (_programme2027.data && _programme2027.data.items) || [];
-  let renames = 0, creates = 0;
+  let renames = 0, creates = 0, merges = 0;
   items.forEach(it => {
-    if (it.status === 'linked') return;
     const d = programmeDecision(it);
+    if (it.status === 'linked') { if (d === 'merge' && it.duplicate) merges++; return; }
     if (d === 'rename' && it.suggestion) renames++;
     else if (d === 'create') creates++;
   });
-  return { renames, creates };
+  return { renames, creates, merges };
 }
-function programmeTallyText(renames, creates) {
-  if (!renames && !creates) return 'Nothing to apply';
-  return [renames ? `<b>${renames}</b> rename${renames === 1 ? '' : 's'}` : '', creates ? `<b>${creates}</b> new event${creates === 1 ? '' : 's'}` : '']
-    .filter(Boolean).join(' · ') + ' when applied';
+function programmeTallyText(renames, creates, merges) {
+  if (!renames && !creates && !merges) return 'Nothing to apply';
+  return [
+    renames ? `<b>${renames}</b> rename${renames === 1 ? '' : 's'}` : '',
+    creates ? `<b>${creates}</b> new event${creates === 1 ? '' : 's'}` : '',
+    merges ? `<b>${merges}</b> merge${merges === 1 ? '' : 's'}` : '',
+  ].filter(Boolean).join(' · ') + ' when applied';
+}
+
+// The confirmed event an unlinked row seems to be, per the reconcile: a
+// rename candidate, or an older duplicate of a row already linked.
+function programmeLooksLike(rowId) {
+  const items = (_programme2027.status === 'ready' && _programme2027.data && _programme2027.data.items) || [];
+  const it = items.find(i => (i.suggestion && i.suggestion.id === rowId) || (i.duplicate && i.duplicate.id === rowId));
+  return it ? it.name : '';
 }
 
 function renderProgrammePanel() {
@@ -5205,7 +5225,7 @@ function renderProgrammePanel() {
   const hd = (aside) => `<div class="pf-panel-hd">
       <div>
         <h2 class="pf-panel-title">2027 programme</h2>
-        <p class="pf-panel-desc">The confirmed calendar, 25 events across 5 producer teams, checked against what the tracker already holds. Renaming keeps a row and every deal allocated to it; nothing changes until you apply.</p>
+        <p class="pf-panel-desc">The confirmed calendar, 25 events across 5 producer teams, checked against what the tracker already holds. Renaming keeps a row and every deal allocated to it; merging moves an older row's deals onto the linked one and removes the old row. Nothing changes until you apply.</p>
       </div>
       <div class="pf-panel-aside">${aside || ''}</div>
     </div>`;
@@ -5218,23 +5238,40 @@ function renderProgrammePanel() {
   }
 
   const data = p.data;
-  const c = data.counts || { linked: 0, suggested: 0, missing: 0 };
+  const c = data.counts || { linked: 0, suggested: 0, missing: 0, duplicates: 0 };
+  const dups = c.duplicates || 0;
   const seriesShort = (id) => (data.series && data.series[id] && data.series[id].short) || (PORT_SERIES_MAP[id] && PORT_SERIES_MAP[id].short) || id;
   const statusLine =
     `<p class="pf-prog-status">` +
       `<span class="pf-prog-dot pf-prog-dot--linked"></span><b>${c.linked}</b> linked &nbsp;·&nbsp; ` +
       `<span class="pf-prog-dot pf-prog-dot--suggested"></span><b>${c.suggested}</b> matched, awaiting your confirmation &nbsp;·&nbsp; ` +
       `<span class="pf-prog-dot pf-prog-dot--missing"></span><b>${c.missing}</b> to create` +
+      (dups ? ` &nbsp;·&nbsp; <span class="pf-prog-dot pf-prog-dot--suggested"></span><b>${dups}</b> older row${dups === 1 ? '' : 's'} look${dups === 1 ? 's' : ''} like ${dups === 1 ? 'a linked event' : 'linked events'}` : '') +
     `</p>`;
 
   const decisionCell = (it) => {
-    if (it.status === 'linked') {
-      const r = it.row || {};
-      return `<span class="pf-prog-linked">Linked to #${r.id} · <b>${esc(r.name || '')}</b>` +
-        ` <button class="pf-prog-unlink" onclick="unlinkProgrammeRow(${parseInt(r.id, 10) || 0}, ${JSON.stringify(String(r.name || ''))})" title="Undo this link. The event, its date and its deals stay exactly as they are; it just stops counting as this programme entry.">Unlink</button></span>`;
-    }
     const d = programmeDecision(it);
     const opt = (v, label) => `<option value="${v}"${d === v ? ' selected' : ''}>${label}</option>`;
+    if (it.status === 'linked') {
+      const r = it.row || {};
+      let html = `<span class="pf-prog-linked">Linked to #${r.id} · <b>${esc(r.name || '')}</b>` +
+        ` <button class="pf-prog-unlink" onclick="unlinkProgrammeRow(${parseInt(r.id, 10) || 0}, ${JSON.stringify(String(r.name || ''))})" title="Undo this link. The event, its date and its deals stay exactly as they are; it just stops counting as this programme entry.">Unlink</button></span>`;
+      // An older row under its shorthand name, still sitting beside the
+      // linked one. Merging moves its deals here and removes it.
+      if (it.duplicate) {
+        const dup = it.duplicate;
+        const n = parseInt(dup.deal_count) || 0;
+        const deals = `${n} deal${n === 1 ? '' : 's'}`;
+        html += `<div class="pf-prog-dup">` +
+          `<span class="pf-prog-dup-lbl">Older row <b>#${dup.id} ${esc(dup.name)}</b> (${deals}) looks like the same event.</span>` +
+          `<select class="pf-prog-select${d ? '' : ' pf-prog-select--undecided'}" onchange="setProgrammeDecision('${esc(it.key)}', this.value)">` +
+            opt('', 'Same event? Choose\u2026') +
+            opt('merge', `Yes \u2014 merge it in (moves its ${deals} here, removes "${esc(dup.name)}")`) +
+            opt('leave', 'No \u2014 a different event, leave it') +
+          `</select></div>`;
+      }
+      return html;
+    }
     if (it.status === 'suggested' && it.suggestion) {
       const s = it.suggestion;
       const n = parseInt(s.deal_count) || 0;
@@ -5263,9 +5300,10 @@ function renderProgrammePanel() {
     </tr>`;
   }).join('');
 
-  const { renames, creates } = programmeTally();
-  const n = renames + creates;
+  const { renames, creates, merges } = programmeTally();
+  const n = renames + creates + merges;
   const undecided = programmeUndecided();
+  const matches = (c.suggested || 0) + dups;
   const notRunning = (data.not_running || []);
   return `<section class="pf-panel" id="pfProgramme">
     ${hd(_portYearFilter !== '2027' ? `<button class="btn btn-ghost btn-sm" onclick="togglePortfolioProgramme()">Hide</button>` : '')}
@@ -5275,8 +5313,8 @@ function renderProgrammePanel() {
       <tbody>${rows}</tbody>
     </table></div>
     <div class="pf-prog-actions">
-      <span class="pf-prog-status" id="pfApplyStatus">${programmeTallyText(renames, creates)}</span>
-      ${c.suggested ? `<button class="btn btn-ghost btn-sm" onclick="acceptAllSuggestedRenames()" title="Sets every matched event to Yes. You can still change any row before applying.">Accept all ${c.suggested} matches</button>` : ''}
+      <span class="pf-prog-status" id="pfApplyStatus">${programmeTallyText(renames, creates, merges)}</span>
+      ${matches ? `<button class="btn btn-ghost btn-sm" onclick="acceptAllSuggestedRenames()" title="Sets every matched event to Yes: renames for unlinked events, merges for older rows beside linked ones. You can still change any row before applying.">Accept all ${matches} match${matches === 1 ? '' : 'es'}</button>` : ''}
       <button class="btn btn-primary btn-sm" id="pfApplyBtn" onclick="applyProgramme2027()"${(n === 0 || undecided > 0) ? ' disabled' : ''}>${undecided ? `Choose for ${undecided} matched event${undecided === 1 ? '' : 's'} first` : `Apply ${n} decision${n === 1 ? '' : 's'}`}</button>
     </div>
     ${notRunning.length ? `<p class="pf-prog-foot">Not running in 2027: ${notRunning.map(esc).join(', ')}. Listed so nobody re-creates ${notRunning.length === 1 ? 'it' : 'them'} by hand.</p>` : ''}
@@ -5304,18 +5342,23 @@ async function applyProgramme2027() {
   const items = (_programme2027.data && _programme2027.data.items) || [];
   const decisions = [];
   items.forEach(it => {
-    if (it.status === 'linked') return;
     const d = programmeDecision(it);
+    if (it.status === 'linked') {
+      if (d === 'merge' && it.duplicate) decisions.push({ key: it.key, action: 'merge', row_id: it.duplicate.id });
+      return;
+    }
     if (d === 'rename' && it.suggestion) decisions.push({ key: it.key, action: 'rename', row_id: it.suggestion.id });
     else if (d === 'create') decisions.push({ key: it.key, action: 'create' });
   });
   if (!decisions.length) { showToast('Nothing to apply', 'info'); return; }
   const renames = decisions.filter(d => d.action === 'rename').length;
   const creates = decisions.filter(d => d.action === 'create').length;
+  const merges  = decisions.filter(d => d.action === 'merge').length;
   const summary = [
     renames ? `rename ${renames} existing event${renames === 1 ? '' : 's'} to the confirmed name (their deals stay allocated)` : '',
     creates ? `create ${creates} new event${creates === 1 ? '' : 's'}` : '',
-  ].filter(Boolean).join(' and ');
+    merges ? `merge ${merges} older event${merges === 1 ? '' : 's'} into the confirmed one${merges === 1 ? '' : 's'} (the deals move across and the old row${merges === 1 ? ' is' : 's are'} removed)` : '',
+  ].filter(Boolean).join(', ');
   if (!confirm(`This will ${summary}. Skipped events are left as they are. Continue?`)) return;
 
   const btn = document.getElementById('pfApplyBtn');
@@ -5327,13 +5370,15 @@ async function applyProgramme2027() {
     const out = await res.json().catch(() => ({}));
     const results = Array.isArray(out.results) ? out.results : [];
     const count = (o) => results.filter(r => r.outcome === o).length;
-    const done = `${count('renamed')} renamed, ${count('created')} created`;
+    const movedDeals = results.filter(r => r.outcome === 'merged').reduce((a, r) => a + (Number(r.deals_moved) || 0), 0);
+    const done = [`${count('renamed')} renamed`, `${count('created')} created`]
+      .concat(merges ? [`${count('merged')} merged (${movedDeals} deal${movedDeals === 1 ? '' : 's'} moved)`] : []).join(', ');
     if (!res.ok || !out.ok) {
       showToast(`Programme apply stopped: ${out.error || `HTTP ${res.status}`} (${done})`, 'error', 7000);
     } else {
-      const held = count('row-wrong-year') + count('row-changed-underneath') + count('row-already-linked');
-      const other = results.length - count('renamed') - count('created') - count('skipped') - held;
-      showToast(`2027 programme applied: ${done}${held ? `, ${held} not renamed (row changed or from another year)` : ''}${other ? `, ${other} left as they were` : ''}`, held ? 'warning' : 'success', 7000);
+      const held = count('row-wrong-year') + count('row-changed-underneath') + count('row-already-linked') + count('not-linked') + count('row-not-found');
+      const other = results.length - count('renamed') - count('created') - count('merged') - count('skipped') - held;
+      showToast(`2027 programme applied: ${done}${held ? `, ${held} held (row changed underneath, or from another year)` : ''}${other ? `, ${other} left as they were` : ''}`, held ? 'warning' : 'success', 7000);
     }
   } catch (e) {
     showToast('Could not apply the programme: ' + e.message, 'error');

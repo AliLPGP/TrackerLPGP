@@ -6088,6 +6088,12 @@ tbody tr { transition: background .14s var(--ease); }
 }
 .pf-prog-unlink:hover { color: var(--negative); border-color: var(--negative); }
 .pf-prog-select--undecided { border-color: var(--warning); }
+/* An older row that looks like an already-linked event: offered under the link. */
+.pf-prog-dup { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.pf-prog-dup-lbl { font: 400 11px/1.4 var(--font-sans); color: var(--muted); }
+.pf-prog-dup-lbl b { font-weight: 500; color: var(--text); }
+.pf-meta-dup { color: var(--warning); }
+.pf-meta-dup svg { width: 11px; height: 11px; }
 
 /* ── Deal: month signed vs programme year ───────────────────────────────── */
 .deal-period-grid { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; }
