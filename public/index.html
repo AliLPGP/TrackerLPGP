@@ -642,11 +642,11 @@
     <select id="dealEventFilter" class="deal-select" onchange="setDealEvent(this.value)">
       <option value="">All Events</option>
     </select>
-    <button class="btn btn-ghost" onclick="selectAllDeals()">☑ Select All</button>
-    <button id="moveYearDealsBtn" class="btn btn-ghost" onclick="moveDealsToYear()" style="display:none">📅 Move to Year</button>
-    <button id="deleteSelectedDealsBtn" class="btn btn-danger" onclick="deleteSelectedDeals()" style="display:none">🗑 Delete Selected</button>
-    <button class="btn btn-ghost" onclick="openDealImport()">⬆ Import CSV</button>
-    <button class="btn btn-primary deal-add-btn" onclick="openDealModal()">+ Add Deal</button>
+    <button class="btn btn-ghost" onclick="selectAllDeals()">Select all</button>
+    <button id="moveYearDealsBtn" class="btn btn-ghost" onclick="moveDealsToYear()" style="display:none">Move to year</button>
+    <button id="deleteSelectedDealsBtn" class="btn btn-danger" onclick="deleteSelectedDeals()" style="display:none">Delete selected</button>
+    <button class="btn btn-ghost" onclick="openDealImport()">Import CSV</button>
+    <button class="btn btn-primary deal-add-btn" onclick="openDealModal()">+ Add deal</button>
   </div>
 
   <!-- Stat summary cards -->
@@ -654,33 +654,37 @@
 
   <!-- Deals table -->
   <div class="card deal-table-card">
-    <table id="dealsTable">
+    <table id="dealsTable" class="deal-ledger">
       <colgroup>
-        <col style="width:52px">   <!-- Select + Flag -->
-        <col style="width:72px">   <!-- Month -->
-        <col style="width:170px">  <!-- Company -->
-        <col style="width:108px">  <!-- Paid inc VAT -->
-        <col style="width:104px">  <!-- Deal Value -->
-        <col style="width:96px">   <!-- Tax/VAT -->
-        <col style="width:88px">   <!-- Invoice Date -->
+        <col style="width:44px">   <!-- Flag + select -->
+        <col style="width:80px">   <!-- Month -->
+        <col style="width:154px">  <!-- Company -->
+        <col style="width:104px">  <!-- Deal -->
+        <col style="width:104px">  <!-- Paid -->
+        <col style="width:92px">   <!-- VAT -->
+        <col style="width:94px">   <!-- Invoiced -->
+        <col style="width:94px">   <!-- Paid on -->
         <col style="width:72px">   <!-- Bank -->
-        <col style="width:190px">  <!-- Invoice # -->
-        <col style="width:66px">   <!-- Signed -->
-        <col style="width:46px">   <!-- By -->
+        <col style="width:94px">   <!-- Inv # -->
+        <col style="width:46px">   <!-- Files -->
+        <col style="width:40px">   <!-- Signed -->
+        <col style="width:44px">   <!-- By -->
         <col>                      <!-- Notes (fills remaining) -->
-        <col style="width:118px">  <!-- Actions -->
+        <col style="width:64px">   <!-- Actions, on hover -->
       </colgroup>
       <thead><tr>
         <th></th>
         <th>Month</th>
         <th>Company</th>
-        <th class="dt-r">Paid inc VAT</th>
-        <th class="dt-r">Deal Value</th>
-        <th class="dt-r">Tax/VAT</th>
-        <th>Invoice Date</th>
+        <th class="dt-r">Deal</th>
+        <th class="dt-r">Paid</th>
+        <th class="dt-r">VAT</th>
+        <th>Invoiced</th>
+        <th>Paid on</th>
         <th>Bank</th>
-        <th>Invoice #</th>
-        <th class="dt-c">Signed</th>
+        <th>Inv #</th>
+        <th class="dt-c" title="Invoice and agreement on file"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></th>
+        <th class="dt-c" title="Signed copy received">&#10003;</th>
         <th class="dt-c">By</th>
         <th>Notes</th>
         <th></th>
@@ -688,8 +692,9 @@
       <tbody id="dealsTableBody"></tbody>
       <tfoot id="dealsTfoot"></tfoot>
     </table>
-    <div id="dealsEmpty" class="empty-state hidden"><div class="icon">🤝</div><div>No deals yet.</div></div>
+    <div id="dealsEmpty" class="empty-state hidden"><div>No deals yet.</div></div>
   </div>
+  <p class="deal-hint">Click any cell to edit &mdash; Enter saves, Esc cancels. Click a company name for the full deal (notes, events, invoice &amp; agreement, delete). Shift+click a cell to highlight it.</p>
 
   <!-- Cancelled deals section -->
   <div id="cancelledSection" style="margin-top:24px">

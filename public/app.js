@@ -5722,71 +5722,67 @@ function renderDealsTable() {
   }
 
   const symMap = { GBP:'£', USD:'$', AED:'AED ', PHP:'₱', EUR:'€' };
-  const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const dash = '<span class="deal-muted">—</span>';
+  const FLAG_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>';
+  const CLIP_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
+  const TICK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+  const DOC_SVG  = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>';
+  const TRASH_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
+
   tbody.innerHTML = filtered.map(d => {
     const sym = symMap[d.currency] || '£';
-    const invDateStr = d.invoice_date ? new Date(d.invoice_date).toLocaleDateString('en-GB',{day:'2-digit',month:'2-digit',year:'2-digit'}) : '';
-
-    // Auto-colour logic based on payment
-    const paidAmt  = parseFloat(d.paid_inc_vat) || 0;
-    const dealAmt  = parseFloat(d.amount) || 0;
-    const hasPaid  = d.paid_inc_vat != null && paidAmt > 0;
+    const paidAmt   = parseFloat(d.paid_inc_vat) || 0;
+    const dealAmt   = parseFloat(d.amount) || 0;
+    const hasPaid   = d.paid_inc_vat != null && paidAmt > 0;
     const isPartial = hasPaid && paidAmt < dealAmt;
-    const rowClass = hasPaid ? 'deal-row-paid' : '';
+    const isFlagged = !!d.is_flagged;
+    const isSelected = _selectedDealIds.has(d.id);
+    // A flagged row wears the flag tint whatever its payment state.
+    const rowClass = ['deal-row', isFlagged ? 'deal-row-flagged' : (hasPaid ? 'deal-row-paid' : ''), isSelected ? 'deal-row-selected' : '']
+      .filter(Boolean).join(' ');
 
-    const inv1 = d.invoice1_name ? `<a class="deal-inv-link" href="/api/deals/${d.id}/invoice/1" target="_blank" title="${esc(d.invoice1_name)}" onclick="event.stopPropagation()">📄</a>` : '';
-    const inv2 = d.invoice2_name ? `<a class="deal-inv-link" href="/api/deals/${d.id}/invoice/2" target="_blank" title="${esc(d.invoice2_name)}" onclick="event.stopPropagation()">📄</a>` : '';
-
-    // Editable cell helper
-    const ec = (field, type, val, display, extra='') => {
+    // Editable cell. `cls` joins the cell's own classes; `extra` is any
+    // further attribute (a context-menu hook, say).
+    const ec = (field, type, val, display, cls = '', extra = '') => {
       const hlKey = `dhl:${d.id}-${field}`;
       const isHl = localStorage.getItem(hlKey) === '1';
-      const hlCls = isHl ? ' deal-cell-orange' : '';
-      return `<td class="deal-cell-edit${hlCls}" data-id="${d.id}" data-field="${field}" data-type="${type}" data-val="${String(val??'').replace(/"/g,'&quot;')}" data-hlkey="${hlKey}" onclick="dealCellClick(this)" ${extra}>${display}</td>`;
+      return `<td class="deal-cell-edit${cls ? ' ' + cls : ''}${isHl ? ' deal-cell-orange' : ''}" data-id="${d.id}" data-field="${field}" data-type="${type}" data-val="${String(val ?? '').replace(/"/g, '&quot;')}" data-hlkey="${hlKey}" onclick="dealCellClick(this)" ${extra}>${display}</td>`;
     };
 
-    // Paid cell: orange background if partial payment
-    const paidDisplay = hasPaid ? `${sym}${fmt(paidAmt)}` : '<span style="color:var(--muted)">—</span>';
-    const paidExtra = `class="deal-num" style="text-align:right${isPartial ? ';background:rgba(234,88,12,.28)' : ''}"`;
-
-    // Notes: truncated display
-    const notesDisplay = d.notes
-      ? `<span class="deal-notes-cell" title="${esc(d.notes)}">${esc(d.notes)}</span>`
-      : '<span style="color:var(--muted);font-size:0.8rem">—</span>';
-
+    const paidDisplay = !hasPaid ? dash : `<span class="${isPartial ? 'deal-paid-part' : 'deal-paid-fig'}">${sym}${fmt(paidAmt)}</span>`;
+    const dateCell = (iso) => iso ? dealShortDate(iso) : dash;
+    const notesDisplay = d.notes ? `<span class="deal-notes-cell" title="${esc(d.notes)}">${esc(d.notes)}</span>` : dash;
     const coHlKey = `dhl:${d.id}-company`;
     const coHl = localStorage.getItem(coHlKey) === '1';
 
-    const isFlagged = d.is_flagged || false;
-    const isSelected = _selectedDealIds.has(d.id);
-    const finalRowClass = (isFlagged ? 'deal-row-flagged' : rowClass) + (isSelected ? ' deal-row-selected' : '');
-    return `<tr id="deal-row-${d.id}" class="${finalRowClass}">
-      <td style="text-align:center;padding:0 2px">
-        <input type="checkbox" class="deal-select-cb" ${isSelected?'checked':''} onclick="event.stopPropagation();toggleDealSelect(${d.id})" style="cursor:pointer;width:14px;height:14px">
-        <button onclick="event.stopPropagation();dealToggleFlag(${d.id})" title="Flag row" style="background:none;border:none;cursor:pointer;font-size:15px;color:${isFlagged?'#f59e0b':'var(--border)'};padding:4px;line-height:1">⚑</button>
+    // Paperwork, in one glyph: how many files are on record, or an amber "!"
+    // when the invoice still has to be sent. The signed copy has its own tick.
+    const st = dealAgreementStatus(d);
+    const nFiles = (d.invoice1_name ? 1 : 0) + (d.invoice2_name ? 1 : 0);
+    const filesCls  = nFiles ? '' : (st.key === 'need_invoice' ? ' is-todo' : ' is-none');
+    const filesGlyph = nFiles ? `${CLIP_SVG}${nFiles > 1 ? nFiles : ''}` : (st.key === 'need_invoice' ? '!' : '—');
+
+    return `<tr id="deal-row-${d.id}" class="${rowClass}">
+      <td class="deal-td-mark">
+        <input type="checkbox" class="deal-select-cb" ${isSelected ? 'checked' : ''} onclick="event.stopPropagation();toggleDealSelect(${d.id})" title="Select">
+        <button type="button" class="deal-flag${isFlagged ? ' is-on' : ''}" onclick="event.stopPropagation();dealToggleFlag(${d.id})" title="${isFlagged ? 'Flagged — click to clear' : 'Flag this row'}">${FLAG_SVG}</button>
       </td>
-      ${ec('deal_month','period',d.deal_month||'', dealPeriodDisplayHtml(d), 'style="text-align:center"')}
-      <td class="deal-cell-company${coHl?' deal-cell-orange':''}" data-id="${d.id}" data-hlkey="${coHlKey}" onclick="dealCompanyClick(event,${d.id},this)" title="Click to open deal · Shift+click to highlight"><strong class="deal-co-link">${esc(d.company||d.title)}</strong></td>
-      ${ec('paid_inc_vat','number',d.paid_inc_vat??'', paidDisplay, `class="deal-num dt-r" oncontextmenu="dealCellContextMenu(event,this)"${isPartial?' style="background:rgba(234,88,12,.28)"':''}`)}
-      ${ec('amount','number',d.amount||0, `${sym}${fmt(dealAmt)}`, 'class="deal-num dt-r"')}
-      ${ec('tax_vat','number',d.tax_vat??'', d.tax_vat ? `${sym}${fmt(parseFloat(d.tax_vat))}` : '<span style="color:var(--muted)">—</span>', 'class="deal-num dt-r"')}
-      ${ec('invoice_date','date',d.invoice_date||'', `${invDateStr||'<span style="color:var(--muted)">—</span>'}`)}
-      ${ec('bank','select-bank',d.bank||'', `${esc(d.bank||'')||'<span style="color:var(--muted)">—</span>'}`)}
-      <td class="deal-cell-inv" data-id="${d.id}" onclick="openDealInvoicePanel(${d.id})" title="Click to upload / view invoice files" style="cursor:pointer">
-        <div style="font-family:monospace;font-size:0.72rem;color:${d.invoice_number?'var(--text)':'var(--muted)'}">${d.invoice_number ? esc(d.invoice_number) : '—'}</div>
-${(() => { const st = dealAgreementStatus(d); return `<span class="${st.cls}" title="${esc(st.title)}">${st.label}</span>`; })()}
-      </td>
-      <td class="deal-cell-toggle" onclick="dealToggleBool(${d.id},'signature_received',${!!d.signature_received})" style="text-align:center;cursor:pointer" title="Click to toggle">${d.signature_received ? '✅' : '<span style="color:var(--muted)">—</span>'}</td>
-      ${ec('initials','text',d.initials||'', d.initials ? `<span class="deal-initials-badge">${esc(d.initials)}</span>` : '<span style="color:var(--muted)">—</span>', 'style="text-align:center"')}
-      ${ec('notes','textarea',d.notes||'', notesDisplay)}
+      ${ec('deal_month', 'period', d.deal_month || '', dealPeriodDisplayHtml(d), 'deal-td-month')}
+      <td class="deal-cell-company${coHl ? ' deal-cell-orange' : ''}" data-id="${d.id}" data-hlkey="${coHlKey}" onclick="dealCompanyClick(event,${d.id},this)" title="Open the deal · Shift+click to highlight"><span class="deal-co-link">${esc(d.company || d.title)}</span></td>
+      ${ec('amount', 'number', d.amount || 0, `<span class="deal-figure">${sym}${fmt(dealAmt)}</span>`, 'deal-num dt-r')}
+      ${ec('paid_inc_vat', 'number', d.paid_inc_vat ?? '', paidDisplay, `deal-num dt-r${isPartial ? ' deal-cell-partial' : ''}`, 'oncontextmenu="dealCellContextMenu(event,this)"')}
+      ${ec('tax_vat', 'number', d.tax_vat ?? '', d.tax_vat ? `${sym}${fmt(parseFloat(d.tax_vat))}` : dash, 'deal-num dt-r')}
+      ${ec('invoice_date', 'date', d.invoice_date || '', dateCell(d.invoice_date), 'deal-td-date')}
+      ${ec('paid_date', 'date', d.paid_date || '', dateCell(d.paid_date), 'deal-td-date')}
+      ${ec('bank', 'select-bank', d.bank || '', esc(d.bank || '') || dash, 'deal-td-bank')}
+      ${ec('invoice_number', 'text', d.invoice_number || '', d.invoice_number ? `<span class="deal-inv-num">${esc(d.invoice_number)}</span>` : dash)}
+      <td class="deal-td-files" onclick="openDealInvoicePanel(${d.id})" title="${esc(st.title)} · click to view or upload"><span class="deal-files${filesCls}">${filesGlyph}</span></td>
+      <td class="deal-cell-toggle deal-td-signed" onclick="dealToggleBool(${d.id},'signature_received',${!!d.signature_received})" title="${d.signature_received ? 'Signed copy received — click to clear' : 'Click when the signed copy arrives'}">${d.signature_received ? `<span class="deal-tick">${TICK_SVG}</span>` : dash}</td>
+      ${ec('initials', 'text', d.initials || '', d.initials ? `<span class="deal-by">${esc(d.initials)}</span>` : dash, 'dt-c')}
+      ${ec('notes', 'textarea', d.notes || '', notesDisplay, 'deal-td-notes')}
       <td class="deal-act-cell">
-        <button class="deal-act-invoice" onclick="event.stopPropagation();openInvoiceGenModal(${d.id})" title="Generate invoice document for this deal">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-          Invoice
-        </button>
-        <button class="deal-act-del" onclick="event.stopPropagation();deleteDeal(${d.id})" title="Delete deal">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
-        </button>
+        <button class="deal-act-invoice" onclick="event.stopPropagation();openInvoiceGenModal(${d.id})" title="Generate the invoice document">${DOC_SVG}</button>
+        <button class="deal-act-del" onclick="event.stopPropagation();deleteDeal(${d.id})" title="Delete deal">${TRASH_SVG}</button>
       </td>
     </tr>`;
   }).join('');
@@ -6118,11 +6114,11 @@ async function dealToggleFlag(id) {
     const row = document.getElementById(`deal-row-${id}`);
     if (row) {
       const paid = parseFloat(dealsData[idx].paid_inc_vat) || 0;
-      row.className = newVal ? 'deal-row-flagged' : (paid > 0 ? 'deal-row-paid' : '');
+      row.classList.toggle('deal-row-flagged', newVal);
+      row.classList.toggle('deal-row-paid', !newVal && paid > 0);
+      const btn = row.querySelector('.deal-flag');
+      if (btn) { btn.classList.toggle('is-on', newVal); btn.title = newVal ? 'Flagged \u2014 click to clear' : 'Flag this row'; }
     }
-    // Update flag button color immediately
-    const btn = row?.querySelector('button[title="Flag row"]');
-    if (btn) btn.style.color = newVal ? '#f59e0b' : 'var(--border)';
   }
 }
 
@@ -6175,20 +6171,17 @@ function showDealColorPicker(e, id) {
 }
 
 function renderDealTotals(filtered, tfoot) {
-  const totalPaid = filtered.reduce((a,d) => a + (parseFloat(d.paid_inc_vat)||0), 0);
-  const totalDeal = filtered.reduce((a,d) => a + (parseFloat(d.amount)||0), 0);
-  const totalTax = filtered.reduce((a,d) => a + (parseFloat(d.tax_vat)||0), 0);
+  const totalPaid = filtered.reduce((a, d) => a + (parseFloat(d.paid_inc_vat) || 0), 0);
+  const totalDeal = filtered.reduce((a, d) => a + (parseFloat(d.amount) || 0), 0);
+  const totalTax  = filtered.reduce((a, d) => a + (parseFloat(d.tax_vat) || 0), 0);
   const remaining = totalDeal - totalPaid;
-  tfoot.innerHTML = `<tr class="deal-totals-row">
-    <td colspan="3" style="font-weight:700;font-size:0.82rem">Totals (${filtered.length} deals)</td>
-    <td style="text-align:right;font-weight:700">£${fmt(totalPaid)}</td>
-    <td style="text-align:right;font-weight:700">£${fmt(totalDeal)}</td>
-    <td style="text-align:right;font-weight:700">£${fmt(totalTax)}</td>
-    <td colspan="7" style="font-size:0.8rem;color:var(--muted)">
-      Outstanding: <strong style="color:${remaining > 0 ? 'var(--danger)' : 'var(--success)'}">£${fmt(Math.abs(remaining))}</strong>
-      ${_dealQFilter !== 'all' ? `&nbsp;·&nbsp; VAT: <strong>£${fmt(totalTax)}</strong>` : ''}
-    </td>
-  </tr>`;
+  tfoot.innerHTML = filtered.length ? `<tr class="deal-totals-row">
+    <td colspan="3">${filtered.length} deal${filtered.length === 1 ? '' : 's'}</td>
+    <td class="dt-r"><span class="deal-figure">£${fmt(totalDeal)}</span></td>
+    <td class="dt-r"><span class="deal-figure">£${fmt(totalPaid)}</span></td>
+    <td class="dt-r">£${fmt(totalTax)}</td>
+    <td colspan="9">${remaining > 0 ? `Remaining <span class="deal-figure" style="color:var(--warning)">£${fmt(remaining)}</span>` : 'Nothing outstanding'}</td>
+  </tr>` : '';
 
   // Store filtered for VAT breakdown
   window._dealTotalsFiltered = filtered;
@@ -6196,20 +6189,20 @@ function renderDealTotals(filtered, tfoot) {
   document.getElementById('dealTotals').innerHTML = `
     <div class="deal-stat-cards">
       <div class="deal-stat-card">
-        <div class="deal-stat-label">Total Paid</div>
-        <div class="deal-stat-value">£${fmt(totalPaid)}</div>
-      </div>
-      <div class="deal-stat-card ds--green">
-        <div class="deal-stat-label">Total Revenue</div>
         <div class="deal-stat-value">£${fmt(totalDeal)}</div>
+        <div class="deal-stat-label">Deal total</div>
       </div>
-      <div class="deal-stat-card ds--alert">
-        <div class="deal-stat-label">Outstanding</div>
-        <div class="deal-stat-value">£${fmt(Math.max(0,remaining))}</div>
+      <div class="deal-stat-card ds--paid">
+        <div class="deal-stat-value">£${fmt(totalPaid)}</div>
+        <div class="deal-stat-label">Paid inc VAT</div>
       </div>
-      <div class="deal-stat-card ds--indigo" onclick="openVatBreakdown()" style="cursor:pointer" title="Click to see VAT breakdown by company">
-        <div class="deal-stat-label">VAT${_dealQFilter !== 'all' ? ' '+_dealQFilter : ' Total'} <span style="font-size:9px;opacity:0.7">▼ breakdown</span></div>
+      <div class="deal-stat-card ds--vat" onclick="openVatBreakdown()" title="VAT by company">
         <div class="deal-stat-value">£${fmt(totalTax)}</div>
+        <div class="deal-stat-label">Tax / VAT${_dealQFilter !== 'all' ? ` · ${_dealQFilter}` : ''}<small>by company ›</small></div>
+      </div>
+      <div class="deal-stat-card ds--remaining${remaining > 0 ? '' : ' is-clear'}">
+        <div class="deal-stat-value">£${fmt(Math.max(0, remaining))}</div>
+        <div class="deal-stat-label">Remaining</div>
       </div>
     </div>`;
 }
@@ -8184,6 +8177,12 @@ function dealYearOf(d) {
 // below keep those two in step so they can never disagree again.
 
 const DEAL_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+// "18 Sep 26": the form a ledger column can hold without wrapping.
+function dealShortDate(iso) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return '';
+  return `${parseInt(m[3], 10)} ${DEAL_MONTHS[parseInt(m[2], 10) - 1]} ${m[1].slice(2)}`;
+}
 let _dealPeriodTouched = false; // user picked a period by hand; don't let the invoice date overwrite it
 
 // "26 - Sep" → { month: 9, year: 2026 }; anything unparseable → null
@@ -8328,7 +8327,7 @@ function dealPeriodDisplayHtml(d) {
   const signedYear = parsed ? parsed.year : (d.invoice_date ? parseInt(String(d.invoice_date).slice(0, 4), 10) : null);
   const progYear = dealYearOf(d);
   const differs = signedYear && progYear && String(signedYear) !== String(progYear);
-  return `<span class="deal-month-disp">${DEAL_MONTHS[monthNum - 1]}${signedYear ? ` <span class="deal-month-yr">${signedYear}</span>` : ''}` +
+  return `<span class="deal-month-disp"><span>${DEAL_MONTHS[monthNum - 1]}${signedYear ? ` <span class="deal-month-yr">${String(signedYear).slice(2)}</span>` : ''}</span>` +
     (differs ? `<span class="deal-month-for" title="Signed ${DEAL_MONTHS[monthNum - 1]} ${signedYear}, for the ${progYear} programme">for ${progYear}</span>` : '') +
     `</span>`;
 }
@@ -8554,9 +8553,10 @@ function updateDealSelectionUI() {
   const n = _selectedDealIds.size;
   const delBtn = document.getElementById('deleteSelectedDealsBtn');
   const moveBtn = document.getElementById('moveYearDealsBtn');
+  document.getElementById('dealsTableBody')?.classList.toggle('has-selection', n > 0);
   if (n > 0) {
-    if (delBtn)  { delBtn.textContent = `🗑 Delete Selected (${n})`; delBtn.style.display = 'inline-flex'; }
-    if (moveBtn) { moveBtn.textContent = `📅 Move to Year (${n})`;  moveBtn.style.display = 'inline-flex'; }
+    if (delBtn)  { delBtn.textContent = `Delete selected (${n})`; delBtn.style.display = 'inline-flex'; }
+    if (moveBtn) { moveBtn.textContent = `Move to year (${n})`;  moveBtn.style.display = 'inline-flex'; }
   } else {
     if (delBtn)  delBtn.style.display = 'none';
     if (moveBtn) moveBtn.style.display = 'none';
