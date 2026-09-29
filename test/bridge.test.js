@@ -56,11 +56,13 @@ async function q(sql, params = []) {
   // --- writes ---
   if (/^\s*INSERT INTO deals/i.test(sql)) {
     const [title, company, contact_name, amount, currency, stage, notes,
-           paid_inc_vat, tax_vat, invoice_date, paid_date, bank, invoice_number] = params;
+           paid_inc_vat, tax_vat, invoice_date, paid_date, bank, invoice_number,
+           , , , deal_month, fiscal_year] = params;
     const row = {
       ...DEAL_ROWS[0], id: DB.nextId++, title, company, contact_name,
       amount: String(amount), currency, stage, notes, paid_inc_vat, tax_vat,
-      invoice_date, paid_date, bank, invoice_number, stage_cancelled: false, events: [],
+      invoice_date, paid_date, bank, invoice_number, deal_month: deal_month || '', fiscal_year: fiscal_year ?? null,
+      stage_cancelled: false, events: [],
     };
     DB.deals.push(row);
     return { rows: [{ id: row.id }] };
@@ -105,11 +107,20 @@ async function q(sql, params = []) {
     return { rows: DB.events.map((e) => ({ ...e, deal_count: String(e.deal_count) })) };
   }
   if (/^\s*UPDATE portfolio_events\s+SET name=/i.test(sql)) {
-    const [name, event_date, location, producer, date_tbc, programme_year, programme_key, notes, id] = params;
+    const [name, event_date, location, producer, date_tbc, programme_year, programme_key, notes, id, year] = params;
     const ev = DB.events.find((e) => e.id === Number(id));
     if (!ev) return { rows: [] };
+    // WHERE id=? AND programme_key IS NULL AND COALESCE(programme_year, year(event_date)) = ?
+    const evYear = ev.programme_year != null ? Number(ev.programme_year) : (ev.event_date ? Number(String(ev.event_date).slice(0, 4)) : null);
+    if (ev.programme_key || evYear !== Number(year)) return { rows: [] };
     Object.assign(ev, { name, event_date, producer, date_tbc, programme_year, programme_key, notes });
     if (!ev.location) ev.location = location;
+    return { rows: [{ id: ev.id }] };
+  }
+  if (/^\s*UPDATE portfolio_events SET programme_key = NULL/i.test(sql)) {
+    const ev = DB.events.find((e) => e.id === Number(params[0]) && e.programme_key);
+    if (!ev) return { rows: [] };
+    ev.programme_key = null;
     return { rows: [{ id: ev.id }] };
   }
   if (/^\s*INSERT INTO portfolio_events/i.test(sql)) {
@@ -117,6 +128,12 @@ async function q(sql, params = []) {
     const ev = { id: DB.nextEventId++, name, event_date, location, notes: '', producer, date_tbc, programme_year, programme_key, deal_count: 0 };
     DB.events.push(ev);
     return { rows: [{ id: ev.id }] };
+  }
+  if (/SELECT DISTINCT COALESCE\(programme_year, EXTRACT\(YEAR FROM event_date\)::int\) AS y/i.test(sql)) {
+    const ids = params.map(Number);
+    const ys = new Set(DB.events.filter((e) => ids.includes(e.id)).map((e) =>
+      e.programme_year != null ? Number(e.programme_year) : (e.event_date ? Number(String(e.event_date).slice(0, 4)) : null)));
+    return { rows: [...ys].map((y) => ({ y })) };
   }
   if (/SELECT id FROM portfolio_events WHERE id IN/i.test(sql)) {
     return { rows: params.filter((p) => EVENT_IDS.includes(Number(p))).map((id) => ({ id })) };
@@ -278,6 +295,22 @@ const server = app.listen(0, async () => {
     JSON.stringify(created.events?.map((e) => e.allocated_amount))
   );
   check('package label preserved', created.events?.[0]?.package_label === 'Gold');
+  check('programme year taken from the events (both 2026)', created.fiscal_year === 2026, String(created.fiscal_year));
+
+  const forNext = await (await post('/deals', {
+    company: 'Highspring', amount: 40000, currency: 'GBP', stage: 'Won', deal_month: '26 - Sep',
+    event_ids: [12],
+  })).json();
+  check('a deal signed in 2026 for a 2027 event is a 2027 deal', forNext.fiscal_year === 2027, String(forNext.fiscal_year));
+  check('...while its signed month stays Sep 2026', forNext.deal_month === '26 - Sep', forNext.deal_month);
+  const explicit = await (await post('/deals', {
+    company: 'Explicit Ltd', amount: 100, currency: 'GBP', stage: 'Won', fiscal_year: 2028, event_ids: [12],
+  })).json();
+  check('an explicit programme year wins over the events', explicit.fiscal_year === 2028, String(explicit.fiscal_year));
+  const spread = await (await post('/deals', {
+    company: 'Spread Ltd', amount: 100, currency: 'GBP', stage: 'Won', event_ids: [10, 12],
+  })).json();
+  check('events in two years leave the year unset', spread.fiscal_year == null, String(spread.fiscal_year));
 
   console.log('\nValidation refuses bad writes');
   check('no company → 400', (await post('/deals', { amount: 1 })).status === 400);
@@ -347,6 +380,27 @@ const server = app.listen(0, async () => {
   check('no duplicate row from the second create', DB.events.filter((e) => e.programme_key === '2027:pd-berlin').length === 1);
   prog = await (await fetch(pbase)).json();
   check('linked rows report as linked', prog.items.find((i) => i.key === 'ops-new-york').status === 'linked');
+
+  // The guards a client cannot talk its way past.
+  const wrongYear = await (await fetch(`${pbase}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ decisions: [{ key: 'pd-chicago', action: 'rename', row_id: 10 }] }) })).json();
+  check('a 2026 row cannot be renamed into the 2027 programme', wrongYear.results[0].outcome === 'row-wrong-year', JSON.stringify(wrongYear.results));
+  check('...and the 2026 row is untouched', DB.events.find((e) => e.id === 10).name === 'Berlin' && DB.events.find((e) => e.id === 10).programme_key == null);
+  const rePoint = await (await fetch(`${pbase}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ decisions: [{ key: 'ops-europe', action: 'rename', row_id: 12 }] }) })).json();
+  check('a linked row cannot be re-pointed at another event', rePoint.results[0].outcome === 'row-already-linked', JSON.stringify(rePoint.results));
+  check('...and keeps its original key', DB.events.find((e) => e.id === 12).programme_key === '2027:ops-new-york');
+
+  // Undo: unlink clears the key and nothing else.
+  const rowBefore = { ...DB.events.find((e) => e.id === 12) };
+  const unlinked = await (await fetch(`${pbase}/unlink`, { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ row_id: 12 }) })).json();
+  const rowAfter = DB.events.find((e) => e.id === 12);
+  check('unlink succeeds', unlinked.ok === true, JSON.stringify(unlinked));
+  check('unlink clears only the key', rowAfter.programme_key == null && rowAfter.name === rowBefore.name && rowAfter.event_date === rowBefore.event_date && rowAfter.deal_count === rowBefore.deal_count);
+  prog = await (await fetch(pbase)).json();
+  check('an unlinked row becomes a suggestion again', prog.items.find((i) => i.key === 'ops-new-york').suggestion?.id === 12);
+  check('unlinking an unlinked row is a 404', (await fetch(`${pbase}/unlink`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ row_id: 13 }) })).status === 404);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   server.close();

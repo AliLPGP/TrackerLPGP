@@ -597,6 +597,7 @@
 <div class="page" id="page-deals">
 
   <!-- Last invoice banner -->
+  <div id="dealRefileBanner" class="deal-refile-banner hidden"></div>
   <div id="dealLastInvoice" class="deal-inv-banner">
     <span class="deal-inv-label">Last invoice:</span>
     <a id="dealLastInvLink" href="#" class="deal-inv-link" onclick="scrollToLastInvoice(event)"></a>
@@ -1733,16 +1734,31 @@
         </div>
       </div>
 
-      <!-- Deal period: the month and year the deal is for. Lives outside the
-           edit-only Invoice section so it is asked when a deal is first added. -->
+      <!-- Two years that are usually the same and sometimes are not: the month
+           the deal was signed, and the programme year it is for. A deal signed
+           in September 2026 for a 2027 event is a 2027 deal, and the year tab
+           follows the programme year. -->
       <div>
-        <div class="deal-modal-sec-label">Deal Period</div>
-        <div class="form-group" style="margin:0;max-width:260px">
-          <div class="deal-period" title="The month and year this deal is for. The year decides which year tab it appears under.">
-            <select id="dealPeriodMonth" onchange="onDealPeriodChange()"></select>
-            <select id="dealPeriodYear" onchange="onDealPeriodChange()"></select>
+        <div class="deal-period-grid">
+          <div>
+            <div class="deal-modal-sec-label">Month signed</div>
+            <div class="form-group" style="margin:0;max-width:260px">
+              <div class="deal-period" title="When the deal was signed. Used by the month range filter and shown in the Month column.">
+                <select id="dealPeriodMonth" onchange="onDealPeriodChange()"></select>
+                <select id="dealPeriodYear" onchange="onDealPeriodChange()"></select>
+              </div>
+              <div class="deal-period-hint" id="dealPeriodHint"></div>
+            </div>
           </div>
-          <div class="deal-period-hint" id="dealPeriodHint"></div>
+          <div>
+            <div class="deal-modal-sec-label">Programme year</div>
+            <div class="form-group" style="margin:0;max-width:200px">
+              <div class="deal-period" title="The year's programme this deal is for. Decides which year tab it appears under. Set from the events you pick; change it if you need to.">
+                <select id="dealProgrammeYear" onchange="onDealProgrammeYearChange()"></select>
+              </div>
+              <div class="deal-period-hint" id="dealProgrammeYearHint"></div>
+            </div>
+          </div>
         </div>
       </div>
 

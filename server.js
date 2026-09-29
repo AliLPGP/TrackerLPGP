@@ -1952,15 +1952,20 @@ app.get('/api/portfolio-events/:id/deals', requireAuth, requireAdminOrManager, a
 // in the edit form can never unlink a row from the programme.
 function portfolioEventFields(body) {
   const tbc = ['', 'day', 'date'].includes(body.date_tbc) ? body.date_tbc : '';
+  // A "date TBC" event stores no date at all, whatever the client sent; the
+  // year it is filed under falls back to the year of that discarded date.
+  const rawDate = body.event_date || null;
+  const eventDate = tbc === 'date' ? null : rawDate;
+  const yearFallback = tbc === 'date' && rawDate ? Number.parseInt(String(rawDate).slice(0, 4), 10) : NaN;
   const year = Number.parseInt(body.programme_year, 10);
   return {
     name: body.name,
-    event_date: body.event_date || null,
+    event_date: eventDate,
     location: body.location || '',
     notes: body.notes || '',
     producer: body.producer || '',
     date_tbc: tbc,
-    programme_year: Number.isFinite(year) ? year : null,
+    programme_year: Number.isFinite(year) ? year : (Number.isFinite(yearFallback) ? yearFallback : null),
   };
 }
 app.post('/api/portfolio-events', requireAuth, requireAdminOrManager, async (req, res) => {
@@ -2087,12 +2092,39 @@ async function insertDealEvents(dealId, amount, event_ids, event_packages) {
   }
 }
 
+/**
+ * The programme year a set of events belongs to, when they agree.
+ *
+ * Each event's year is its programme_year, else the year of its date. If
+ * every dated event says the same year, that is the answer; if they disagree
+ * or none has a year, null -- the caller falls back to what it was told.
+ */
+async function programmeYearForEvents(eventIds) {
+  const ids = (Array.isArray(eventIds) ? eventIds : []).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  if (!ids.length) return null;
+  const { rows } = await q(
+    `SELECT DISTINCT COALESCE(programme_year, EXTRACT(YEAR FROM event_date)::int) AS y
+       FROM portfolio_events WHERE id IN (${ids.map(() => '?').join(',')})`,
+    ids
+  );
+  const years = rows.map((r) => (r.y == null ? null : Number(r.y))).filter((y) => y != null);
+  const distinct = [...new Set(years)];
+  return distinct.length === 1 ? distinct[0] : null;
+}
+
 app.post('/api/deals', requireAuth, requireAdminOrManager, async (req, res) => {
   try {
     const { title, company, contact_name, amount, currency, stage, event_ids, event_packages, notes,
             invoice1_name, invoice1_data, invoice2_name, invoice2_data,
             paid_inc_vat, tax_vat, invoice_date, paid_date, bank, invoice_number,
-            invoice_agreement_sent, signature_received, initials, deal_month, fiscal_year } = req.body;
+            invoice_agreement_sent, signature_received, initials, deal_month } = req.body;
+    // Explicit year wins; otherwise the events decide. Only when neither says
+    // anything does the deal go without one (and the UI then files it by its
+    // signed month, as before).
+    const pkgIds = Array.isArray(event_packages) ? event_packages.map((p) => p && p.event_id) : [];
+    const fiscal_year = req.body.fiscal_year
+      ? parseInt(req.body.fiscal_year, 10)
+      : await programmeYearForEvents([...(Array.isArray(event_ids) ? event_ids : []), ...pkgIds]);
     const { rows } = await q(
       `INSERT INTO deals (title, company, contact_name, amount, currency, stage, notes,
         invoice1_name, invoice1_data, invoice2_name, invoice2_data, created_by,
@@ -2106,7 +2138,7 @@ app.post('/api/deals', requireAuth, requireAdminOrManager, async (req, res) => {
        tax_vat != null ? parseFloat(tax_vat) : null,
        invoice_date||null, paid_date||null, bank||'', invoice_number||'',
        invoice_agreement_sent ? true : false, signature_received ? true : false, initials||'',
-       deal_month||'', fiscal_year ? parseInt(fiscal_year) : null]
+       deal_month||'', Number.isInteger(fiscal_year) ? fiscal_year : null]
     );
     const deal = rows[0];
     await insertDealEvents(deal.id, amount, event_ids, event_packages);
@@ -2118,7 +2150,11 @@ app.put('/api/deals/:id', requireAuth, requireAdminOrManager, async (req, res) =
     const { title, company, contact_name, amount, currency, stage, event_ids, event_packages, notes,
             invoice1_name, invoice1_data, invoice2_name, invoice2_data,
             paid_inc_vat, tax_vat, invoice_date, paid_date, bank, invoice_number,
-            invoice_agreement_sent, signature_received, initials, deal_month, fiscal_year } = req.body;
+            invoice_agreement_sent, signature_received, initials, deal_month } = req.body;
+    const pkgIdsU = Array.isArray(event_packages) ? event_packages.map((p) => p && p.event_id) : [];
+    const fiscal_year = req.body.fiscal_year
+      ? parseInt(req.body.fiscal_year, 10)
+      : await programmeYearForEvents([...(Array.isArray(event_ids) ? event_ids : []), ...pkgIdsU]);
     const { rows } = await q(
       `UPDATE deals SET title=?, company=?, contact_name=?, amount=?, currency=?, stage=?, notes=?,
         invoice1_name=COALESCE(?,invoice1_name), invoice1_data=COALESCE(?,invoice1_data),
@@ -2134,7 +2170,7 @@ app.put('/api/deals/:id', requireAuth, requireAdminOrManager, async (req, res) =
        tax_vat != null ? parseFloat(tax_vat) : null,
        invoice_date||null, paid_date||null, bank||'', invoice_number||'',
        invoice_agreement_sent ? true : false, signature_received ? true : false, initials||'',
-       deal_month||'', fiscal_year ? parseInt(fiscal_year) : null, req.params.id]
+       deal_month||'', Number.isInteger(fiscal_year) ? fiscal_year : null, req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     if (Array.isArray(event_ids) || Array.isArray(event_packages)) {
@@ -2160,6 +2196,44 @@ app.delete('/api/deals/bulk', requireAuth, requireAdminOrManager, async (req, re
     if (!safe.length) return res.status(400).json({ error: 'No valid ids' });
     await q(`DELETE FROM deals WHERE id IN (${safe.join(',')})`, []);
     res.json({ ok: true, deleted: safe.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+// Deals whose allocated events all belong to one year, filed under another.
+// GET lists them; POST refiles them. Deals with events in two years, or with
+// no dated events, are never touched: there is no single right answer for
+// those and a person decides.
+async function dealsFiledAgainstTheirEvents() {
+  const { rows } = await q(`
+    SELECT d.id, d.company, d.title, d.deal_month, d.fiscal_year,
+           MIN(COALESCE(pe.programme_year, EXTRACT(YEAR FROM pe.event_date)::int)) AS y_min,
+           MAX(COALESCE(pe.programme_year, EXTRACT(YEAR FROM pe.event_date)::int)) AS y_max,
+           COUNT(pe.id) AS n_events
+      FROM deals d
+      JOIN deal_events de ON de.deal_id = d.id
+      JOIN portfolio_events pe ON pe.id = de.event_id
+     GROUP BY d.id
+    HAVING MIN(COALESCE(pe.programme_year, EXTRACT(YEAR FROM pe.event_date)::int)) IS NOT NULL
+       AND MIN(COALESCE(pe.programme_year, EXTRACT(YEAR FROM pe.event_date)::int))
+         = MAX(COALESCE(pe.programme_year, EXTRACT(YEAR FROM pe.event_date)::int))
+       AND (d.fiscal_year IS NULL OR d.fiscal_year <> MIN(COALESCE(pe.programme_year, EXTRACT(YEAR FROM pe.event_date)::int)))
+     ORDER BY d.id`);
+  return rows.map((r) => ({
+    id: r.id, company: r.company || r.title || '', deal_month: r.deal_month || '',
+    fiscal_year: r.fiscal_year == null ? null : Number(r.fiscal_year),
+    events_year: Number(r.y_min), n_events: Number(r.n_events),
+  }));
+}
+app.get('/api/deals/refile-by-events', requireAuth, requireAdminOrManager, async (_req, res) => {
+  try { res.json({ deals: await dealsFiledAgainstTheirEvents() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/deals/refile-by-events', requireAuth, requireAdminOrManager, async (req, res) => {
+  try {
+    const pending = await dealsFiledAgainstTheirEvents();
+    const only = Array.isArray(req.body && req.body.ids) ? new Set(req.body.ids.map(Number)) : null;
+    const todo = only ? pending.filter((d) => only.has(d.id)) : pending;
+    for (const d of todo) await q('UPDATE deals SET fiscal_year=? WHERE id=?', [d.events_year, d.id]);
+    res.json({ ok: true, refiled: todo.map((d) => ({ id: d.id, company: d.company, from: d.fiscal_year, to: d.events_year })) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.patch('/api/deals/bulk-year', requireAuth, requireAdminOrManager, async (req, res) => {

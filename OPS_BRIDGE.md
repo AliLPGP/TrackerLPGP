@@ -46,6 +46,18 @@ browser.
 | `GET /api/bridge/events/:id/sponsors` | Who's sponsoring one event, for how much, and the signer's initials |
 | `GET /api/bridge/deals/:id` | One deal in full |
 
+Every event -- on `/events` and inside a deal's, a match's or a company's
+`events[]` -- carries the programme fields:
+
+| Field | Meaning |
+| --- | --- |
+| `producer` | The producer team running it (`"Gio & Karam"`, `"Fidak"`, ...), or `""` |
+| `date_tbc` | `""` the day is confirmed · `"day"` month known, day TBC (`event_date` is the 1st as a placeholder, never a booking) · `"date"` no date at all |
+| `programme_year` | The year it is filed under even when `event_date` is null (`/events` only) |
+| `programme_key` | `"2027:ops-miami"` when the row is linked to the confirmed programme, else null (`/events` only) |
+
+Never print `event_date` raw: a `"day"` row's 1st-of-the-month is not a date.
+
 ### Writes — also `x-ops-write-key`
 
 | Route | Does |
@@ -66,6 +78,14 @@ They refuse rather than guess:
 
 `PATCH` replaces a deal's allocations wholesale, and only when the caller sends
 some — omitting them leaves the existing split untouched.
+
+**Programme year.** A deal's `fiscal_year` is the year tab it files under, and
+it is a different fact from the month it was signed (`deal_month`). When a
+write allocates events and sends no `fiscal_year`, the tracker sets it to the
+year those events belong to (their `programme_year`, else the year of their
+date) -- so a deal recorded in September 2026 for a 2027 event is a 2027 deal.
+An explicit `fiscal_year` always wins; events spanning two years leave it as
+it was.
 
 ## How matching works
 
