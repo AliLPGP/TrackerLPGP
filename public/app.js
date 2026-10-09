@@ -8181,7 +8181,9 @@ function dealPeriodDisplayHtml(d) {
   if (!monthNum) return d.deal_month ? `<span class="deal-month-disp">${esc(d.deal_month)}</span>` : '<span style="color:var(--muted)">—</span>';
   const signedYear = parsed ? parsed.year : (d.invoice_date ? parseInt(String(d.invoice_date).slice(0, 4), 10) : null);
   const progYear = dealYearOf(d);
-  const differs = signedYear && progYear && String(signedYear) !== String(progYear);
+  // "for 2027" only earns its place under All Years; on a year tab every row
+  // is already that year's.
+  const differs = _dealYearFilter === 'all' && signedYear && progYear && String(signedYear) !== String(progYear);
   return `<span class="deal-month-disp"><span>${DEAL_MONTHS[monthNum - 1]}${signedYear ? ` <span class="deal-month-yr">${String(signedYear).slice(2)}</span>` : ''}</span>` +
     (differs ? `<span class="deal-month-for" title="Signed ${DEAL_MONTHS[monthNum - 1]} ${signedYear}, for the ${progYear} programme">for ${progYear}</span>` : '') +
     `</span>`;
