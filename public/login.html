@@ -17,13 +17,25 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
   <style>
     .login-tabs { display:flex; gap:0; margin-bottom:24px; border:1px solid var(--border); border-radius:10px; overflow:hidden; }
-    .login-tab { flex:1; padding:10px; text-align:center; font:600 13px/1 var(--font-mono); color:var(--muted); cursor:pointer; background:transparent; border:none; transition:all .2s; }
-    .login-tab.active { background: #2f80ff; color:#fff; }
+    .login-tab { flex:1; padding:10px; text-align:center; font:600 13px/1 var(--font-sans); color:var(--muted); cursor:pointer; background:transparent; border:none; transition:all .2s; }
+    .login-tab.active { background: var(--accent); color:#fff; }
     .login-tab-panel { display:none; }
     .login-tab-panel.active { display:block; }
   </style>
 </head>
 <body class="login-body">
+  <!-- Background: dot field that lights up around the pointer, slow blue
+       glows, and a few LPGP marks floating behind the card. -->
+  <canvas id="loginBg" aria-hidden="true"></canvas>
+  <div class="login-glows" aria-hidden="true"><i></i><i></i><i></i></div>
+  <div class="login-marks" aria-hidden="true">
+    <span style="--x:12%;--y:22%;--s:64px;--d:0s;--depth:28">L</span>
+    <span style="--x:82%;--y:16%;--s:44px;--d:-4s;--depth:18">L</span>
+    <span style="--x:74%;--y:72%;--s:84px;--d:-8s;--depth:36">L</span>
+    <span style="--x:20%;--y:78%;--s:38px;--d:-2s;--depth:14">L</span>
+    <span style="--x:48%;--y:8%;--s:30px;--d:-6s;--depth:10">L</span>
+    <span style="--x:92%;--y:46%;--s:34px;--d:-10s;--depth:12">L</span>
+  </div>
   <button class="login-theme-btn" onclick="loginToggleTheme()" title="Toggle theme" id="loginThemeBtn">🌙</button>
   <div class="login-wrap">
     <div class="login-card">
@@ -135,5 +147,6 @@
       navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
   </script>
+  <script src="login-bg.js" defer></script>
 </body>
 </html>
