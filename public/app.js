@@ -480,15 +480,7 @@ async function loadDashboard() {
   const month = now.getMonth() + 1;
 
   document.getElementById('dashStats').innerHTML = `
-    <div class="dash-bento">
-      <div class="skeleton" style="height:200px;border-radius:18px"></div>
-      <div class="dash-mini-grid">
-        <div class="skeleton" style="height:72px;border-radius:14px"></div>
-        <div class="skeleton" style="height:72px;border-radius:14px"></div>
-        <div class="skeleton" style="height:72px;border-radius:14px"></div>
-      </div>
-    </div>
-  `;
+    <div class="db-kpis">${'<div class="skeleton db-skel"></div>'.repeat(4)}</div>`;
 
   const [summaryRes, salaryRes, upcomingRes, expiringRes, allEmpRes, hotelRes, dealsRes, evtRevRes, calCurRes, calNextRes] = await Promise.all([
     fetch(`/api/summary?from=${year}-01-01&to=${year}-12-31`),
@@ -536,47 +528,9 @@ async function loadDashboard() {
       return a + salToGBP(r, e.currency || 'GBP');
     }, 0);
 
-  // Hotel fees remaining (unpaid + partial rows: paid_amount vs cost where parseable)
-  const hotelUnpaidCount = hotelData.filter(h => h.status !== 'paid').length;
-  const hotelPaidTotal   = hotelData.reduce((a, h) => a + (parseFloat(h.paid_amount) || 0), 0);
-
-  document.getElementById('dashStats').innerHTML = `
-    <div class="dash-stat-strip">
-      <div class="dss-card dss-card--accent" onclick="navigate('employees')" title="View employees">
-        <div class="dss-label">Active Headcount</div>
-        <div class="dss-value">${totalHeadcount}</div>
-        <div class="dss-row">
-          <span class="dss-pill dss-pill--blue">${payrollCount} Payroll</span>
-          <span class="dss-pill dss-pill--amber">${seCount} Self-Emp</span>
-        </div>
-      </div>
-      <div class="dss-card ${unpaidCount > 0 ? 'dss-card--warn' : 'dss-card--ok'}" onclick="navigate('salary')" title="Go to salary">
-        <div class="dss-label">Unpaid This Month</div>
-        <div class="dss-value" style="color:${unpaidCount > 0 ? 'var(--warning)' : 'var(--positive)'}">${unpaidCount}</div>
-        <div class="dss-sub">${unpaidCount > 0 ? 'Needs attention →' : 'All paid up ✓'}</div>
-      </div>
-      <div class="dss-card dss-card--neutral" onclick="navigate('salary')" title="Go to salary">
-        <div class="dss-label">Year Salary Remaining</div>
-        <div class="dss-value" style="color:var(--negative)">£${fmtK(totalGBPRemaining)}</div>
-        <div class="dss-sub">GBP equiv · ${year}</div>
-      </div>
-      <div class="dss-card ${hotelUnpaidCount > 0 ? 'dss-card--warn' : 'dss-card--ok'}" onclick="navigate('hotels')" title="View hotels">
-        <div class="dss-label">Hotel Events Pending</div>
-        <div class="dss-value" style="color:${hotelUnpaidCount > 0 ? 'var(--warning)' : 'var(--positive)'}">${hotelUnpaidCount}</div>
-        <div class="dss-sub">${hotelUnpaidCount > 0 ? `${hotelUnpaidCount} unpaid / partial →` : 'All settled ✓'}</div>
-      </div>
-    </div>
-    <div id="headcountPanel"></div>
-  `;
-
-  // Revenue Intelligence + contract expiry panel
-  renderRevenueIntelPanel(dashDeals, expiring, evtRevData);
-
-  // Headcount by department (now renders into #headcountPanel inside the bento)
-  renderHeadcountPanel(activeEmps, payrollCount, seCount, totalHeadcount, year);
-
-  // Upcoming reminders panel (calendar reminders + day offs)
-  renderDashUpcoming(upcoming, upcomingDayOffs);
+  renderDashOverview({ year, activeEmps, totalHeadcount, payrollCount, seCount, unpaidCount,
+    totalGBPRemaining, deals: dashDeals, evtRevData, hotelData, expiring,
+    upcoming, dayOffs: upcomingDayOffs });
 
   // Activity feed
   renderDashActivity(summary, expiring, hotelData, salaryData);
@@ -596,15 +550,14 @@ async function loadDashboard() {
     const group = isIntl ? 'intl' : (row.employment_type === 'self_employed' ? 'se' : 'payroll');
     esCounts.all++; esCounts[group]++;
 
-    const typeBadge = row.employment_type === 'self_employed' ? 'badge-yellow' : 'badge-blue';
-    const typeLabel = row.employment_type === 'self_employed' ? 'Self-Emp' : 'Payroll';
+    const typeLabel = row.employment_type === 'self_employed' ? 'Self-employed' : 'Payroll';
     // Red only when the excess actually costs them — days over the allowance that
     // are all marked "no deduct" are approved leave, not an overrun
     const daysColor = (parseFloat(row.excess_day_deduction) || 0) > 0 ? 'text-danger fw-bold' : '';
     const exemptTip = (parseFloat(row.exempt_days) || 0) > 0
       ? ` title="${row.exempt_days} day(s) marked 'no deduct' — logged but never charged"` : '';
-    const typeCell  = `<span class="badge ${typeBadge}">${typeLabel}</span>` +
-      (isIntl ? ` <span class="badge es-badge-intl">${esc(currency)}</span>` : '');
+    const typeCell  = `<span class="es-type">${typeLabel}</span>` +
+      (isIntl ? ` <span class="es-cur">${esc(currency)}</span>` : '');
 
     // Annual salary left to pay (net of deductions) + % paid bar
     const annual    = parseFloat(sal.annual_salary != null ? sal.annual_salary : row.annual_salary) || 0;
@@ -614,10 +567,10 @@ async function loadDashboard() {
     if (annual <= 0 || remaining === null) {
       annualCell = '<span style="color:var(--muted)">—</span>';
     } else if (remaining <= 0) {
-      annualCell = `<div style="font-weight:700;color:var(--positive)">${remaining < 0 ? 'Overpaid' : 'Fully paid'}</div>
+      annualCell = `<div class="es-left es-left--done">${remaining < 0 ? 'Overpaid' : 'Fully paid'}</div>
         <div class="es-prog"><div class="es-prog-fill" style="width:100%"></div></div>`;
     } else {
-      annualCell = `<div style="font-weight:700;color:var(--negative)">${fmtMoney(remaining, currency)}</div>
+      annualCell = `<div class="es-left">${fmtMoney(remaining, currency)}</div>
         <div class="es-prog"><div class="es-prog-fill" style="width:${pctPaid || 0}%"></div></div>
         <div class="es-prog-lbl">${pctPaid != null ? pctPaid : 0}% paid</div>`;
     }
@@ -700,372 +653,245 @@ function applyEmpSummaryFilters() {
   }
 }
 
-function renderRevenueIntelPanel(deals, expiring, evtRevData) {
-  const el = document.getElementById('contractExpiryPanel');
+// ─── DASHBOARD OVERVIEW ─────────────────────────────────────────────────────
+// Four headline figures, then a chart and a few short lists. Each card answers
+// one question and links to the page that holds the detail.
+
+// What a deal has brought in, net of the VAT on what was paid.
+function dashDealMoney(d) {
+  const amount = parseFloat(d.amount) || 0;
+  const paid   = parseFloat(d.paid_inc_vat) || 0;
+  const vat    = paid > 0 ? (parseFloat(d.tax_vat) || 0) : 0;
+  const paidEx = Math.max(0, paid - vat);
+  return { amount, paid, paidEx, out: Math.max(0, amount - paidEx) };
+}
+
+function dashDealStatus(d) {
+  const { amount, paid } = dashDealMoney(d);
+  if (paid <= 0) return 'unpaid';
+  return paid >= amount ? 'paid' : 'partial';
+}
+
+// Round a chart maximum up to 1, 2, 2.5 or 5 × a power of ten.
+function dashNiceMax(v) {
+  if (v <= 0) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  const step = [1, 2, 2.5, 5, 10].find(s => s * p >= v);
+  return step * p;
+}
+
+// £1.2k / £150k / £2.5M: a short amount for axes and headline figures.
+function dashMoneyShort(v) {
+  if (v >= 1_000_000) return '£' + +(v / 1_000_000).toFixed(2) + 'M';
+  if (v >= 1000) return '£' + +(v / 1000).toFixed(v >= 100000 ? 0 : 1) + 'k';
+  return '£' + Math.round(v).toLocaleString('en-GB');
+}
+
+function dashCard(title, link, body, extra) {
+  const linkHtml = link ? `<button type="button" class="db-card-link" onclick="navigate('${link.page}')">${link.label}</button>` : '';
+  return `<section class="db-card ${extra || ''}">
+    <header class="db-card-hd"><h3>${title}</h3>${linkHtml}</header>
+    ${body}
+  </section>`;
+}
+
+function dashEmpty(text) {
+  return `<div class="db-empty">${text}</div>`;
+}
+
+function renderDashOverview(o) {
+  const el = document.getElementById('dashStats');
   if (!el) return;
+  const now = new Date();
+  const monthName = MONTHS[now.getMonth() + 1];
+  const deals = Array.isArray(o.deals) ? o.deals : [];
 
-  // Overall metrics from all deals
-  const totalRev        = deals.reduce((a,d) => a + (parseFloat(d.amount)||0), 0);
-  const totalPaid       = deals.reduce((a,d) => a + (parseFloat(d.paid_inc_vat)||0), 0);
-  const totalVAT        = deals.reduce((a,d) => (parseFloat(d.paid_inc_vat)||0) > 0 ? a + (parseFloat(d.tax_vat)||0) : a, 0);
-  const totalPaidExVat  = Math.max(0, totalPaid - totalVAT);
-  const totalOut        = Math.max(0, totalRev - totalPaidExVat);
-  const paidDeals  = deals.filter(d => (parseFloat(d.paid_inc_vat)||0) > 0).length;
-  const collRate   = deals.length > 0 ? Math.round(paidDeals / deals.length * 100) : 0;
+  // ── Headline figures
+  const totals = deals.reduce((t, d) => {
+    const m = dashDealMoney(d);
+    t.amount += m.amount; t.paid += m.paid; t.paidEx += m.paidEx; t.out += m.out;
+    return t;
+  }, { amount: 0, paid: 0, paidEx: 0, out: 0 });
+  const pctCollected = totals.amount > 0 ? Math.round(totals.paidEx / totals.amount * 100) : 0;
+  const pounds = v => '£' + Math.round(v).toLocaleString('en-GB');
 
-  // SVG donut: paid vs partial vs unpaid
-  const R = 38, C = +(2 * Math.PI * R).toFixed(2);
-  const unpaidDeals  = deals.filter(d => (parseFloat(d.paid_inc_vat)||0) === 0).length;
-  const partialDeals = deals.filter(d => { const p=parseFloat(d.paid_inc_vat)||0; const a=parseFloat(d.amount)||0; return p>0 && p<a; }).length;
-  const fullPaidDeals= deals.filter(d => { const p=parseFloat(d.paid_inc_vat)||0; const a=parseFloat(d.amount)||0; return p>0 && p>=a; }).length;
-  const total = deals.length;
-  const segPaid    = total > 0 ? (fullPaidDeals / total * C) : 0;
-  const segPartial = total > 0 ? (partialDeals / total * C) : 0;
-  const segUnpaid  = total > 0 ? (unpaidDeals / total * C) : 0;
-  const offPaid    = 0;
-  const offPartial = -(segPaid);
-  const offUnpaid  = -(segPaid + segPartial);
+  const kpi = (label, value, sub, page, tone) => `
+    <button type="button" class="db-kpi" onclick="navigate('${page}')">
+      <span class="db-kpi-label">${label}</span>
+      <span class="db-kpi-value">${value}</span>
+      <span class="db-kpi-sub ${tone || ''}">${sub}</span>
+    </button>`;
 
-  const today = new Date().toISOString().slice(0,10);
-  const expiryHtml = expiring.length ? `
-    <div class="ri-expiry-section">
-      <div class="ri-expiry-title">⚠️ Contracts Expiring</div>
-      ${expiring.slice(0,3).map(e => {
-        const expired = e.contract_end_date < today;
-        return `<div class="ri-expiry-row">
-          <span>${esc(e.name)}</span>
-          <span class="ri-expiry-badge ${expired ? 'ri-expiry-red' : 'ri-expiry-yellow'}">${expired ? 'Expired' : e.contract_end_date}</span>
-        </div>`;
-      }).join('')}
-    </div>` : '';
+  const kpis = `<div class="db-kpis">
+    ${kpi('Active staff', o.totalHeadcount, `${o.payrollCount} payroll · ${o.seCount} self-employed`, 'employees')}
+    ${kpi(`Unpaid for ${monthName}`, o.unpaidCount,
+          o.unpaidCount > 0 ? `${o.unpaidCount === 1 ? '1 person' : o.unpaidCount + ' people'} still to pay` : 'Everyone is paid',
+          'salary', o.unpaidCount > 0 ? 'is-alert' : 'is-good')}
+    ${kpi(`Salary left in ${o.year}`, pounds(o.totalGBPRemaining), 'All currencies, in GBP', 'salary')}
+    ${kpi('Deals to collect', pounds(totals.out), `of ${pounds(totals.amount)} · ${pctCollected}% collected`, 'deals')}
+  </div>`;
 
-  // Per-event cards
-  const eventsHtml = (evtRevData||[]).filter(ev => Number(ev.deal_count) > 0).map(ev => {
-    const amt        = parseFloat(ev.total_amount) || 0;
-    const paid       = parseFloat(ev.total_paid) || 0;
-    const vatColl    = parseFloat(ev.total_vat_collected) || 0;
-    const paidExVat  = Math.max(0, paid - vatColl);
-    const out        = Math.max(0, amt - paidExVat);
-    const pct        = amt > 0 ? Math.min(100, Math.round(paidExVat / amt * 100)) : 0;
-    const clients= Array.isArray(ev.clients) ? ev.clients : [];
-    const paidC  = clients.filter(c => (parseFloat(c.paid_inc_vat)||0) >= (parseFloat(c.amount)||0) && (parseFloat(c.amount)||0) > 0).length;
-    const partC  = clients.filter(c => { const p=parseFloat(c.paid_inc_vat)||0; const a=parseFloat(c.amount)||0; return p>0 && p<a; }).length;
-    const unpC   = clients.filter(c => (parseFloat(c.paid_inc_vat)||0) === 0).length;
-    const evtDate = (ev.event_date || ev.programme_year) ? fmtEventDate(ev) : '';
-
-    // Client dots
-    const dotHtml = clients.slice(0,12).map(c => {
-      const p=parseFloat(c.paid_inc_vat)||0; const a=parseFloat(c.amount)||0;
-      const status = p>=a && a>0 ? 'paid' : p>0 ? 'partial' : 'unpaid';
-      const dotCol = status==='paid' ? '#22c55e' : status==='partial' ? '#f59e0b' : 'var(--muted)';
-      const co = c.company || '?';
-      return `<span title="${esc(co)}: ${status}" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dotCol};margin:1px"></span>`;
-    }).join('') + (clients.length > 12 ? `<span style="font-size:0.7rem;color:var(--muted)">+${clients.length-12}</span>` : '');
-
-    return `<div class="ri-evt-card" onclick="navigate('portfolio')" title="View in Portfolio" style="cursor:pointer">
-      <div class="ri-evt-hd">
-        <span class="ri-evt-name">${esc(ev.event_name)}</span>
-        ${evtDate ? `<span class="ri-evt-date">${evtDate}</span>` : ''}
-      </div>
-      <div class="ri-evt-stats">
-        <span class="ri-evt-stat">
-          <span class="ri-evt-stat-label">Total</span>
-          <strong>£${fmtK(amt)}</strong>
-        </span>
-        <span class="ri-evt-stat">
-          <span class="ri-evt-stat-label" style="color:#22c55e">Collected</span>
-          <strong style="color:#22c55e">£${fmtK(paidExVat)}</strong>
-        </span>
-        <span class="ri-evt-stat">
-          <span class="ri-evt-stat-label" style="color:#f59e0b">Outstanding</span>
-          <strong style="color:#f59e0b">£${fmtK(out)}</strong>
-        </span>
-      </div>
-      <div class="ri-evt-bar-wrap"><div class="ri-evt-bar" style="width:0%" data-pct="${pct}"></div></div>
-      <div class="ri-evt-foot">
-        <span class="ri-evt-dots">${dotHtml}</span>
-        <span class="ri-evt-counts ri-evt-foot-label">
-          <span style="color:#22c55e;font-weight:700">${paidC}✓</span>
-          ${partC > 0 ? `<span style="color:#f59e0b;font-weight:700"> ${partC}◑</span>` : ''}
-          <span style="color:var(--muted);font-weight:700"> ${unpC}✗</span>
-        </span>
-      </div>
-    </div>`;
-  }).join('');
-
-  // Year badge: use the max event year from data (e.g. 2027), not calendar year
-  const _riDisplayYear = (evtRevData||[]).reduce((max, e) => {
-    const y = e.event_date ? parseInt(String(e.event_date).slice(0,4)) : 0;
-    return !isNaN(y) && y > max ? y : max;
-  }, new Date().getFullYear());
-
-  el.innerHTML = `
-    <div class="ri-card">
-      <div class="ri-glow"></div>
-      <div class="ri-header">
-        <div class="ri-header-left">
-          <span class="ri-pulse"></span>
-          <span class="ri-title">REVENUE INTELLIGENCE</span>
-        </div>
-        <span class="ri-year">${_riDisplayYear}</span>
-      </div>
-
-      <!-- Top: donut + summary metrics -->
-      <div class="ri-body">
-        <div class="ri-chart-wrap">
-          <svg class="ri-donut" viewBox="0 0 100 100">
-            <circle class="ri-donut-track" cx="50" cy="50" r="${R}" fill="none" stroke-width="8"/>
-            <circle cx="50" cy="50" r="${R}" fill="none" stroke-width="8" stroke-linecap="round"
-              stroke-dasharray="0 ${C}" stroke-dashoffset="${offPaid}" class="ri-seg ri-seg--paid"
-              data-final="${segPaid} ${C - segPaid}"/>
-            <circle cx="50" cy="50" r="${R}" fill="none" stroke-width="8" stroke-linecap="round"
-              stroke-dasharray="0 ${C}" stroke-dashoffset="${offPartial}" class="ri-seg ri-seg--partial"
-              data-final="${segPartial} ${C - segPartial}"/>
-            <circle cx="50" cy="50" r="${R}" fill="none" stroke-width="8" stroke-linecap="round"
-              stroke-dasharray="0 ${C}" stroke-dashoffset="${offUnpaid}" class="ri-seg ri-seg--unpaid"
-              data-final="${segUnpaid} ${C - segUnpaid}"/>
-          </svg>
-          <div class="ri-donut-center">
-            <div class="ri-donut-num">${collRate}%</div>
-            <div class="ri-donut-label">Collected</div>
-          </div>
-        </div>
-        <div class="ri-metrics">
-          <div class="ri-metric">
-            <div class="ri-metric-label">Total Revenue</div>
-            <div class="ri-metric-val ri-blue">£${fmtK(totalRev)}</div>
-          </div>
-          <div class="ri-metric">
-            <div class="ri-metric-label">Collected (inc VAT)</div>
-            <div class="ri-metric-val ri-green">£${fmtK(totalPaid)}</div>
-            <div class="ri-metric-sub">£${fmtK(totalPaidExVat)} ex VAT</div>
-          </div>
-          <div class="ri-metric">
-            <div class="ri-metric-label">Outstanding (ex VAT)</div>
-            <div class="ri-metric-val" style="color:#f59e0b">£${fmtK(totalOut)}</div>
-          </div>
-          <div class="ri-metric ri-metric--wide">
-            <div class="ri-metric-label">Payment Status</div>
-            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:2px">
-              <span style="font-size:0.72rem;color:#22c55e">●  ${fullPaidDeals} paid</span>
-              <span style="font-size:0.72rem;color:#f59e0b">● ${partialDeals} partial</span>
-              <span style="font-size:0.72rem;color:var(--muted)">● ${unpaidDeals} unpaid</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Per-event cards -->
-      ${(evtRevData||[]).filter(ev => Number(ev.deal_count) > 0).length > 0 ? `
-      <div class="ri-evt-section">
-        <div class="ri-evt-section-hd">
-          <div class="ri-evt-section-title">Events Breakdown</div>
-          <input class="ri-evt-search" id="riEvtSearch" placeholder="Search events…" oninput="riFilterEvtCards(this.value)" />
-        </div>
-        <div class="ri-evt-list" id="riEvtList">${eventsHtml}</div>
-      </div>` : ''}
-
-      ${expiryHtml}
-    </div>`;
-
-  // Animate after render
-  requestAnimationFrame(() => {
-    setTimeout(() => {
-      el.querySelectorAll('.ri-seg').forEach(seg => {
-        seg.style.transition = 'stroke-dasharray 1.2s cubic-bezier(.4,0,.2,1)';
-        seg.setAttribute('stroke-dasharray', seg.dataset.final);
-      });
-      el.querySelectorAll('.ri-evt-bar').forEach(bar => {
-        bar.style.transition = 'width 1s cubic-bezier(.4,0,.2,1)';
-        bar.style.width = bar.dataset.pct + '%';
-      });
-    }, 80);
-  });
-}
-
-function riFilterEvtCards(query) {
-  const q = (query || '').toLowerCase();
-  document.querySelectorAll('#riEvtList .ri-evt-card').forEach(card => {
-    const name = (card.querySelector('.ri-evt-name')?.textContent || '').toLowerCase();
-    card.style.display = !q || name.includes(q) ? '' : 'none';
-  });
-}
-
-function riFilterEvent(eventId, eventName) {
-  // Switch to deals page and filter by this event
-  navigate('deals');
-  setTimeout(() => {
-    const sel = document.getElementById('dealEventFilter');
-    if (sel) {
-      sel.value = String(eventId);
-      setDealEvent(String(eventId));
-    }
-  }, 300);
-}
-
-function renderContractExpiryPanel(expiring, miniCardsHtml) {
-  var el = document.getElementById('contractExpiryPanel');
-  if (!el) return;
-
-  var html = '<div style="display:flex;flex-direction:column;gap:12px;height:100%">';
-
-  // Always show the 3 mini action cards stacked
-  if (miniCardsHtml) html += miniCardsHtml;
-
-  // Expiry alert below if contracts are expiring
-  if (expiring && expiring.length) {
-    var today = new Date().toISOString().slice(0,10);
-    html += '<div class="dash-panel dash-panel--alert" style="margin-top:4px">' +
-      '<div class="dash-panel-header">' +
-        '<span class="dash-panel-icon">⚠️</span>' +
-        '<span class="dash-panel-title">Contracts Expiring</span>' +
-        '<span class="dash-panel-count">' + expiring.length + '</span>' +
-      '</div>' +
-      '<div class="dash-panel-body">' +
-        expiring.map(function(e) {
-          var expired = e.contract_end_date < today;
-          var badge = expired ? 'badge-red' : 'badge-yellow';
-          var label = expired ? 'Expired' : 'Ends ' + e.contract_end_date;
-          return '<div class="dash-panel-row">' +
-            '<div>' +
-              '<div style="font-weight:700;font-size:0.88rem">' + esc(e.name) + '</div>' +
-              ((e.job_title || e.department) ? '<div style="font-size:0.74rem;color:var(--muted)">' + esc([e.job_title,e.department].filter(Boolean).join(' · ')) + '</div>' : '') +
-            '</div>' +
-            '<span class="badge ' + badge + '">' + label + '</span>' +
-          '</div>';
-        }).join('') +
-      '</div>' +
-    '</div>';
+  // ── Deals signed, by month (last 12 months)
+  const months = [];
+  for (let i = 11; i >= 0; i--) {
+    const dt = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push({ month: dt.getMonth() + 1, year: dt.getFullYear(), total: 0, count: 0 });
   }
-
-  html += '</div>';
-  el.innerHTML = html;
-}
-
-function renderHeadcountPanel(activeEmps, payrollCount, seCount, totalHeadcount, year) {
-  var el = document.getElementById('headcountPanel');
-  if (!el) return;
-  const depts = {};
-  activeEmps.forEach(e => {
-    const d = e.department || 'Unassigned';
-    if (!depts[d]) depts[d] = { count: 0, payroll: 0, se: 0, emps: [] };
-    depts[d].count++;
-    if (e.employment_type === 'self_employed') depts[d].se++;
-    else depts[d].payroll++;
-    depts[d].emps.push(e);
+  deals.forEach(d => {
+    const p = parseDealMonth(d.deal_month);
+    if (!p) return;
+    const slot = months.find(m => m.month === p.month && m.year === p.year);
+    if (slot) { slot.total += parseFloat(d.amount) || 0; slot.count++; }
   });
-  const sorted = Object.entries(depts).sort((a,b) => b[1].count - a[1].count);
-  if (!sorted.length) { el.innerHTML = ''; return; }
-
-  function deptColor(i) {
-    const colors = ['#4f46e5','#0891b2','#16a34a','#d97706','#dc2626','#7c3aed','#be185d'];
-    return colors[i % colors.length];
-  }
-
-  el.innerHTML = `
-    <div class="dash-panel hc-panel">
-      <div class="dash-panel-header">
-        <span class="dash-panel-icon">🏢</span>
-        <span class="dash-panel-title">Headcount by Department</span>
-        <span class="dash-panel-count">${activeEmps.length} total</span>
-      </div>
-      <div class="dash-panel-body hc-body">
-        ${sorted.map(([dept, info], idx) => {
-          const color = deptColor(idx);
-          const pct = Math.round((info.count / activeEmps.length) * 100);
-          return `
-          <div class="hc-dept" onclick="this.classList.toggle('hc-open')">
-            <div class="hc-dept-hd">
-              <div class="hc-dept-bar" style="background:${color}"></div>
-              <div class="hc-dept-name">${esc(dept)}</div>
-              <div class="hc-dept-badges">
-                ${info.payroll ? `<span class="badge badge-blue">${info.payroll} payroll</span>` : ''}
-                ${info.se ? `<span class="badge badge-yellow">${info.se} self-emp</span>` : ''}
-              </div>
-              <div class="hc-dept-pct">${pct}%</div>
-              <div class="hc-dept-chevron">›</div>
-            </div>
-            <div class="hc-dept-track"><div class="hc-dept-fill" style="width:${pct}%;background:${color}"></div></div>
-            <div class="hc-emp-list">
-              ${info.emps.map(e => {
-                const isSE = e.employment_type === 'self_employed';
-                const role = e.job_title || (isSE ? 'Self-Employed' : 'Payroll');
-                return `<div class="hc-emp-row" onclick="event.stopPropagation();goToEmployee(${e.id})" title="Open employee record">
-                  <div class="hc-emp-info">
-                    <div class="hc-emp-name">${esc(e.name)}</div>
-                    <div class="hc-emp-role">${esc(role)}</div>
-                  </div>
-                  <span class="badge ${isSE ? 'badge-yellow' : 'badge-blue'}" style="font-size:0.6rem">${isSE ? 'SE' : 'PR'}</span>
-                </div>`;
-              }).join('')}
-            </div>
+  const maxVal = dashNiceMax(Math.max(...months.map(m => m.total)));
+  const thisMonth = months[months.length - 1];
+  const ticks = [maxVal, maxVal / 2, 0];
+  const chartBody = months.some(m => m.total > 0) ? `
+    <div class="db-chart" role="img" aria-label="Deal value signed per month, last 12 months">
+      <div class="db-chart-grid">${ticks.map(t => `<div class="db-chart-line"><span>${dashMoneyShort(t)}</span></div>`).join('')}</div>
+      <div class="db-chart-bars">
+        ${months.map(m => {
+          const label = `${DEAL_MONTHS[m.month - 1]} ${String(m.year).slice(2)}`;
+          const h = m.total > 0 ? Math.max(1.5, m.total / maxVal * 100) : 0;
+          return `<div class="db-bar-col" tabindex="0">
+            <div class="db-bar" style="height:${h}%"></div>
+            <div class="db-bar-tip"><span>${label}</span><strong>£${fmt(m.total)}</strong><span>${m.count} deal${m.count === 1 ? '' : 's'}</span></div>
+            <div class="db-bar-x">${DEAL_MONTHS[m.month - 1]}</div>
           </div>`;
         }).join('')}
       </div>
+    </div>` : dashEmpty('No deals signed in the last 12 months.');
+  const chartCard = dashCard('Deals signed', null,
+    `<div class="db-card-meta">This month: £${fmt(thisMonth.total)}</div>${chartBody}`, 'db-span-2');
+
+  // ── Collections: how many deals are paid, part paid, not paid
+  const counts = { paid: 0, partial: 0, unpaid: 0 };
+  deals.forEach(d => { counts[dashDealStatus(d)]++; });
+  const maxCount = Math.max(1, counts.paid, counts.partial, counts.unpaid);
+  const hbar = (label, n, shade) => `<div class="db-hbar">
+      <span class="db-hbar-label">${label}</span>
+      <span class="db-hbar-track"><span class="db-hbar-fill" style="width:${n / maxCount * 100}%;opacity:${shade}"></span></span>
+      <span class="db-hbar-n">${n}</span>
     </div>`;
+  const collectCard = dashCard('Collections', { page: 'deals', label: 'View all' }, deals.length ? `
+    <div class="db-hbars">
+      ${hbar('Paid in full', counts.paid, 1)}
+      ${hbar('Part paid', counts.partial, 0.65)}
+      ${hbar('Not paid yet', counts.unpaid, 0.35)}
+    </div>
+    <div class="db-foot-figures">
+      <div><span>Received</span><strong>£${fmtK(totals.paid)}</strong><small>inc VAT</small></div>
+      <div><span>Outstanding</span><strong>£${fmtK(totals.out)}</strong><small>ex VAT</small></div>
+    </div>` : dashEmpty('No deals yet.'));
+
+  // ── Team by department: donut + legend
+  const depts = {};
+  o.activeEmps.forEach(e => { const d = e.department || 'Unassigned'; depts[d] = (depts[d] || 0) + 1; });
+  let deptRows = Object.entries(depts).sort((a, b) => b[1] - a[1]);
+  if (deptRows.length > 7) {
+    const other = deptRows.slice(6).reduce((s, r) => s + r[1], 0);
+    deptRows = deptRows.slice(0, 6).concat([['Other', other]]);
+  }
+  // A department keeps its colour whatever its rank: colours go by name.
+  const byName = deptRows.map(r => r[0]).filter(n => n !== 'Other').sort();
+  const deptColour = name => name === 'Other' ? 'var(--dim)' : `var(--chart-${byName.indexOf(name) + 1})`;
+  const R = 15.915, totalStaff = o.activeEmps.length || 1;
+  let offset = 25;
+  const arcs = deptRows.map(([name, n]) => {
+    const len = n / totalStaff * 100;
+    const gap = deptRows.length > 1 ? Math.min(1.2, len / 3) : 0;
+    const arc = `<circle cx="21" cy="21" r="${R}" fill="none" stroke="${deptColour(name)}" stroke-width="5"
+      stroke-dasharray="${Math.max(0, len - gap)} ${100 - Math.max(0, len - gap)}" stroke-dashoffset="${offset}"><title>${esc(name)}: ${n}</title></circle>`;
+    offset -= len;
+    return arc;
+  }).join('');
+  const teamCard = dashCard('Team by department', { page: 'employees', label: 'Employees' }, deptRows.length ? `
+    <div class="db-donut-wrap">
+      <div class="db-donut">
+        <svg viewBox="0 0 42 42" aria-hidden="true">${arcs}</svg>
+        <div class="db-donut-c"><strong>${o.activeEmps.length}</strong><span>people</span></div>
+      </div>
+      <ul class="db-legend">
+        ${deptRows.map(([name, n]) => `<li><i style="background:${deptColour(name)}"></i><span>${esc(name)}</span><b>${n}</b></li>`).join('')}
+      </ul>
+    </div>` : dashEmpty('No active staff.'));
+
+  // ── Events by revenue
+  const evRows = (o.evtRevData || []).filter(ev => Number(ev.deal_count) > 0).map(ev => {
+    const amt = parseFloat(ev.total_amount) || 0;
+    const paidEx = Math.max(0, (parseFloat(ev.total_paid) || 0) - (parseFloat(ev.total_vat_collected) || 0));
+    return { ev, amt, paidEx, pct: amt > 0 ? Math.min(100, Math.round(paidEx / amt * 100)) : 0 };
+  }).sort((a, b) => b.amt - a.amt);
+  const eventsCard = dashCard('Revenue by event', { page: 'portfolio', label: 'Portfolio' }, evRows.length ? `
+    <ul class="db-list">
+      ${evRows.slice(0, 5).map(r => `<li class="db-ev">
+        <div class="db-ev-top"><span class="db-list-name">${esc(r.ev.event_name)}</span><span class="db-list-amt">£${fmtK(r.amt)}</span></div>
+        <div class="db-ev-bar"><span style="width:${r.pct}%"></span></div>
+        <div class="db-ev-sub">${(r.ev.event_date || r.ev.programme_year) ? fmtEventDate(r.ev) + ' · ' : ''}${r.pct}% collected</div>
+      </li>`).join('')}
+    </ul>` : dashEmpty('No deals linked to events yet.'));
+
+  // ── Deals still to collect
+  const owing = deals.map(d => ({ d, m: dashDealMoney(d), status: dashDealStatus(d) }))
+    .filter(x => x.m.out > 0.5).sort((a, b) => b.m.out - a.m.out);
+  const owingCard = dashCard('Still to collect', { page: 'deals', label: 'Deal Tracker' }, owing.length ? `
+    <ul class="db-list">
+      ${owing.slice(0, 5).map(x => `<li class="db-row">
+        <span class="db-list-name">${esc(x.d.company || x.d.title || 'Deal')}</span>
+        <span class="db-list-amt">£${fmt(x.m.out)}</span>
+        <span class="db-tag ${x.status === 'partial' ? 'is-warn' : ''}">${x.status === 'partial' ? 'Part paid' : 'Unpaid'}</span>
+      </li>`).join('')}
+    </ul>` : dashEmpty('Every deal is paid.'));
+
+  // ── Hotels still to pay, and contracts ending
+  const hotelsOpen = (o.hotelData || []).filter(h => h.status !== 'paid');
+  const hotelsCard = dashCard('Hotels to pay', { page: 'hotels', label: 'Hotel Expenses' }, hotelsOpen.length ? `
+    <ul class="db-list">
+      ${hotelsOpen.slice(0, 5).map(h => `<li class="db-row">
+        <span class="db-list-name">${esc(h.event_name || '')}<small>${esc(h.hotel || '')}</small></span>
+        <span class="db-tag ${h.status === 'partial' ? 'is-warn' : ''}">${h.status === 'partial' ? 'Part paid' : 'Pending'}</span>
+      </li>`).join('')}
+    </ul>` : dashEmpty('All hotel bills are settled.'));
+
+  const today = now.toISOString().slice(0, 10);
+  const expiring = Array.isArray(o.expiring) ? o.expiring : [];
+  const contractsCard = expiring.length ? dashCard('Contracts ending', { page: 'employees', label: 'Employees' }, `
+    <ul class="db-list">
+      ${expiring.slice(0, 5).map(e => {
+        const expired = e.contract_end_date < today;
+        return `<li class="db-row">
+          <span class="db-list-name">${esc(e.name)}${(e.job_title || e.department) ? `<small>${esc(e.job_title || e.department)}</small>` : ''}</span>
+          <span class="db-tag ${expired ? 'is-alert' : 'is-warn'}">${expired ? 'Expired' : 'Ends ' + fmtDateShort(e.contract_end_date)}</span>
+        </li>`;
+      }).join('')}
+    </ul>`) : '';
+
+  // ── Coming up: reminders and days off in the next 30 days
+  const soon = [
+    ...(o.upcoming || []).map(r => ({ date: String(r.virtual_date || '').slice(0, 10), name: r.title || '', note: r.category || 'Reminder' })),
+    ...(o.dayOffs || []).map(r => ({ date: r.record_date || '', name: r.employee_name || 'Employee',
+      note: parseFloat(r.is_day_off) === 0.5 ? 'Half day off' : 'Day off' })),
+  ].filter(x => x.date).sort((a, b) => a.date.localeCompare(b.date));
+  const soonCard = dashCard('Coming up', { page: 'calendar', label: 'Calendar' }, soon.length ? `
+    <ul class="db-list">
+      ${soon.slice(0, 5).map(x => {
+        const d = new Date(x.date + 'T00:00:00');
+        return `<li class="db-row">
+          <span class="db-date"><b>${d.getDate()}</b>${DEAL_MONTHS[d.getMonth()]}</span>
+          <span class="db-list-name">${esc(x.name)}<small>${esc(x.note)}</small></span>
+        </li>`;
+      }).join('')}
+    </ul>` : dashEmpty('Nothing in the next 30 days.'));
+
+  el.innerHTML = `${kpis}
+    <div class="db-grid db-grid-3">${chartCard}${collectCard}</div>
+    <div class="db-grid db-grid-3">${teamCard}${eventsCard}${owingCard}</div>
+    <div class="db-grid ${contractsCard ? 'db-grid-3' : 'db-grid-2'}">${hotelsCard}${soonCard}${contractsCard}</div>`;
 }
 
-function renderDashUpcoming(upcoming, dayOffs) {
-  var el = document.getElementById('upcomingPanel');
-  if (!el) return;
-  var MONS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
-  var BELL = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>';
-
-  // Build unified entries
-  var entries = [];
-  (upcoming || []).forEach(function(r) {
-    var sym = r.currency === 'GBP' ? '£' : r.currency === 'USD' ? '$' : (r.currency ? r.currency + ' ' : '');
-    entries.push({
-      date:  (r.virtual_date || '').slice(0,10),
-      title: esc(r.title || ''),
-      cat:   (r.category || '').toUpperCase(),
-      amt:   r.amount ? sym + parseFloat(r.amount).toLocaleString('en-GB',{maximumFractionDigits:0}) : '',
-      isDayOff: false
-    });
-  });
-  (dayOffs || []).forEach(function(r) {
-    var half = parseFloat(r.is_day_off) === 0.5;
-    entries.push({
-      date:  r.record_date || '',
-      title: esc(r.employee_name || 'Employee'),
-      cat:   half ? 'HALF DAY OFF' : 'FULL DAY OFF',
-      amt:   '',
-      isDayOff: true
-    });
-  });
-  entries.sort(function(a,b){ return a.date.localeCompare(b.date); });
-
-  var header =
-    '<div class="card-header">' +
-      '<span class="card-title" style="display:flex;align-items:center;gap:7px">' + BELL + ' Upcoming</span>' +
-      '<span style="font:700 11px/1 var(--font-mono);color:var(--muted);letter-spacing:0.5px">NEXT 30D</span>' +
-    '</div>';
-
-  if (!entries.length) {
-    el.innerHTML = '<div class="card" style="height:100%">' + header +
-      '<div class="empty-state" style="padding:32px 0"><div class="icon">🔔</div><div>Nothing upcoming</div></div></div>';
-    return;
-  }
-
-  var rows = entries.slice(0, 7).map(function(e) {
-    var d   = new Date(e.date + 'T00:00:00Z');
-    var day = d.getUTCDate();
-    var mon = MONS[d.getUTCMonth()];
-    var catCol = e.isDayOff ? '#f59e0b' : 'var(--muted)';
-    return '<div style="display:flex;gap:14px;padding:13px 18px;border-bottom:1px solid var(--border);align-items:center">' +
-      '<div style="width:42px;min-width:42px;text-align:center;background:var(--accent);border:1px solid var(--accent);border-radius:8px;padding:7px 0">' +
-        '<div style="font:800 17px/1 var(--font-mono);color:#fff">' + day + '</div>' +
-        '<div style="font:600 9px/1 var(--font-mono);color:rgba(255,255,255,0.75);margin-top:4px;letter-spacing:0.8px">' + mon + '</div>' +
-      '</div>' +
-      '<div style="flex:1;min-width:0">' +
-        '<div style="font:600 13px/1.2 var(--font-sans);color:var(--text)">' + e.title + '</div>' +
-        (e.cat ? '<div style="font:600 10px/1 var(--font-mono);color:' + catCol + ';margin-top:5px;letter-spacing:0.8px">' + e.cat + '</div>' : '') +
-      '</div>' +
-      (e.amt ? '<div style="font:700 13px/1 var(--font-mono);color:var(--text);white-space:nowrap">' + e.amt + '</div>' : '') +
-    '</div>';
-  }).join('');
-
-  el.innerHTML = '<div class="card" style="height:100%">' + header + '<div style="padding:0">' + rows + '</div></div>';
+function fmtDateShort(iso) {
+  const d = new Date(String(iso).slice(0, 10) + 'T00:00:00');
+  return isNaN(d) ? String(iso) : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 function renderDashActivity(summary, expiring, hotelData, salaryData) {
@@ -2230,12 +2056,12 @@ async function loadSalaryPage() {
           ${isNonGBP ? `<div class="sal-tbl-sub">${fmtGBP(salFxToGBP(tTarget,g.currency))}</div>` : ''}
         </td>
         <td>
-          <div style="color:var(--positive);font-weight:600">${fmtN(tPaid, s)}</div>
+          <div>${fmtN(tPaid, s)}</div>
           ${isNonGBP ? `<div class="sal-tbl-sub">${fmtGBP(salFxToGBP(tPaid,g.currency))}</div>` : ''}
         </td>
         <td>${tDeduct > 0 ? `<div style="color:var(--warning)">−${fmtN(tDeduct,s)}</div>` : '<span style="color:var(--muted)">—</span>'}</td>
         <td>
-          <div style="color:${tRemain < 0 ? 'var(--positive)' : tRemain === 0 ? 'var(--muted)' : 'var(--negative)'};font-weight:600">${tRemain < 0 ? 'Overpaid' : fmtN(Math.abs(tRemain),s)}</div>
+          <div style="color:${tRemain < 0 ? 'var(--positive)' : tRemain === 0 ? 'var(--muted)' : 'var(--text)'};font-weight:600">${tRemain < 0 ? 'Overpaid' : fmtN(Math.abs(tRemain),s)}</div>
           ${isNonGBP && tRemain > 0 ? `<div class="sal-tbl-sub">${fmtGBP(salFxToGBP(tRemain,g.currency))}</div>` : ''}
         </td>
         <td>
@@ -2270,13 +2096,13 @@ async function loadSalaryPage() {
           <tfoot><tr>
             <td><div style="font-weight:700">Total · GBP</div><div style="font-size:0.72rem;color:var(--muted)">${allActive.length} employees</div></td>
             <td><div style="font-weight:700">${fmtGBP(gtTarget)}</div></td>
-            <td><div style="font-weight:700;color:var(--positive)">${fmtGBP(gtPaid)}</div></td>
+            <td><div style="font-weight:700">${fmtGBP(gtPaid)}</div></td>
             <td>${gtDeduct > 0 ? `<div style="color:var(--warning)">−${fmtGBP(gtDeduct)}</div>` : '<span style="color:var(--muted)">—</span>'}</td>
-            <td><div style="font-weight:700;color:var(--negative)">${fmtGBP(gtRemain)}</div></td>
+            <td><div style="font-weight:700">${fmtGBP(gtRemain)}</div></td>
             <td>
               <div style="display:flex;align-items:center;gap:8px">
                 <div style="flex:1;height:6px;background:var(--border);border-radius:3px;min-width:48px">
-                  <div style="height:100%;width:${gtPaidPct}%;background:var(--positive);border-radius:3px"></div>
+                  <div style="height:100%;width:${gtPaidPct}%;background:var(--primary);border-radius:3px"></div>
                 </div>
                 <span style="font-size:0.78rem;font-weight:700;min-width:30px">${gtPaidPct}%</span>
               </div>
@@ -2352,7 +2178,7 @@ async function loadSalaryPage() {
 
       const initials = (emp.name || '?').split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
       const typeLabel = emp.employment_type === 'self_employed' ? 'Self-Employed' : 'Payroll';
-      const typeBadge = emp.employment_type === 'self_employed' ? 'badge-yellow' : 'badge-blue';
+      const typeBadge = 'badge-grey';
       const allowanceLabel = emp.employment_type === 'self_employed' ? '5 days/yr free' : '20 days/yr free';
       const isTerminated = !!emp.is_terminated;
       const isOverpaid = netRemaining < 0;
@@ -2396,7 +2222,7 @@ async function loadSalaryPage() {
         <div class="sc-prog">
           <div class="sc-prog-meta">
             <span>${pctPaid}% paid</span>
-            <span style="color:${isOverpaid ? 'var(--positive)' : netRemaining === 0 ? 'var(--muted)' : 'var(--negative)'}">${isOverpaid ? 'Overpaid' : netRemaining === 0 ? 'Fully paid' : `${sym}${Math.abs(netRemaining).toLocaleString('en-GB',{maximumFractionDigits:0})} left`}</span>
+            <span class="sc-prog-left${isOverpaid ? ' is-over' : ''}">${isOverpaid ? 'Overpaid' : netRemaining === 0 ? 'Fully paid' : `${sym}${Math.abs(netRemaining).toLocaleString('en-GB',{maximumFractionDigits:0})} left`}</span>
           </div>
           <div class="sc-prog-track">
             <div class="sc-prog-fill${isOverpaid ? ' overpaid' : ''}" style="width:${Math.min(pctPaid,100)}%"></div>
@@ -2408,20 +2234,19 @@ async function loadSalaryPage() {
           const monthlyVal = paye ? paye.net_monthly : annualSalary / 12;
           const monthlyLbl = paye ? 'Take-home / mo' : 'Monthly';
           const monthlySub = paye ? 'after PAYE' + (paye.pension > 0 ? ' + pension' : '') : '';
-          const outColor = isOverpaid ? 'var(--positive)' : netRemaining === 0 ? 'var(--muted)' : 'var(--negative)';
           const showFirstMonth = suggestedFirstMonthNet !== null && fmMeta && !isOverpaid;
           const firstMonthUnpaid = showFirstMonth && totalPaidEmp === 0;
-          return '<div style="display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--border);border-bottom:1px solid var(--border)">' +
-            '<div style="padding:14px 20px;border-right:1px solid var(--border)">' +
-              '<div style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);margin-bottom:6px">' + monthlyLbl + '</div>' +
-              '<div style="font-size:1.3rem;font-weight:700;color:var(--text)">' + sym + monthlyVal.toLocaleString('en-GB',{maximumFractionDigits:0}) + '</div>' +
-              (monthlySub ? '<div style="font-size:0.7rem;color:var(--muted);margin-top:3px">' + monthlySub + '</div>' : '') +
+          return '<div class="sc-figs">' +
+            '<div class="sc-fig">' +
+              '<div class="sc-fig-lbl">' + monthlyLbl + '</div>' +
+              '<div class="sc-fig-val">' + sym + monthlyVal.toLocaleString('en-GB',{maximumFractionDigits:0}) + '</div>' +
+              (monthlySub ? '<div class="sc-fig-sub">' + monthlySub + '</div>' : '') +
             '</div>' +
-            '<div style="padding:14px 20px' + (firstMonthUnpaid ? ';background:rgba(251,191,36,0.05)' : '') + '">' +
+            '<div class="sc-fig">' +
               (firstMonthUnpaid
-                ? '<div style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);margin-bottom:6px">Pay This Month</div>' +
-                  '<div style="font-size:1.3rem;font-weight:700;color:#f59e0b">' + sym + Math.round(suggestedFirstMonthNet).toLocaleString('en-GB') + '</div>' +
-                  (fmMeta ? '<div style="font-size:0.7rem;color:var(--muted);margin-top:3px">' + fmMeta.daysWorked + ' of ' + fmMeta.daysTotal + ' days · ' + (fmMeta.monthName||'') + '</div>' : '')
+                ? '<div class="sc-fig-lbl">Pay this month</div>' +
+                  '<div class="sc-fig-val is-due">' + sym + Math.round(suggestedFirstMonthNet).toLocaleString('en-GB') + '</div>' +
+                  (fmMeta ? '<div class="sc-fig-sub">' + fmMeta.daysWorked + ' of ' + fmMeta.daysTotal + ' days · ' + (fmMeta.monthName||'') + '</div>' : '')
                 : (() => {
                     // Latest by year+month; same-month payments tie-break on id
                     // (highest id = most recently recorded)
@@ -2432,21 +2257,21 @@ async function loadSalaryPage() {
                           return kb > ka || (kb === ka && (Number(b.id)||0) > (Number(a.id)||0)) ? b : a;
                         }, payments[0])
                       : null;
-                    if (!lastPay) return '<div style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);margin-bottom:6px">Last Payment</div>' +
-                      '<div style="font-size:1.3rem;font-weight:700;color:var(--muted)">—</div>' +
-                      '<div style="font-size:0.7rem;color:var(--muted);margin-top:3px">No payments yet</div>';
+                    if (!lastPay) return '<div class="sc-fig-lbl">Last payment</div>' +
+                      '<div class="sc-fig-val is-none">—</div>' +
+                      '<div class="sc-fig-sub">No payments yet</div>';
                     const lpMonth = MONTHS[Number(lastPay.payment_month)] || '';
                     const lpYear  = lastPay.payment_year || '';
                     const lpAmt   = sym + parseFloat(lastPay.amount||0).toLocaleString('en-GB',{maximumFractionDigits:0});
-                    return '<div style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);margin-bottom:6px">Last Payment</div>' +
-                      '<div style="font-size:1.3rem;font-weight:700;color:var(--positive)">' + lpAmt + '</div>' +
-                      '<div style="font-size:0.7rem;color:var(--muted);margin-top:3px">' + lpMonth + (lpYear ? ' ' + lpYear : '') + '</div>';
+                    return '<div class="sc-fig-lbl">Last payment</div>' +
+                      '<div class="sc-fig-val">' + lpAmt + '</div>' +
+                      '<div class="sc-fig-sub">' + lpMonth + (lpYear ? ' ' + lpYear : '') + '</div>';
                   })()
               ) +
             '</div>' +
           '</div>' +
           (!paye && excessDays > 0
-            ? '<div style="padding:8px 20px;font-size:0.75rem;color:var(--negative);border-bottom:1px solid var(--border)">⚠ ' +
+            ? '<div class="sc-excess">' +
               excessDays + ' excess day' + (excessDays > 1 ? 's' : '') + ' — −' + sym + excessDeduction.toLocaleString('en-GB',{minimumFractionDigits:2}) + ' deducted</div>'
             : '');
         })()}
@@ -2457,7 +2282,7 @@ async function loadSalaryPage() {
           <div class="sc-section">
             <button class="sc-sec-toggle" onclick="toggleSection(this)">
               <span class="sc-sec-title">Payments (${payments.length})</span>
-              ${payments.length ? `<span style="font-size:1rem;font-weight:700;color:var(--positive)">${sym}${totalPaidEmp.toLocaleString('en-GB',{minimumFractionDigits:2})}</span>` : ''}
+              ${payments.length ? `<span class="sc-sec-sum">${sym}${totalPaidEmp.toLocaleString('en-GB',{minimumFractionDigits:2})}</span>` : ''}
               <span class="sc-chevron">›</span>
             </button>
             <div class="sc-sec-body">
@@ -3735,31 +3560,6 @@ function renderHotelSummary() {
   const unpaid = yearData.filter(r => r.status !== 'paid').length;
   const fmtN = n => n.toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2});
 
-  const currencyCards = Object.entries(byCur).map(([cur, sums]) => {
-    const sym = hotelCurrencySymbol(cur);
-    const outstanding = sums.cost > 0 ? Math.max(0, sums.cost - sums.paid) : null;
-    return `
-      <div class="hotel-fin-card">
-        <div class="hotel-fin-currency">${cur}</div>
-        <div class="hotel-fin-row">
-          <span class="hotel-fin-lbl">Hotel Cost</span>
-          <span class="hotel-fin-val">${sums.cost > 0 ? sym+fmtN(sums.cost) : '<span class="hotel-fin-na">—</span>'}</span>
-        </div>
-        <div class="hotel-fin-row">
-          <span class="hotel-fin-lbl">AV Cost</span>
-          <span class="hotel-fin-val hotel-fin-blue">${sym}${fmtN(sums.av)}</span>
-        </div>
-        <div class="hotel-fin-row">
-          <span class="hotel-fin-lbl">Paid towards</span>
-          <span class="hotel-fin-val hotel-fin-green">${sym}${fmtN(sums.paid)}</span>
-        </div>
-        <div class="hotel-fin-row hotel-fin-total-row">
-          <span class="hotel-fin-lbl">Outstanding</span>
-          <span class="hotel-fin-val ${outstanding === null ? '' : outstanding > 0 ? 'hotel-fin-red' : 'hotel-fin-green'}">${outstanding === null ? '<span class="hotel-fin-na">—</span>' : outstanding > 0 ? sym+fmtN(outstanding) : '✓ Settled'}</span>
-        </div>
-      </div>`;
-  }).join('');
-
   // GBP conversion rates (approximate)
   const TO_GBP = { GBP:1, USD:0.787, EUR:0.855, CHF:0.885, AED:0.2141, PHP:0.0138 };
   let gbpPaid = 0, gbpAv = 0, gbpCost = 0;
@@ -3769,28 +3569,47 @@ function renderHotelSummary() {
     gbpAv   += sums.av   * rate;
     gbpCost += sums.cost * rate;
   });
-  const gbpTotal = gbpPaid + gbpAv;
   const gbpOutstanding = gbpCost > 0 ? Math.max(0, gbpCost - gbpPaid) : null;
-  const gbpCard = `<div class="hotel-fin-card hotel-fin-card--gbp">
-    <div class="hotel-fin-currency" style="color:var(--accent)">≈ GBP TOTAL <span style="font-size:9px;font-weight:400;opacity:0.7">estimated</span></div>
-    <div class="hotel-fin-row"><span class="hotel-fin-lbl">Hotel Cost</span><span class="hotel-fin-val">${gbpCost > 0 ? '£'+fmtN(gbpCost) : '<span class="hotel-fin-na">—</span>'}</span></div>
-    <div class="hotel-fin-row"><span class="hotel-fin-lbl">AV Cost</span><span class="hotel-fin-val hotel-fin-blue">£${fmtN(gbpAv)}</span></div>
-    <div class="hotel-fin-row"><span class="hotel-fin-lbl">Paid towards</span><span class="hotel-fin-val hotel-fin-green">£${fmtN(gbpPaid)}</span></div>
-    <div class="hotel-fin-row hotel-fin-total-row"><span class="hotel-fin-lbl">Outstanding</span><span class="hotel-fin-val ${gbpOutstanding === null ? '' : gbpOutstanding > 0 ? 'hotel-fin-red' : 'hotel-fin-green'}">${gbpOutstanding === null ? '<span class="hotel-fin-na">—</span>' : gbpOutstanding > 0 ? '£'+fmtN(gbpOutstanding) : '✓ Settled'}</span></div>
-    <div style="margin-top:8px;padding-top:6px;border-top:1px dashed var(--border);font:500 9px/1.5 var(--font-mono);color:var(--muted)">USD×0.787 · EUR×0.855<br>CHF×0.885 · AED×0.214</div>
+  const yr = _hotelYearFilter !== 'all' ? ` · ${_hotelYearFilter}` : '';
+
+  // Headline figures, all in GBP; the per-currency detail sits in a table below.
+  const card = (label, value, sub, extra = '') => `
+    <div class="deal-stat-card ${extra}">
+      <div class="deal-stat-label">${label}</div>
+      <div class="deal-stat-value">${value}</div>
+      <div class="deal-stat-sub">${sub}</div>
+    </div>`;
+  const cards = `<div class="deal-stat-cards">
+    ${card(`Hotel cost${yr}`, gbpCost > 0 ? '£' + fmtN(gbpCost) : '—', `${total} event${total === 1 ? '' : 's'} · in GBP`)}
+    ${card('AV cost', '£' + fmtN(gbpAv), 'Billed separately')}
+    ${card('Paid so far', '£' + fmtN(gbpPaid), `${total - unpaid} of ${total} fully paid`)}
+    ${card('Outstanding', gbpOutstanding === null ? '—' : '£' + fmtN(gbpOutstanding),
+           unpaid > 0 ? `${unpaid} event${unpaid === 1 ? '' : 's'} still to pay` : 'All settled',
+           unpaid > 0 ? 'ds--remaining' : 'ds--remaining is-clear')}
   </div>`;
 
-  document.getElementById('hotelSummary').innerHTML = `
-    <div class="hotel-fin-strip">
-      ${currencyCards}${gbpCard}
-      <div class="hotel-fin-card hotel-fin-card--status">
-        <div class="hotel-fin-currency">STATUS${_hotelYearFilter !== 'all' ? ` · ${_hotelYearFilter}` : ''}</div>
-        <div class="hotel-fin-row"><span class="hotel-fin-lbl">Total Events</span><span class="hotel-fin-val">${total}</span></div>
-        <div class="hotel-fin-row"><span class="hotel-fin-lbl">Fully Paid</span><span class="hotel-fin-val hotel-fin-green">${total - unpaid}</span></div>
-        <div class="hotel-fin-row hotel-fin-total-row"><span class="hotel-fin-lbl">Still Outstanding</span><span class="hotel-fin-val ${unpaid > 0 ? 'hotel-fin-red' : 'hotel-fin-green'}">${unpaid > 0 ? unpaid : '✓ All clear'}</span></div>
-      </div>
-    </div>
-  `;
+  const curRows = Object.entries(byCur).filter(([, s]) => s.cost || s.av || s.paid).map(([cur, sums]) => {
+    const sym = hotelCurrencySymbol(cur);
+    const outstanding = sums.cost > 0 ? Math.max(0, sums.cost - sums.paid) : null;
+    return `<tr>
+      <td><strong>${cur}</strong></td>
+      <td class="dt-r">${sums.cost > 0 ? sym + fmtN(sums.cost) : '—'}</td>
+      <td class="dt-r">${sym}${fmtN(sums.av)}</td>
+      <td class="dt-r">${sym}${fmtN(sums.paid)}</td>
+      <td class="dt-r">${outstanding === null ? '—' : outstanding > 0 ? `<span class="hotel-owe">${sym}${fmtN(outstanding)}</span>` : '<span class="hotel-settled">Settled</span>'}</td>
+    </tr>`;
+  }).join('');
+  const byCurrency = curRows ? `
+    <div class="card hotel-cur-card">
+      <div class="card-header"><span class="card-title">By currency</span>
+        <span class="hotel-cur-rates">GBP figures use USD×0.787 · EUR×0.855 · CHF×0.885 · AED×0.214</span></div>
+      <div class="table-wrap"><table class="hotel-cur-table">
+        <thead><tr><th>Currency</th><th class="dt-r">Hotel cost</th><th class="dt-r">AV cost</th><th class="dt-r">Paid</th><th class="dt-r">Outstanding</th></tr></thead>
+        <tbody>${curRows}</tbody>
+      </table></div>
+    </div>` : '';
+
+  document.getElementById('hotelSummary').innerHTML = cards + byCurrency;
 }
 
 function renderHotelTable() {
@@ -6215,24 +6034,21 @@ function renderDealTotals(filtered, tfoot) {
   // Store filtered for VAT breakdown
   window._dealTotalsFiltered = filtered;
 
+  const paidCount = filtered.filter(d => (parseFloat(d.paid_inc_vat) || 0) > 0).length;
+  const card = (label, value, sub, extra = '', attrs = '') => `
+      <div class="deal-stat-card ${extra}" ${attrs}>
+        <div class="deal-stat-label">${label}</div>
+        <div class="deal-stat-value">${value}</div>
+        <div class="deal-stat-sub">${sub}</div>
+      </div>`;
   document.getElementById('dealTotals').innerHTML = `
     <div class="deal-stat-cards">
-      <div class="deal-stat-card">
-        <div class="deal-stat-value">£${fmt(totalDeal)}</div>
-        <div class="deal-stat-label">Deal total</div>
-      </div>
-      <div class="deal-stat-card ds--paid">
-        <div class="deal-stat-value">£${fmt(totalPaid)}</div>
-        <div class="deal-stat-label">Paid inc VAT</div>
-      </div>
-      <div class="deal-stat-card ds--vat" onclick="openVatBreakdown()" title="VAT by company">
-        <div class="deal-stat-value">£${fmt(totalTax)}</div>
-        <div class="deal-stat-label">Tax / VAT${_dealQFilter !== 'all' ? ` · ${_dealQFilter}` : ''}<small>by company ›</small></div>
-      </div>
-      <div class="deal-stat-card ds--remaining${remaining > 0 ? '' : ' is-clear'}">
-        <div class="deal-stat-value">£${fmt(Math.max(0, remaining))}</div>
-        <div class="deal-stat-label">Remaining</div>
-      </div>
+      ${card('Deal value', `£${fmt(totalDeal)}`, `${filtered.length} deal${filtered.length === 1 ? '' : 's'}`)}
+      ${card('Paid inc VAT', `£${fmt(totalPaid)}`, `${paidCount} of ${filtered.length} deals have paid`)}
+      ${card(`Tax / VAT${_dealQFilter !== 'all' ? ` · ${_dealQFilter}` : ''}`, `£${fmt(totalTax)}`,
+             '<span class="deal-stat-link">By company ›</span>', 'ds--vat', 'onclick="openVatBreakdown()" title="VAT by company"')}
+      ${card('Remaining', `£${fmt(Math.max(0, remaining))}`, remaining > 0 ? 'Still to collect' : 'Nothing outstanding',
+             remaining > 0 ? 'ds--remaining' : 'ds--remaining is-clear')}
     </div>`;
 }
 
@@ -8065,8 +7881,10 @@ async function openDealModal(id, defaultStage) {
   document.getElementById('dealPackageRows').classList.add('hidden');
   document.getElementById('dealPackageRows').innerHTML = '';
   document.getElementById('dealSplitPreview').classList.remove('hidden');
+  document.getElementById('dealPackageSingle').classList.remove('hidden');
+  document.getElementById('dealPackageLabel').value = '';
   const pkgBtn = document.getElementById('dealPackageToggleBtn');
-  if (pkgBtn) pkgBtn.textContent = '📦 Custom Package Split';
+  if (pkgBtn) { pkgBtn.textContent = 'Custom Package Split'; pkgBtn.classList.remove('active'); }
 
   // Load events into checkbox picker
   let _evs = [];
@@ -8105,10 +7923,15 @@ async function openDealModal(id, defaultStage) {
     document.getElementById('dealSigReceived').value = d.signature_received ? 'true' : 'false';
     document.getElementById('dealNotes').value = d.notes || '';
     _selectedEvIds = Array.isArray(d.events) ? d.events.map(e => e.event_id).filter(Boolean) : [];
-    // If this deal has any per-event package label or an uneven split, restore custom package mode
+    // One package on an even split fills the Package field; anything else
+    // (different packages, or uneven amounts) restores custom package mode.
     if (Array.isArray(d.events) && d.events.some(e => e.package_label)) {
-      _dealPackageMode = true;
-      d.events.forEach(e => { _dealPackages[e.event_id] = { amount: e.allocated_amount, label: e.package_label || '' }; });
+      if (dealIsSinglePackage(d)) {
+        document.getElementById('dealPackageLabel').value = d.events[0].package_label;
+      } else {
+        _dealPackageMode = true;
+        d.events.forEach(e => { _dealPackages[e.event_id] = { amount: e.allocated_amount, label: e.package_label || '' }; });
+      }
     }
     if (d.invoice1_name) document.getElementById('dealInv1Preview').textContent = `Current: ${d.invoice1_name}`;
     if (d.invoice2_name) document.getElementById('dealInv2Preview').textContent = `Current: ${d.invoice2_name}`;
@@ -8451,22 +8274,54 @@ function updateDealSplitPreview() {
   }
 }
 
+// The even split the server makes when no custom amounts are sent.
+function dealEvenShare(amount, n) {
+  return n ? parseFloat((parseFloat(amount) / n).toFixed(2)) : 0;
+}
+
+// True when every linked event carries the same package on an even split,
+// so the deal can be shown with the single Package field.
+function dealIsSinglePackage(d) {
+  const evs = d.events || [];
+  if (!evs.length) return false;
+  const label = evs[0].package_label || '';
+  const share = dealEvenShare(d.amount, evs.length);
+  return evs.every(e => (e.package_label || '') === label
+    && Math.abs((parseFloat(e.allocated_amount) || 0) - share) < 0.01);
+}
+
 function toggleDealPackageMode() {
   _dealPackageMode = !_dealPackageMode;
   const btn = document.getElementById('dealPackageToggleBtn');
   const rows = document.getElementById('dealPackageRows');
   const preview = document.getElementById('dealSplitPreview');
+  const single = document.getElementById('dealPackageSingle');
+  const singleInput = document.getElementById('dealPackageLabel');
   if (_dealPackageMode) {
-    btn.textContent = '↩ Use Even Split';
+    // Carry the single package into any event that has none yet.
+    const label = singleInput.value.trim();
+    if (label) {
+      document.querySelectorAll('#dealEventsCheckboxes input[type="checkbox"]:checked').forEach(cb => {
+        const evId = parseInt(cb.value);
+        if (!_dealPackages[evId]) _dealPackages[evId] = {};
+        if (!_dealPackages[evId].label) _dealPackages[evId].label = label;
+      });
+    }
+    btn.textContent = 'Use Even Split';
     btn.classList.add('active');
     rows.classList.remove('hidden');
     preview.classList.add('hidden');
+    single.classList.add('hidden');
     renderDealPackageRows();
   } else {
-    btn.textContent = '📦 Custom Package Split';
+    // Back to one package: keep it when every event had the same one.
+    const labels = [...new Set(Object.values(_dealPackages).map(p => (p.label || '').trim()).filter(Boolean))];
+    if (labels.length === 1) singleInput.value = labels[0];
+    btn.textContent = 'Custom Package Split';
     btn.classList.remove('active');
     rows.classList.add('hidden');
     preview.classList.remove('hidden');
+    single.classList.remove('hidden');
     updateDealSplitPreview();
   }
 }
@@ -8569,6 +8424,13 @@ async function saveDeal() {
       amount: parseFloat(_dealPackages[evId]?.amount) || 0,
       package_label: (_dealPackages[evId]?.label || '').trim()
     }));
+  } else {
+    // An even split still carries the package name, on every linked event.
+    const label = document.getElementById('dealPackageLabel').value.trim();
+    if (label && event_ids.length) {
+      const share = dealEvenShare(amount, event_ids.length);
+      body.event_packages = event_ids.map(evId => ({ event_id: evId, amount: share, package_label: label }));
+    }
   }
   if (_dealInv1) { body.invoice1_name = _dealInv1.name; body.invoice1_data = _dealInv1.data; }
   if (_dealInv2) { body.invoice2_name = _dealInv2.name; body.invoice2_data = _dealInv2.data; }
