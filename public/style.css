@@ -6717,3 +6717,28 @@ body.login-body { background: var(--bg); position: relative; min-height: 100vh; 
 }
 :root .cal-upcoming-sub .cal-chip { display: inline-block; width: auto; font-size: 11px !important; padding: 1px 7px !important; }
 .cal-key--rem { background: var(--accent); }
+
+/* Portfolio teams: one row per portfolio, four people across. */
+.pf-teams .table-wrap { margin: 4px -4px 0; }
+.pf-teams-table { width: 100%; border-collapse: collapse; }
+:root .pf-teams-table th { background: none; padding: 8px 10px; font: 500 12px/1.2 var(--font-sans); color: var(--muted); border-bottom: 1px solid var(--line); }
+:root .pf-teams-table td { padding: 11px 10px; border-bottom: 1px solid var(--line); font: 400 13.5px/1.3 var(--font-sans); color: var(--text); }
+:root .pf-teams-table tbody tr:last-child td { border-bottom: none; }
+:root .pf-teams-table tbody tr:hover { background: transparent; }
+.pf-team-series { display: inline-flex; align-items: center; gap: 8px; font-weight: 500; white-space: nowrap; }
+.pf-team-name { font-weight: 500; }
+.pf-team-empty { color: var(--dim); }
+.pf-team-act { text-align: right; white-space: nowrap; }
+.pt-body { padding: 18px 22px 4px; }
+.pt-body .form-row { margin-bottom: 14px; }
+.pt-hint { margin: 0; font: 400 12.5px/1.4 var(--font-sans); color: var(--muted); }
+:root .modal > .pt-body { padding-left: 22px; padding-right: 22px; }
+.pt-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 22px 20px; }
+@media (max-width: 700px) {
+  .pf-teams-table thead { display: none; }
+  .pf-teams-table tr { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  :root .pf-teams-table td { border: none; padding: 0; }
+  .pf-teams-table td[data-label]::before { content: attr(data-label); display: block; font: 400 11.5px/1.3 var(--font-sans); color: var(--muted); }
+  .pf-teams-table td:first-child { grid-column: 1 / -1; }
+  .pf-team-act { grid-column: 1 / -1; text-align: left; }
+}

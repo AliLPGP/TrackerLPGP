@@ -1666,6 +1666,36 @@
 </div>
 
 <!-- ══ MODAL: Portfolio Event ══ -->
+<!-- ══ MODAL: Portfolio team ══ -->
+<div class="modal-overlay" id="portTeamModal">
+  <div class="modal" style="width:480px">
+    <div class="modal-header">
+      <div>
+        <h2 id="portTeamTitle">Team</h2>
+        <p class="dm-sub" id="portTeamSub"></p>
+      </div>
+      <button class="modal-close" onclick="closeModal('portTeamModal')" aria-label="Close">✕</button>
+    </div>
+    <input type="hidden" id="portTeamSeries">
+    <datalist id="portTeamPeople"></datalist>
+    <div class="pt-body">
+      <div class="form-row">
+        <div class="form-group"><label for="portTeam_sales">Sales</label><input type="text" id="portTeam_sales" list="portTeamPeople" maxlength="80" placeholder="Name"></div>
+        <div class="form-group"><label for="portTeam_delegates">Delegates</label><input type="text" id="portTeam_delegates" list="portTeamPeople" maxlength="80" placeholder="Name"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label for="portTeam_production">Production</label><input type="text" id="portTeam_production" list="portTeamPeople" maxlength="80" placeholder="Name"></div>
+        <div class="form-group"><label for="portTeam_co_producer">Co-producer</label><input type="text" id="portTeam_co_producer" list="portTeamPeople" maxlength="80" placeholder="Name"></div>
+      </div>
+      <p class="pt-hint">Pick from your staff or type any name. Leave a box empty if nobody is assigned.</p>
+    </div>
+    <div class="pt-foot">
+      <button class="btn btn-ghost" onclick="closeModal('portTeamModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="savePortTeam()">Save team</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="portfolioModal">
   <div class="modal">
     <div class="modal-header">

@@ -11,6 +11,7 @@ const { sql, initDb } = require('./database');
 const { registerWasteman } = require('./wasteman');
 const { createBridgeRouter } = require('./bridge');
 const { createProgrammeRouter } = require('./programme-routes');
+const programmeSeries = require('./programme-2027');
 
 // Email transporter — configured via env vars; silently disabled if not set
 function createMailTransport() {
@@ -158,6 +159,18 @@ async function runLateMigrations() {
     `ALTER TABLE event_kits ADD COLUMN IF NOT EXISTS agenda_file_2 TEXT DEFAULT ''`,
     `ALTER TABLE event_kits ADD COLUMN IF NOT EXISTS agenda_data_2 TEXT DEFAULT ''`,
     `ALTER TABLE event_kits ADD COLUMN IF NOT EXISTS agenda_uploader_name_2 TEXT NOT NULL DEFAULT ''`,
+    // Who runs each portfolio (programme series) in a given programme year.
+    `CREATE TABLE IF NOT EXISTS portfolio_teams (
+      series TEXT NOT NULL,
+      programme_year INT NOT NULL,
+      sales TEXT NOT NULL DEFAULT '',
+      delegates TEXT NOT NULL DEFAULT '',
+      production TEXT NOT NULL DEFAULT '',
+      co_producer TEXT NOT NULL DEFAULT '',
+      updated_by INT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (series, programme_year)
+    )`,
   ];
   for (const step of steps) {
     try { await sql(step); } catch(e) { console.warn('Migration step skipped:', e.message); }
@@ -1995,6 +2008,42 @@ app.put('/api/portfolio-events/:id', requireAuth, requireAdminOrManager, async (
 app.delete('/api/portfolio-events/:id', requireAuth, requireAdminOrManager, async (req, res) => {
   try { await q('DELETE FROM portfolio_events WHERE id=?', [req.params.id]); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── PORTFOLIO TEAMS ──────────────────────────────────────────────────────────
+// One team per programme series per programme year: the sales, delegates and
+// production people, and the co-producer. Names are free text so an outside
+// co-producer can be recorded as easily as a member of staff.
+const PORTFOLIO_TEAM_ROLES = ['sales', 'delegates', 'production', 'co_producer'];
+
+app.get('/api/portfolio-teams', requireAuth, requireAdminOrManager, async (req, res) => {
+  try {
+    const year = parseInt(req.query.year, 10);
+    const { rows } = Number.isInteger(year)
+      ? await q('SELECT * FROM portfolio_teams WHERE programme_year=? ORDER BY series', [year])
+      : await q('SELECT * FROM portfolio_teams ORDER BY programme_year DESC, series');
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/portfolio-teams/:series', requireAuth, requireAdminOrManager, async (req, res) => {
+  try {
+    const series = programmeSeries.normaliseSeries(req.params.series);
+    if (!series) return res.status(400).json({ error: 'Unknown portfolio' });
+    const year = parseInt(req.body.year, 10);
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) return res.status(400).json({ error: 'A programme year is required' });
+    const v = PORTFOLIO_TEAM_ROLES.map(r => String(req.body[r] ?? '').trim().slice(0, 80));
+    const { rows } = await q(
+      `INSERT INTO portfolio_teams (series, programme_year, sales, delegates, production, co_producer, updated_by, updated_at)
+       VALUES (?,?,?,?,?,?,?,NOW())
+       ON CONFLICT (series, programme_year) DO UPDATE SET
+         sales = EXCLUDED.sales, delegates = EXCLUDED.delegates, production = EXCLUDED.production,
+         co_producer = EXCLUDED.co_producer, updated_by = EXCLUDED.updated_by, updated_at = NOW()
+       RETURNING *`,
+      [series, year, ...v, req.admin.id]
+    );
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ─── DEALS ────────────────────────────────────────────────────────────────────
