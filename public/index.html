@@ -1708,13 +1708,13 @@
 <!-- ══ MODAL: Deal ══ -->
 <!-- ══ MODAL: Deal ══ -->
 <div class="modal-overlay" id="dealModal">
-  <div class="modal deal-modal-redesign" style="max-width:600px">
-    <div class="modal-header" style="border-bottom:1px solid var(--border);padding-bottom:16px;margin-bottom:0">
+  <div class="modal deal-modal-redesign dm">
+    <div class="modal-header dm-head">
       <div>
-        <h2 id="dealModalTitle" style="font:800 18px/1 var(--font-sans);margin:0">Add Deal</h2>
-        <div style="font:500 11px/1 var(--font-mono);color:var(--muted);margin-top:5px">All amounts in selected currency</div>
+        <h2 id="dealModalTitle">Add Deal</h2>
+        <p class="dm-sub">Amounts are in the deal's currency</p>
       </div>
-      <button class="modal-close" onclick="closeModal('dealModal')">✕</button>
+      <button class="modal-close" onclick="closeModal('dealModal')" aria-label="Close">✕</button>
     </div>
     <input type="hidden" id="dealEditId">
     <input type="hidden" id="dealTitle">
@@ -1723,158 +1723,142 @@
     <input type="hidden" id="dealInvSent" value="false">
     <input type="hidden" id="dealSigReceived" value="false">
 
-    <div style="padding:20px 0;display:flex;flex-direction:column;gap:20px">
+    <div class="dm-body">
 
-      <!-- Company -->
-      <div>
-        <div class="deal-modal-sec-label">Company</div>
-        <div class="form-row" style="margin:0;gap:10px">
-          <div class="form-group" style="flex:1;margin:0"><input type="text" id="dealCompany" placeholder="Company name *" style="width:100%"></div>
-          <div class="form-group" style="width:76px;margin:0">
-            <input type="text" id="dealInitials" placeholder="BY" maxlength="4" style="text-transform:uppercase;width:100%;text-align:center;letter-spacing:2px;font-weight:700">
+      <!-- Who, and when. Two years that are usually the same and sometimes are
+           not: the month the deal was signed, and the programme year it is for.
+           A deal signed in September 2026 for a 2027 event is a 2027 deal. -->
+      <section class="dm-sec">
+        <h3 class="dm-sec-title">Client</h3>
+        <div class="dm-row dm-row--company">
+          <div class="dm-field">
+            <label for="dealCompany">Company</label>
+            <input type="text" id="dealCompany" placeholder="Company name">
+          </div>
+          <div class="dm-field">
+            <label for="dealInitials">Rep</label>
+            <input type="text" id="dealInitials" class="dm-initials" placeholder="AB" maxlength="4">
           </div>
         </div>
-      </div>
-
-      <!-- Two years that are usually the same and sometimes are not: the month
-           the deal was signed, and the programme year it is for. A deal signed
-           in September 2026 for a 2027 event is a 2027 deal, and the year tab
-           follows the programme year. -->
-      <div>
-        <div class="deal-period-grid">
-          <div>
-            <div class="deal-modal-sec-label">Month signed</div>
-            <div class="form-group" style="margin:0;max-width:260px">
-              <div class="deal-period" title="When the deal was signed. Used by the month range filter and shown in the Month column.">
-                <select id="dealPeriodMonth" onchange="onDealPeriodChange()"></select>
-                <select id="dealPeriodYear" onchange="onDealPeriodChange()"></select>
-              </div>
-              <div class="deal-period-hint" id="dealPeriodHint"></div>
+        <div class="dm-row dm-row--2">
+          <div class="dm-field">
+            <label for="dealPeriodMonth">Month signed</label>
+            <div class="deal-period" title="When the deal was signed. Used by the month range filter and shown in the Month column.">
+              <select id="dealPeriodMonth" onchange="onDealPeriodChange()"></select>
+              <select id="dealPeriodYear" onchange="onDealPeriodChange()" aria-label="Year signed"></select>
             </div>
+            <div class="deal-period-hint" id="dealPeriodHint"></div>
           </div>
-          <div>
-            <div class="deal-modal-sec-label">Programme year</div>
-            <div class="form-group" style="margin:0;max-width:200px">
-              <div class="deal-period" title="The year's programme this deal is for. Decides which year tab it appears under. Set from the events you pick; change it if you need to.">
-                <select id="dealProgrammeYear" onchange="onDealProgrammeYearChange()"></select>
-              </div>
-              <div class="deal-period-hint" id="dealProgrammeYearHint"></div>
+          <div class="dm-field">
+            <label for="dealProgrammeYear">Programme year</label>
+            <div class="deal-period" title="The year's programme this deal is for. Decides which year tab it appears under. Set from the events you pick; change it if you need to.">
+              <select id="dealProgrammeYear" onchange="onDealProgrammeYearChange()"></select>
             </div>
+            <div class="deal-period-hint" id="dealProgrammeYearHint"></div>
           </div>
         </div>
-      </div>
+      </section>
 
-      <!-- Financials -->
-      <div>
-        <div class="deal-modal-sec-label">Financials</div>
-        <div class="form-row" style="margin:0;gap:10px">
-          <div class="form-group" style="width:90px;margin:0">
-            <label class="deal-mini-lbl">Currency</label>
-            <select id="dealCurrency" style="width:100%">
+      <section class="dm-sec">
+        <h3 class="dm-sec-title">Money</h3>
+        <div class="dm-row dm-row--money">
+          <div class="dm-field">
+            <label for="dealCurrency">Currency</label>
+            <select id="dealCurrency" onchange="updateDealSplitPreview();updateDealMoneySummary()">
               <option value="GBP">£ GBP</option><option value="USD">$ USD</option>
               <option value="AED">AED</option><option value="PHP">₱ PHP</option><option value="EUR">€ EUR</option>
             </select>
           </div>
-          <div class="form-group" style="flex:1;margin:0">
-            <label class="deal-mini-lbl">Deal Value *</label>
-            <input type="number" id="dealAmount" min="0" step="0.01" placeholder="0.00" oninput="updateDealSplitPreview()" style="width:100%">
+          <div class="dm-field">
+            <label for="dealAmount">Deal value</label>
+            <input type="number" id="dealAmount" min="0" step="0.01" placeholder="0.00" oninput="updateDealSplitPreview();updateDealMoneySummary()">
           </div>
-          <div class="form-group" style="width:100px;margin:0">
-            <label class="deal-mini-lbl">VAT</label>
-            <input type="number" id="dealTaxVat" min="0" step="0.01" placeholder="0.00" style="width:100%">
-          </div>
-        </div>
-        <div class="deal-edit-only-row form-row" style="margin:10px 0 0;gap:10px">
-          <div class="form-group" style="flex:1;margin:0">
-            <label class="deal-mini-lbl">Paid (inc VAT)</label>
-            <input type="number" id="dealPaidIncVat" min="0" step="0.01" placeholder="Paid inc VAT" style="width:100%">
+          <div class="dm-field">
+            <label for="dealTaxVat">VAT</label>
+            <input type="number" id="dealTaxVat" min="0" step="0.01" placeholder="0.00" oninput="updateDealMoneySummary()">
           </div>
         </div>
-      </div>
+        <div class="deal-edit-only-row">
+          <div class="dm-field">
+            <label for="dealPaidIncVat">Paid so far <span class="dm-opt">inc VAT</span></label>
+            <input type="number" id="dealPaidIncVat" min="0" step="0.01" placeholder="0.00" oninput="updateDealMoneySummary()">
+          </div>
+        </div>
+        <div class="dm-summary" id="dealMoneySummary"></div>
+      </section>
 
-      <!-- Invoice (edit only) -->
-      <div class="deal-edit-only-row">
-        <div class="deal-modal-sec-label">Invoice</div>
-        <div class="form-row" style="margin:0;gap:10px">
-          <div class="form-group" style="width:150px;margin:0">
-            <label class="deal-mini-lbl">Invoice Date</label>
-            <input type="date" id="dealInvoiceDate" style="width:100%" onchange="autofillDealMonth()">
+      <section class="dm-sec deal-edit-only-row">
+        <h3 class="dm-sec-title">Invoice &amp; payment</h3>
+        <div class="dm-row dm-row--2">
+          <div class="dm-field">
+            <label for="dealInvoiceDate">Invoice date</label>
+            <input type="date" id="dealInvoiceDate" onchange="autofillDealMonth()">
           </div>
-        </div>
-        <div class="form-row" style="margin:10px 0 0;gap:10px">
-          <div class="form-group" style="flex:1;margin:0;min-width:0">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-              <label class="deal-mini-lbl" style="margin:0">Invoice Number</label>
-              <button type="button" class="btn btn-ghost" style="padding:3px 9px;font-size:0.7rem;white-space:nowrap" onclick="fillNextInvoiceNumber()">Use Next</button>
+          <div class="dm-field">
+            <div class="dm-label-row">
+              <label for="dealInvoiceNumber">Invoice number</label>
+              <button type="button" class="dm-link" onclick="fillNextInvoiceNumber()">Use next</button>
             </div>
-            <input type="text" id="dealInvoiceNumber" placeholder="Invoice number" style="width:100%;font-family:var(--font-mono);font-size:0.85rem">
+            <input type="text" id="dealInvoiceNumber" placeholder="Invoice number">
           </div>
         </div>
-      </div>
-
-      <!-- Payment method (edit only) -->
-      <div class="deal-edit-only-row">
-        <div class="deal-modal-sec-label">Payment Method</div>
-        <div class="deal-payment-toggle">
-          <button type="button" class="deal-pay-btn" id="dealPayBank" onclick="selectDealPayment('HSBC')">
-            <span class="deal-pay-icon">🏦</span> HSBC
-          </button>
-          <button type="button" class="deal-pay-btn" id="dealPayStripe" onclick="selectDealPayment('Stripe')">
-            <span class="deal-pay-icon">⚡</span> Stripe
-          </button>
+        <div class="dm-field">
+          <label>Paid into <span class="dm-opt">optional · click again to clear</span></label>
+          <div class="dm-seg" role="group" aria-label="Paid into">
+            <button type="button" class="deal-pay-btn" id="dealPayBank" onclick="selectDealPayment('HSBC')">HSBC</button>
+            <button type="button" class="deal-pay-btn" id="dealPayStripe" onclick="selectDealPayment('Stripe')">Stripe</button>
+          </div>
+          <input type="hidden" id="dealBank" value="">
         </div>
-        <div style="font:500 10px/1 var(--font-mono);color:var(--muted);margin-top:6px">Optional — click again to unset</div>
-        <input type="hidden" id="dealBank" value="">
-      </div>
+      </section>
 
-      <!-- Events -->
-      <div>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;flex-wrap:wrap;gap:6px">
-          <div class="deal-modal-sec-label" style="margin:0">Linked Events <span id="dealEventsCount" style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--accent)"></span></div>
-          <button type="button" class="btn btn-ghost btn-sm" id="dealPackageToggleBtn" onclick="toggleDealPackageMode()" style="font-size:0.72rem">📦 Custom Package Split</button>
+      <section class="dm-sec">
+        <div class="dm-sec-hd">
+          <h3 class="dm-sec-title">Events <span id="dealEventsCount" class="dm-count"></span></h3>
+          <button type="button" class="dm-link" id="dealPackageToggleBtn" onclick="toggleDealPackageMode()">Custom Package Split</button>
         </div>
         <div class="deal-event-picker">
-          <input type="text" id="dealEventsSearch" class="deal-event-search" placeholder="🔍  Search events…" oninput="filterDealEvents()">
+          <input type="text" id="dealEventsSearch" class="deal-event-search" placeholder="Search events…" oninput="filterDealEvents()">
           <div id="dealEventsCheckboxes" class="deal-event-checkboxes"></div>
         </div>
-        <div id="dealSplitPreview" style="font-size:0.75rem;color:var(--muted);margin-top:5px"></div>
-        <div id="dealPackageSingle" class="deal-package-single">
+        <div id="dealSplitPreview" class="dm-hint"></div>
+        <div id="dealPackageSingle" class="deal-package-single dm-field">
           <label for="dealPackageLabel">Package</label>
           <input type="text" id="dealPackageLabel" placeholder="e.g. Exhibitor, Speaker, Delegate tickets" maxlength="120">
           <div class="deal-package-single-hint">Applies to every linked event. For a different package or amount per event, use Custom Package Split.</div>
         </div>
-        <div id="dealPackageRows" class="hidden" style="margin-top:10px;display:flex;flex-direction:column;gap:8px"></div>
-      </div>
+        <div id="dealPackageRows" class="hidden dm-package-rows"></div>
+      </section>
 
-      <!-- Notes -->
-      <div>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:6px">
-          <div class="deal-modal-sec-label" style="margin:0">Notes <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">(optional)</span></div>
-          <button type="button" class="btn btn-ghost btn-sm" onclick="openDealNotesPopup()" style="font-size:0.72rem" title="Open notes in a larger window">⤢ Expand</button>
+      <section class="dm-sec">
+        <div class="dm-sec-hd">
+          <h3 class="dm-sec-title">Notes <span class="dm-opt">optional</span></h3>
+          <button type="button" class="dm-link" onclick="openDealNotesPopup()" title="Open notes in a larger window">Expand</button>
         </div>
-        <div class="form-group" style="margin:0"><textarea id="dealNotes" rows="4" placeholder="Deal notes…" style="width:100%;resize:vertical" ondblclick="openDealNotesPopup()"></textarea></div>
-      </div>
+        <textarea id="dealNotes" rows="4" placeholder="Anything worth remembering about this deal" ondblclick="openDealNotesPopup()"></textarea>
+      </section>
 
-      <!-- Documents (edit only) -->
-      <div class="deal-edit-only-row">
-        <div class="deal-modal-sec-label">Documents</div>
-        <div class="form-row" style="margin:0;gap:12px">
-          <div class="form-group" style="flex:1;margin:0">
-            <div style="font:500 11px/1 var(--font-mono);color:var(--muted);margin-bottom:5px" id="dealInv1Preview"></div>
-            <label class="ht-upload-btn">📎 Invoice 1<input type="file" id="dealInv1File" accept=".pdf,.doc,.docx" style="display:none" onchange="dealFilePreview(1,this)"></label>
-          </div>
-          <div class="form-group" style="flex:1;margin:0">
-            <div style="font:500 11px/1 var(--font-mono);color:var(--muted);margin-bottom:5px" id="dealInv2Preview"></div>
-            <label class="ht-upload-btn">📎 Invoice 2<input type="file" id="dealInv2File" accept=".pdf,.doc,.docx" style="display:none" onchange="dealFilePreview(2,this)"></label>
-          </div>
+      <section class="dm-sec deal-edit-only-row">
+        <h3 class="dm-sec-title">Documents</h3>
+        <div class="dm-row dm-row--2">
+          <label class="dm-file">
+            <span class="dm-file-name">Invoice 1</span>
+            <span class="dm-file-state" id="dealInv1Preview"></span>
+            <input type="file" id="dealInv1File" accept=".pdf,.doc,.docx" onchange="dealFilePreview(1,this)">
+          </label>
+          <label class="dm-file">
+            <span class="dm-file-name">Invoice 2</span>
+            <span class="dm-file-state" id="dealInv2Preview"></span>
+            <input type="file" id="dealInv2File" accept=".pdf,.doc,.docx" onchange="dealFilePreview(2,this)">
+          </label>
         </div>
-      </div>
+      </section>
 
     </div>
 
-    <div style="display:flex;gap:10px;justify-content:flex-end;border-top:1px solid var(--border);padding-top:16px">
+    <div class="dm-foot">
       <button class="btn btn-ghost" onclick="closeModal('dealModal')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveDeal()">Save Deal</button>
+      <button class="btn btn-primary" onclick="saveDeal()">Save deal</button>
     </div>
   </div>
 </div>
