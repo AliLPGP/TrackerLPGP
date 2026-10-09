@@ -376,10 +376,13 @@
       <!-- ══ CALENDAR ══ -->
       <div class="page" id="page-calendar">
         <div class="cal-page-header">
-          <div class="cal-nav">
-            <button class="btn btn-ghost btn-sm" onclick="calPrevMonth()">‹</button>
+          <div class="cal-title-row">
             <h2 id="calMonthLabel"></h2>
-            <button class="btn btn-ghost btn-sm" onclick="calNextMonth()">›</button>
+            <div class="cal-nav">
+              <button class="cal-nav-btn" onclick="calPrevMonth()" aria-label="Previous month">‹</button>
+              <button class="cal-today-btn" onclick="calGoToday()">Today</button>
+              <button class="cal-nav-btn" onclick="calNextMonth()" aria-label="Next month">›</button>
+            </div>
           </div>
           <div class="cal-controls">
             <select id="calEmpFilter" onchange="loadCalendar()">
@@ -389,12 +392,11 @@
           </div>
         </div>
 
-        <!-- Legend -->
-        <div style="display:flex;gap:16px;margin-bottom:14px;font-size:0.83rem;flex-wrap:wrap">
-          <span><span class="cal-chip chip-full">Full Day</span> Full day off</span>
-          <span><span class="cal-chip chip-half">Half Day</span> Half day off</span>
-          <span><span class="cal-reminder-dot cat-rent" style="display:inline-block;width:8px;height:8px;border-radius:50%;vertical-align:middle;margin-right:3px"></span> Expense reminder</span>
-          <span style="color:var(--muted)">Click a date to view / book</span>
+        <div class="cal-legend">
+          <span><i class="cal-key cal-key--full"></i>Day off</span>
+          <span><i class="cal-key cal-key--half"></i>Half day off</span>
+          <span><i class="cal-key cal-key--rem"></i>Reminder</span>
+          <span class="cal-legend-hint">Click a day to view or book</span>
         </div>
 
         <!-- Calendar grid -->

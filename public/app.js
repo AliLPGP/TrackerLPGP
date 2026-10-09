@@ -3231,6 +3231,13 @@ function calPrevMonth() {
   loadCalendar();
 }
 
+function calGoToday() {
+  const now = new Date();
+  calYear = now.getFullYear();
+  calMonth = now.getMonth() + 1;
+  loadCalendar();
+}
+
 function calNextMonth() {
   calMonth++;
   if (calMonth > 12) { calMonth = 1; calYear++; }
