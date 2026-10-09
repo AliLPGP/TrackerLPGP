@@ -8021,6 +8021,7 @@ async function openDealModal(id, defaultStage) {
   updateDealSplitPreview();
   updateDealProgrammeYear();
   if (_dealPackageMode) { _dealPackageMode = false; toggleDealPackageMode(); }
+  updateDealMoneySummary();
   openModal('dealModal');
 }
 
@@ -8258,7 +8259,7 @@ function filterDealEvents() {
 function updateDealSplitPreview() {
   const checked = Array.from(document.querySelectorAll('#dealEventsCheckboxes input[type="checkbox"]:checked'));
   const countEl = document.getElementById('dealEventsCount');
-  if (countEl) countEl.textContent = checked.length ? `· ${checked.length} selected` : '';
+  if (countEl) countEl.textContent = checked.length ? `${checked.length} selected` : '';
   if (_dealPackageMode) { renderDealPackageRows(); return; }
   const amount = parseFloat(document.getElementById('dealAmount').value) || 0;
   const sym = { GBP:'£', USD:'$', AED:'AED ', PHP:'₱', EUR:'€' }[document.getElementById('dealCurrency')?.value] || '';
@@ -8290,6 +8291,26 @@ function dealIsSinglePackage(d) {
     && Math.abs((parseFloat(e.allocated_amount) || 0) - share) < 0.01);
 }
 
+// One line under the money fields: what the invoice comes to with VAT, and
+// (when editing) how much of it is still to come in.
+function updateDealMoneySummary() {
+  const el = document.getElementById('dealMoneySummary');
+  if (!el) return;
+  const amount = parseFloat(document.getElementById('dealAmount').value) || 0;
+  const vat    = parseFloat(document.getElementById('dealTaxVat').value) || 0;
+  const paid   = parseFloat(document.getElementById('dealPaidIncVat').value) || 0;
+  if (amount <= 0) { el.innerHTML = ''; return; }
+  const sym = { GBP:'£', USD:'$', AED:'AED ', PHP:'₱', EUR:'€' }[document.getElementById('dealCurrency').value] || '';
+  const total = amount + vat;
+  const left  = total - paid;
+  const editing = !!document.getElementById('dealEditId').value;
+  const leftHtml = !editing ? '' : left > 0.005
+    ? `<span class="dm-sum-left">${sym}${fmt(left)} left to pay</span>`
+    : left < -0.005 ? `<span class="dm-sum-over">${sym}${fmt(-left)} overpaid</span>`
+    : '<span class="dm-sum-done">Paid in full</span>';
+  el.innerHTML = `<span>Invoice total <strong>${sym}${fmt(total)}</strong>${vat > 0 ? ' inc VAT' : ''}</span>${leftHtml}`;
+}
+
 function toggleDealPackageMode() {
   _dealPackageMode = !_dealPackageMode;
   const btn = document.getElementById('dealPackageToggleBtn');
@@ -8298,15 +8319,17 @@ function toggleDealPackageMode() {
   const single = document.getElementById('dealPackageSingle');
   const singleInput = document.getElementById('dealPackageLabel');
   if (_dealPackageMode) {
-    // Carry the single package into any event that has none yet.
+    // Start each event from what an even split would give it, and carry the
+    // single package across, so only the events that differ need touching.
     const label = singleInput.value.trim();
-    if (label) {
-      document.querySelectorAll('#dealEventsCheckboxes input[type="checkbox"]:checked').forEach(cb => {
-        const evId = parseInt(cb.value);
-        if (!_dealPackages[evId]) _dealPackages[evId] = {};
-        if (!_dealPackages[evId].label) _dealPackages[evId].label = label;
-      });
-    }
+    const checked = document.querySelectorAll('#dealEventsCheckboxes input[type="checkbox"]:checked');
+    const share = dealEvenShare(document.getElementById('dealAmount').value, checked.length);
+    checked.forEach(cb => {
+      const evId = parseInt(cb.value);
+      if (!_dealPackages[evId]) _dealPackages[evId] = {};
+      if (label && !_dealPackages[evId].label) _dealPackages[evId].label = label;
+      if ((_dealPackages[evId].amount == null || _dealPackages[evId].amount === '') && share > 0) _dealPackages[evId].amount = share;
+    });
     btn.textContent = 'Use Even Split';
     btn.classList.add('active');
     rows.classList.remove('hidden');

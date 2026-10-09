@@ -6288,8 +6288,22 @@ body { font-variant-numeric: tabular-nums; }
 .hotel-settled { color: var(--positive); font-weight: 500; }
 :root #hotelTable td { font-size: 13px; }
 :root .ht-status-sel { font: 500 12.5px/1.2 var(--font-sans); }
-:root .hotel-row-paid .ht-status-sel { color: var(--positive); }
-:root .hotel-row-partial .ht-status-sel { color: var(--warning); }
+/* Paid rows read green at a glance: a soft green row, a green status pill and
+   a green paid figure. Part-paid rows get the same treatment in amber. */
+:root #hotelTable tr.hotel-row-paid > td          { background: rgba(21,128,61,0.11); }
+:root #hotelTable tr.hotel-row-partial > td       { background: rgba(180,83,9,0.10); }
+:root #hotelTable tr.hotel-row-paid:hover > td    { background: rgba(21,128,61,0.16); }
+:root #hotelTable tr.hotel-row-partial:hover > td { background: rgba(180,83,9,0.15); }
+[data-theme="dark"] #hotelTable tr.hotel-row-paid > td          { background: rgba(76,195,138,0.14); }
+[data-theme="dark"] #hotelTable tr.hotel-row-partial > td       { background: rgba(232,180,79,0.13); }
+[data-theme="dark"] #hotelTable tr.hotel-row-paid:hover > td    { background: rgba(76,195,138,0.20); }
+[data-theme="dark"] #hotelTable tr.hotel-row-partial:hover > td { background: rgba(232,180,79,0.19); }
+:root .hotel-row-paid .ht-status-sel,
+:root .hotel-row-partial .ht-status-sel { border-radius: 999px; padding: 3px 8px; font-weight: 600; }
+:root .hotel-row-paid .ht-status-sel    { color: var(--positive); background: var(--positive-soft); }
+:root .hotel-row-partial .ht-status-sel { color: var(--warning);  background: var(--warning-soft); }
+:root .hotel-row-paid td[data-field="paid_amount"]    { color: var(--positive); }
+:root .hotel-row-partial td[data-field="paid_amount"] { color: var(--warning); }
 :root .ht-upload-btn { font: 500 12px/1.2 var(--font-sans); border-radius: 8px; }
 @media (max-width: 700px) { .hotel-cur-rates { display: none; } }
 
@@ -6380,4 +6394,149 @@ body { font-variant-numeric: tabular-nums; }
   .db-kpi { padding: 14px; }
   .db-kpi-value { font-size: 22px; }
   .db-kpi-label, .db-kpi-sub { font-size: 12px; }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Deal modal
+   A header and a footer that stay put, and a scrolling body in short
+   sections: Client, Money, Invoice & payment, Events, Notes, Documents.
+   Related fields share a row; every field keeps its label above it.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root .dm {
+  width: 640px; max-width: 100%; max-height: min(92vh, 900px); padding: 0;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+:root .dm > * { padding-left: 0; padding-right: 0; }
+:root .dm .dm-head {
+  position: static; margin: 0; padding: 22px 28px 18px; flex-shrink: 0;
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+  background: var(--surface); border-bottom: 1px solid var(--line); border-radius: 16px 16px 0 0;
+}
+:root .dm .dm-head h2 { font: 600 19px/1.2 var(--font-sans) !important; letter-spacing: -0.015em; margin: 0; }
+.dm-sub { margin-top: 4px; font: 400 12.5px/1.3 var(--font-sans); color: var(--muted); }
+
+:root .dm .dm-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 28px 8px; }
+.dm-sec { padding: 20px 0; }
+.dm-sec + .dm-sec { border-top: 1px solid var(--line); }
+.dm-sec.deal-edit-only-row { display: none; }
+.deal-modal-editing .dm-sec.deal-edit-only-row { display: block; }
+.dm-sec-title { margin: 0; font: 600 14px/1.3 var(--font-sans); color: var(--text); display: flex; align-items: center; gap: 8px; }
+.dm-sec-hd { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+/* Spacing comes from the gap between whatever is showing, so a hidden
+   edit-only field leaves no hole in Add mode. */
+.dm-sec > * + * { margin-top: 14px; }
+.dm-sec > .dm-hint { margin-top: 8px; }
+.dm-hint:empty { display: none; }
+.dm-sec-hd .dm-sec-title { margin: 0; }
+.dm-count:not(:empty) {
+  padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+  font: 500 11.5px/1.3 var(--font-sans);
+}
+.dm-opt { margin-left: 4px; font: 400 12px/1 var(--font-sans); color: var(--dim); }
+
+.dm-row { display: grid; gap: 12px; }
+.dm-row--company { grid-template-columns: minmax(0, 1fr) 88px; }
+.dm-row--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.dm-row--money { grid-template-columns: 116px minmax(0, 1fr) minmax(0, 1fr); }
+.deal-modal-editing .dm-sec > .deal-edit-only-row { display: block; }
+
+.dm-field { min-width: 0; }
+.dm-field > label, .dm-label-row > label {
+  display: block; margin-bottom: 6px; font: 500 12.5px/1.3 var(--font-sans); color: var(--text-2);
+}
+.dm-label-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+:root .dm input[type="text"], :root .dm input[type="number"], :root .dm input[type="date"],
+:root .dm select, :root .dm textarea {
+  width: 100%; min-height: 40px; padding: 9px 12px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border-bright); border-radius: 9px;
+  font: 400 14px/1.4 var(--font-sans);
+}
+:root .dm textarea { min-height: 96px; resize: vertical; display: block; }
+:root .dm input::placeholder, :root .dm textarea::placeholder { color: var(--dim); }
+:root .dm .dm-initials { text-align: center; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 600; }
+:root .dm .deal-period select { min-height: 40px; }
+:root .dm .deal-period-hint { margin-top: 6px; min-height: 0; }
+.dm-sec .deal-package-single { margin-top: 14px; }
+.dm-hint:not(:empty) { margin-top: 8px; font: 400 12.5px/1.4 var(--font-sans); color: var(--muted); }
+
+.dm-link {
+  background: none; border: none; padding: 0; cursor: pointer; white-space: nowrap;
+  font: 500 13px/1.3 var(--font-sans); color: var(--accent);
+}
+.dm-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+:root #dealPackageToggleBtn.active { background: none; border: none; color: var(--accent); }
+
+/* Live total under the money fields. */
+.dm-summary:empty { display: none; }
+.dm-summary {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 10px 14px; border-radius: 10px;
+  background: var(--surface-2); font: 400 13px/1.4 var(--font-sans); color: var(--muted);
+}
+.dm-summary strong { color: var(--text); font-weight: 600; }
+.dm-sum-left { color: var(--warning); font-weight: 500; }
+.dm-sum-done { color: var(--positive); font-weight: 500; }
+.dm-sum-over { color: var(--negative); font-weight: 500; }
+
+/* Paid into: a two-way segmented control. */
+.dm-seg { display: inline-flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--surface-3); }
+:root .dm .deal-pay-btn {
+  flex: 0 0 auto; min-width: 104px; padding: 7px 16px; border: none; border-radius: 8px;
+  background: transparent; color: var(--muted); font: 500 13px/1.2 var(--font-sans); cursor: pointer;
+}
+:root .dm .deal-pay-btn:hover { color: var(--text); }
+:root .dm .deal-pay-btn.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(15,23,42,0.10), 0 0 0 1px var(--border); }
+[data-theme="dark"] .dm .deal-pay-btn.active { background: var(--accent); color: #fff; box-shadow: none; }
+
+/* Event picker. */
+:root .dm .deal-event-picker { border: 1px solid var(--border-bright); border-radius: 10px; }
+:root .dm .deal-event-search {
+  min-height: 40px; padding: 9px 12px; border: none; border-bottom: 1px solid var(--line); border-radius: 0;
+  background: var(--surface); font: 400 13.5px/1.3 var(--font-sans);
+}
+:root .dm .deal-event-group-hd { font: 500 11.5px/1.2 var(--font-sans); letter-spacing: 0; text-transform: none; color: var(--muted); }
+:root .dm .deal-event-group-n { font: 500 11px/1.2 var(--font-sans); background: var(--surface-3); border: none; }
+:root .dm .deal-event-check-item .deal-event-when { font: 400 12px/1.2 var(--font-sans); }
+:root .dm .deal-event-team { font: 500 11px/1.3 var(--font-sans); letter-spacing: 0; }
+.dm-package-rows:not(.hidden) { display: flex; flex-direction: column; gap: 8px; }
+:root .dm .deal-package-row { padding: 8px 10px 8px 14px; border-radius: 10px; border-color: var(--border); gap: 8px; }
+:root .dm .deal-package-row .dpr-name { font: 500 13px/1.3 var(--font-sans); }
+:root .dm .deal-package-row input[type="text"]   { width: 200px !important; flex-shrink: 0; }
+:root .dm .deal-package-row input[type="number"] { width: 120px !important; flex-shrink: 0; }
+:root .dm .deal-package-row > span:not(.dpr-name) { font: 500 13px/1 var(--font-sans) !important; }
+:root .dm .dm-package-rows > div:last-child:not(.deal-package-row) { padding: 2px 2px 0; font: 500 12.5px/1.4 var(--font-sans) !important; }
+@media (max-width: 600px) {
+  :root .dm .deal-package-row { flex-wrap: wrap; }
+  :root .dm .deal-package-row .dpr-name { flex-basis: 100%; }
+  :root .dm .deal-package-row input[type="text"] { flex: 1; width: auto !important; }
+}
+:root .dm .deal-package-row input { min-height: 36px; }
+
+/* Documents: two quiet drop slots. */
+.dm-file {
+  display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; cursor: pointer;
+  border: 1px dashed var(--border-bright); border-radius: 10px; background: var(--surface);
+  transition: border-color .15s, background .15s;
+}
+.dm-file:hover { border-color: var(--accent); background: var(--accent-soft); }
+.dm-file input { display: none; }
+.dm-file-name { font: 500 13px/1.3 var(--font-sans); color: var(--text); }
+.dm-file-state { font: 400 12px/1.3 var(--font-sans); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-file-state:empty::before { content: 'Click to attach a PDF or Word file'; color: var(--dim); }
+
+:root .dm .dm-foot {
+  flex-shrink: 0; display: flex; justify-content: flex-end; gap: 10px;
+  padding: 14px 28px; border-top: 1px solid var(--line); background: var(--surface); border-radius: 0 0 16px 16px;
+}
+:root .dm .dm-foot .btn { min-width: 96px; justify-content: center; padding: 10px 16px; }
+
+@media (max-width: 600px) {
+  :root .dm .dm-head { padding: 18px 18px 14px; }
+  :root .dm .dm-body { padding: 0 18px 8px; }
+  :root .dm .dm-foot { padding: 12px 18px; }
+  .dm-row--2 { grid-template-columns: 1fr; }
+  .dm-row--money { grid-template-columns: 1fr 1fr; }
+  .dm-row--money .dm-field:first-child { grid-column: 1 / -1; }
 }
