@@ -5582,7 +5582,10 @@ function renderDealsTable() {
     const paidAmt   = parseFloat(d.paid_inc_vat) || 0;
     const dealAmt   = parseFloat(d.amount) || 0;
     const hasPaid   = d.paid_inc_vat != null && paidAmt > 0;
-    const isPartial = hasPaid && paidAmt < dealAmt;
+    // Paid in full means the deal value plus its VAT. Anything else that has
+    // been paid (short or over) gets a yellow cell so someone looks at it.
+    const expectedAmt = dealAmt + (parseFloat(d.tax_vat) || 0);
+    const paidOff     = hasPaid && Math.abs(paidAmt - expectedAmt) >= 0.01;
     const isFlagged = !!d.is_flagged;
     const isSelected = _selectedDealIds.has(d.id);
     // A flagged row wears the flag tint whatever its payment state.
@@ -5597,7 +5600,10 @@ function renderDealsTable() {
       return `<td class="deal-cell-edit${cls ? ' ' + cls : ''}${isHl ? ' deal-cell-orange' : ''}" data-id="${d.id}" data-field="${field}" data-type="${type}" data-val="${String(val ?? '').replace(/"/g, '&quot;')}" data-hlkey="${hlKey}" onclick="dealCellClick(this)" ${extra}>${display}</td>`;
     };
 
-    const paidDisplay = !hasPaid ? dash : `<span class="${isPartial ? 'deal-paid-part' : 'deal-paid-fig'}">${sym}${fmt(paidAmt)}</span>`;
+    const paidDisplay = !hasPaid ? dash : `<span class="${paidOff ? 'deal-paid-off' : 'deal-paid-fig'}">${sym}${fmt(paidAmt)}</span>`;
+    const paidTitle   = paidOff
+      ? ` title="Paid ${sym}${fmt(paidAmt)}, expected ${sym}${fmt(expectedAmt)} (deal value + VAT) · ${paidAmt < expectedAmt ? sym + fmt(expectedAmt - paidAmt) + ' short' : sym + fmt(paidAmt - expectedAmt) + ' over'}"`
+      : '';
     const dateCell = (iso) => iso ? dealShortDate(iso) : dash;
     const notesDisplay = d.notes ? `<span class="deal-notes-cell" title="${esc(d.notes)}">${esc(d.notes)}</span>` : dash;
     const coHlKey = `dhl:${d.id}-company`;
@@ -5618,7 +5624,7 @@ function renderDealsTable() {
       ${ec('deal_month', 'period', d.deal_month || '', dealPeriodDisplayHtml(d), 'deal-td-month')}
       <td class="deal-cell-company${coHl ? ' deal-cell-orange' : ''}" data-id="${d.id}" data-hlkey="${coHlKey}" onclick="dealCompanyClick(event,${d.id},this)" title="Open the deal · Shift+click to highlight"><span class="deal-co-link">${esc(d.company || d.title)}</span></td>
       ${ec('amount', 'number', d.amount || 0, `<span class="deal-figure">${sym}${fmt(dealAmt)}</span>`, 'deal-num dt-r')}
-      ${ec('paid_inc_vat', 'number', d.paid_inc_vat ?? '', paidDisplay, `deal-num dt-r${isPartial ? ' deal-cell-partial' : ''}`, 'oncontextmenu="dealCellContextMenu(event,this)"')}
+      ${ec('paid_inc_vat', 'number', d.paid_inc_vat ?? '', paidDisplay, `deal-num dt-r${paidOff ? ' deal-cell-check' : ''}`, `oncontextmenu="dealCellContextMenu(event,this)"${paidTitle}`)}
       ${ec('tax_vat', 'number', d.tax_vat ?? '', d.tax_vat ? `${sym}${fmt(parseFloat(d.tax_vat))}` : dash, 'deal-num dt-r')}
       ${ec('invoice_date', 'date', d.invoice_date || '', dateCell(d.invoice_date), 'deal-td-date')}
       ${ec('paid_date', 'date', d.paid_date || '', dateCell(d.paid_date), 'deal-td-date')}
