@@ -204,7 +204,7 @@ app.get('/sw.js',         (req, res) => res.sendFile(path.join(publicDir, 'sw.js
 // Real PNG icons (required for iOS apple-touch-icon & Android maskable install)
 app.get('/icon-192.png',  (req, res) => { res.setHeader('Cache-Control','public, max-age=604800'); res.sendFile(path.join(publicDir, 'icon-192.png')); });
 app.get('/icon-512.png',  (req, res) => { res.setHeader('Cache-Control','public, max-age=604800'); res.sendFile(path.join(publicDir, 'icon-512.png')); });
-app.get('/favicon.ico',   (req, res) => { res.setHeader('Content-Type','image/svg+xml'); res.send(makePwaIcon(32)); });
+app.get('/favicon.ico',   (req, res) => { res.setHeader('Cache-Control','public, max-age=604800'); res.type('png'); res.sendFile(path.join(publicDir, 'favicon-32.png')); });
 
 app.get('/', async (req, res, next) => {
   try {
@@ -538,14 +538,6 @@ app.get('/api/me', requireAuth, (req, res) => {
 });
 
 // PWA icons — generated as SVG served with image/png MIME for compatibility
-function makePwaIcon(size) {
-  const r = Math.round(size * 0.18);
-  const fontSize = Math.round(size * 0.38);
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-    <rect width="${size}" height="${size}" rx="${r}" fill="#4f46e5"/>
-    <text x="50%" y="54%" font-family="system-ui,Arial,sans-serif" font-weight="700" font-size="${fontSize}" fill="white" text-anchor="middle" dominant-baseline="middle">L</text>
-  </svg>`;
-}
 // ─── ADMINS ──────────────────────────────────────────────────────────────────
 
 app.get('/api/admins', requireAuth, async (req, res) => {
