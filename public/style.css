@@ -6545,3 +6545,217 @@ body { font-variant-numeric: tabular-nums; }
   .dm-row--money { grid-template-columns: 1fr 1fr; }
   .dm-row--money .dm-field:first-child { grid-column: 1 / -1; }
 }
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Sign-in page
+   Layers, back to front: the page colour, three slow blue glows, the dot
+   field (canvas, lit by the pointer), a few floating LPGP marks, the card.
+   Light and dark each get their own palette.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root:not([data-theme="dark"]) body.login-body {
+  --bg: #f4f6f9; --surface: #ffffff; --surface-2: #f7f8fa; --bg-2: #f7f8fa;
+  --border: rgba(15,23,42,0.10); --border-bright: rgba(15,23,42,0.16);
+  --text: #0f172a; --text-2: #334155; --muted: #64748b; --dim: #94a3b8;
+  --accent-rgb: 31 111 235; --accent: #1f6feb; --primary: #1f6feb;
+  --accent-soft: rgb(var(--accent-rgb) / 0.10); --accent-line: rgb(var(--accent-rgb) / 0.30);
+}
+body.login-body { background: var(--bg); position: relative; min-height: 100vh; overflow-x: hidden; }
+#loginBg { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+:root .login-wrap { position: relative; z-index: 2; background: transparent !important; background-image: none !important; }
+
+.login-glows { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.login-glows i {
+  position: absolute; width: 46vmax; height: 46vmax; border-radius: 50%;
+  background: radial-gradient(circle, rgb(var(--accent-rgb) / 0.22) 0%, transparent 62%);
+  filter: blur(20px); animation: loginDrift 26s ease-in-out infinite alternate;
+}
+.login-glows i:nth-child(1) { left: -12vmax; top: -14vmax; }
+.login-glows i:nth-child(2) { right: -16vmax; top: 18vh; animation-duration: 32s; animation-delay: -9s; opacity: .8; }
+.login-glows i:nth-child(3) { left: 24vw; bottom: -22vmax; animation-duration: 38s; animation-delay: -18s; opacity: .6; }
+:root:not([data-theme="dark"]) .login-glows i { background: radial-gradient(circle, rgb(var(--accent-rgb) / 0.13) 0%, transparent 62%); }
+@keyframes loginDrift {
+  0%   { transform: translate(0, 0) scale(1); }
+  50%  { transform: translate(6vw, 4vh) scale(1.08); }
+  100% { transform: translate(-4vw, 8vh) scale(0.96); }
+}
+
+/* Floating marks: each bobs on its own clock and leans away from the pointer
+   by its depth (set from login-bg.js as --px / --py). */
+.login-marks { position: fixed; inset: 0; z-index: 1; pointer-events: none; }
+.login-marks span {
+  position: absolute; left: var(--x); top: var(--y);
+  width: var(--s); height: var(--s); border-radius: calc(var(--s) * 0.24);
+  display: grid; place-items: center;
+  font: 700 calc(var(--s) * 0.42)/1 var(--font-sans); color: rgb(var(--accent-rgb) / 0.55);
+  background: linear-gradient(140deg, rgb(var(--accent-rgb) / 0.16), rgb(var(--accent-rgb) / 0.04));
+  border: 1px solid rgb(var(--accent-rgb) / 0.22);
+  box-shadow: 0 10px 40px rgb(var(--accent-rgb) / 0.12);
+  backdrop-filter: blur(2px);
+  translate: calc(var(--px, 0) * var(--depth) * -1px) calc(var(--py, 0) * var(--depth) * -1px);
+  transition: translate .6s cubic-bezier(.2,.7,.2,1);
+  animation: loginFloat 9s ease-in-out infinite; animation-delay: var(--d);
+  opacity: .75;
+}
+:root:not([data-theme="dark"]) .login-marks span { opacity: .65; background: linear-gradient(140deg, rgb(var(--accent-rgb) / 0.12), rgba(255,255,255,0.5)); }
+@keyframes loginFloat {
+  0%, 100% { transform: translateY(0) rotate(-4deg); }
+  50%      { transform: translateY(-18px) rotate(4deg); }
+}
+
+/* The card: frosted glass over the field. */
+:root .login-card {
+  background: rgba(16,18,24,0.72); border: 1px solid rgba(255,255,255,0.09);
+  backdrop-filter: blur(18px) saturate(140%); -webkit-backdrop-filter: blur(18px) saturate(140%);
+  box-shadow: 0 30px 80px rgba(0,0,0,0.55), 0 0 0 1px rgb(var(--accent-rgb) / 0.08);
+  border-radius: 18px;
+}
+:root:not([data-theme="dark"]) .login-card {
+  background: rgba(255,255,255,0.78); border-color: rgba(15,23,42,0.08);
+  box-shadow: 0 30px 80px rgba(15,23,42,0.14), 0 0 0 1px rgba(15,23,42,0.03);
+}
+:root .login-card label { font: 500 12.5px/1.3 var(--font-sans); letter-spacing: 0; text-transform: none; color: var(--text-2); }
+:root .login-card input { padding: 11px 13px; border-radius: 9px; font: 400 14px/1.3 var(--font-sans); }
+:root:not([data-theme="dark"]) .login-card input { background: #fff; border: 1px solid var(--border-bright); color: var(--text); }
+:root .login-logo-sub { font: 500 10.5px/1 var(--font-sans); letter-spacing: 0.08em; }
+:root .login-submit { padding: 13px; border-radius: 10px; font: 600 14px/1 var(--font-sans); letter-spacing: 0; }
+:root:not([data-theme="dark"]) .login-theme-btn { background: rgba(255,255,255,0.8); border-color: rgba(15,23,42,0.10); box-shadow: 0 4px 14px rgba(15,23,42,0.08); }
+
+@media (max-width: 600px) {
+  .login-marks span:nth-child(n+4) { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .login-glows i, .login-marks span { animation: none; }
+  .login-marks span { transition: none; }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Calendar
+   A plain month: hairline grid, small weekday labels, today as a blue disc,
+   and days off as soft blue name pills (outlined for a half day) instead of
+   red cells. Reminders keep their category dot.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root .cal-page-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
+.cal-title-row { display: flex; align-items: center; gap: 16px; }
+:root #calMonthLabel { flex: none; margin: 0; text-align: left; font: 700 22px/1.2 var(--font-sans); letter-spacing: -0.02em; color: var(--text); min-width: 190px; }
+:root .cal-nav { flex: none; display: inline-flex; align-items: center; gap: 2px; padding: 3px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border); }
+.cal-nav-btn, .cal-today-btn {
+  height: 30px; border: none; background: transparent; cursor: pointer; border-radius: 7px;
+  color: var(--text-2); font: 500 13px/1 var(--font-sans);
+}
+.cal-nav-btn { width: 30px; font-size: 18px; line-height: 1; }
+.cal-today-btn { padding: 0 12px; }
+.cal-nav-btn:hover, .cal-today-btn:hover { background: var(--surface-3); color: var(--text); }
+:root .cal-controls select {
+  min-width: 170px; height: 34px; padding: 0 10px; border-radius: 9px;
+  border: 1px solid var(--border-bright); background: var(--surface); color: var(--text); font: 400 13px/1 var(--font-sans);
+}
+
+.cal-legend { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 14px; font: 400 12.5px/1.2 var(--font-sans); color: var(--muted); }
+.cal-legend > span { display: inline-flex; align-items: center; gap: 7px; }
+.cal-legend-hint { margin-left: auto; color: var(--dim); }
+.cal-key { width: 12px; height: 12px; border-radius: 4px; display: inline-block; }
+.cal-key--full { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.cal-key--half { border: 1px dashed var(--accent); }
+.cal-key--rem { width: 8px; height: 8px; border-radius: 50%; background: var(--warning); }
+
+:root .cal-grid-wrap { border-radius: 14px; border: 1px solid var(--border); background: var(--surface); box-shadow: var(--shadow-card); }
+:root .cal-header-row { background: none; border-bottom: 1px solid var(--border); }
+:root .cal-header-row > div { padding: 11px 12px; text-align: left; font: 500 12px/1 var(--font-sans); letter-spacing: 0; text-transform: none; color: var(--muted); }
+:root .cal-cell {
+  min-height: 112px; padding: 8px 8px 10px; background: var(--surface);
+  border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  box-shadow: none; transition: background .12s;
+}
+:root .cal-cell:hover { background: var(--surface-2); box-shadow: none; }
+:root .cal-cell.weekend { background: var(--surface-2); }
+:root .cal-cell.weekend:hover { background: var(--surface-3); }
+:root .cal-cell.other-month { background: var(--surface); }
+:root .cal-cell.other-month .cal-date { color: var(--dim); opacity: .6; }
+:root .cal-cell.has-offs, :root .cal-cell.has-offs:hover { background: inherit; }
+:root .cal-cell.has-offs { background: var(--surface); }
+:root .cal-cell.has-offs.weekend { background: var(--surface-2); }
+:root .cal-cell.has-offs:hover { background: var(--surface-2); }
+:root .cal-grid > .cal-cell:nth-last-child(-n+7) { border-bottom: none; }
+:root .cal-date {
+  width: 26px; height: 26px; margin: 0 0 6px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font: 500 13px/1 var(--font-sans); color: var(--text-2);
+}
+:root .cal-cell.today { background: var(--surface); }
+:root .cal-cell.today .cal-date { background: var(--accent); color: #fff; font-weight: 600; box-shadow: none; font-size: 13px; }
+
+:root .cal-chips { gap: 4px; }
+:root .cal-chip {
+  display: block; padding: 3px 8px; border-radius: 6px; max-width: 100%;
+  font: 500 11.5px/1.35 var(--font-sans); letter-spacing: 0; text-transform: none;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+:root .chip-full { background: var(--accent-soft); color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); }
+:root .chip-half { background: transparent; color: var(--accent); box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 0.45); }
+[data-theme="dark"] .chip-full { background: rgb(var(--accent-rgb) / 0.18); color: #9cc2ff; }
+[data-theme="dark"] .chip-half { color: #9cc2ff; }
+:root .cal-more { font: 500 11px/1.3 var(--font-sans); color: var(--muted); margin-top: 2px; }
+:root .cal-reminder-dots { position: absolute; top: 14px; right: 10px; display: flex; gap: 3px; }
+
+/* The two lists under the month. */
+:root .cal-upcoming-section { border-radius: 14px; box-shadow: var(--shadow-card); }
+:root .cal-upcoming-head { background: none; border-bottom-color: var(--line); padding: 14px 18px; font: 600 14px/1.3 var(--font-sans); letter-spacing: 0; text-transform: none; color: var(--text); }
+:root .cal-upcoming-head .cal-upcoming-icon { display: none; }
+:root .cal-upcoming-item { border-bottom-color: var(--line); padding: 10px 18px; }
+:root .cal-upcoming-badge { background: var(--accent-soft); border: none; border-radius: 8px; }
+:root .cal-upcoming-badge-day { font: 700 15px/1.1 var(--font-sans); color: var(--accent); }
+:root .cal-upcoming-badge-mon { font: 500 10.5px/1.2 var(--font-sans); letter-spacing: 0; color: var(--accent); }
+:root .cal-upcoming-empty { font: 400 13px/1.4 var(--font-sans); color: var(--dim); }
+
+@media (max-width: 700px) {
+  :root #calMonthLabel { font-size: 18px; min-width: 0; }
+  :root .cal-cell { min-height: 64px; padding: 4px; }
+  :root .cal-chip { font-size: 10px; padding: 2px 4px; }
+  .cal-legend-hint { display: none; }
+}
+:root .cal-upcoming-sub .cal-chip { display: inline-block; width: auto; font-size: 11px !important; padding: 1px 7px !important; }
+.cal-key--rem { background: var(--accent); }
+
+/* Portfolio teams: one row per portfolio, four people across. */
+.pf-teams .table-wrap { margin: 4px -4px 0; }
+.pf-teams-table { width: 100%; border-collapse: collapse; }
+:root .pf-teams-table th { background: none; padding: 8px 10px; font: 500 12px/1.2 var(--font-sans); color: var(--muted); border-bottom: 1px solid var(--line); }
+:root .pf-teams-table td { padding: 11px 10px; border-bottom: 1px solid var(--line); font: 400 13.5px/1.3 var(--font-sans); color: var(--text); }
+:root .pf-teams-table tbody tr:last-child td { border-bottom: none; }
+:root .pf-teams-table tbody tr:hover { background: transparent; }
+.pf-team-series { display: inline-flex; align-items: center; gap: 8px; font-weight: 500; white-space: nowrap; }
+.pf-team-name { font-weight: 500; }
+.pf-team-empty { color: var(--dim); }
+.pf-team-act { text-align: right; white-space: nowrap; }
+.pt-body { padding: 18px 22px 4px; }
+.pt-body .form-row { margin-bottom: 14px; }
+.pt-hint { margin: 0; font: 400 12.5px/1.4 var(--font-sans); color: var(--muted); }
+:root .modal > .pt-body { padding-left: 22px; padding-right: 22px; }
+.pt-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 22px 20px; }
+@media (max-width: 700px) {
+  .pf-teams-table thead { display: none; }
+  .pf-teams-table tr { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  :root .pf-teams-table td { border: none; padding: 0; }
+  .pf-teams-table td[data-label]::before { content: attr(data-label); display: block; font: 400 11.5px/1.3 var(--font-sans); color: var(--muted); }
+  .pf-teams-table td:first-child { grid-column: 1 / -1; }
+  .pf-team-act { grid-column: 1 / -1; text-align: left; }
+}
+
+/* LPGP logo. The artwork is silver on transparent, so on light surfaces it
+   is darkened with a filter rather than shipped twice. */
+:root .sidebar-logo-icon {
+  width: 30px; height: 30px; object-fit: contain; background: none; box-shadow: none; border-radius: 0;
+}
+.login-logo-img { height: 30px; width: auto; display: block; }
+:root:not([data-theme="dark"]) .login-logo-img { filter: brightness(0.16); }
+:root .login-logo { align-items: center; gap: 12px; }
+:root .login-logo-text { padding-left: 12px; border-left: 1px solid var(--border); }
+:root .login-logo-name { font: 600 15px/1.1 var(--font-sans); color: var(--accent); }
+
+/* Floating marks behind the sign-in card are the logo itself. */
+:root .login-marks span { background: none; border: none; box-shadow: none; backdrop-filter: none; opacity: .16; }
+.login-marks span img { width: 100%; height: 100%; object-fit: contain; }
+:root:not([data-theme="dark"]) .login-marks span { opacity: .10; }
+:root:not([data-theme="dark"]) .login-marks span img { filter: brightness(0.2); }

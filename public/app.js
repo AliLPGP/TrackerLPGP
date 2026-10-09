@@ -3231,6 +3231,13 @@ function calPrevMonth() {
   loadCalendar();
 }
 
+function calGoToday() {
+  const now = new Date();
+  calYear = now.getFullYear();
+  calMonth = now.getMonth() + 1;
+  loadCalendar();
+}
+
 function calNextMonth() {
   calMonth++;
   if (calMonth > 12) { calMonth = 1; calYear++; }
@@ -4509,6 +4516,7 @@ async function deleteSub(id) {
 // portfolio_events (total_pipeline = allocated, total_won = paid).
 
 let portfolioData = [];
+let _portTeams = [];   // [{ series, programme_year, sales, delegates, production, co_producer }]
 let _portYearFilter = String(new Date().getFullYear() + 1); // default to next year (2027)
 let _portExtraYears = new Set();
 let _portSearch = '';
@@ -4614,6 +4622,10 @@ function addPortYear() {
 }
 
 async function loadPortfolio() {
+  try {
+    const teamsRes = await fetch('/api/portfolio-teams').catch(() => null);
+    _portTeams = teamsRes && teamsRes.ok ? await teamsRes.json() : [];
+  } catch { _portTeams = []; }
   try {
     const res = await fetch('/api/portfolio-events');
     if (!res.ok) { showToast('Failed to load portfolio events', 'error'); return; }
@@ -4850,7 +4862,7 @@ function renderPortfolioGrid() {
       }).join('')}
     </section>`;
 
-  grid.innerHTML = toolbarHtml + heroHtml + kpiHtml + seriesHtml + programmeHtml + listHtml;
+  grid.innerHTML = toolbarHtml + heroHtml + kpiHtml + seriesHtml + renderPortfolioTeams() + programmeHtml + listHtml;
 
   // Bars grow in after paint.
   requestAnimationFrame(() => setTimeout(() => {
@@ -4858,6 +4870,87 @@ function renderPortfolioGrid() {
   }, 40));
 
   if (_portSearch) portFilterCards(_portSearch);
+}
+
+// ── Portfolio teams ──
+// Each portfolio (programme series) has four people per programme year. On
+// All Years the panel shows the default programme year's teams.
+const PORT_TEAM_ROLES = [
+  { key: 'sales',       label: 'Sales' },
+  { key: 'delegates',   label: 'Delegates' },
+  { key: 'production',  label: 'Production' },
+  { key: 'co_producer', label: 'Co-producer' },
+];
+
+function portTeamYear() {
+  return _portYearFilter !== 'all' ? parseInt(_portYearFilter, 10) : new Date().getFullYear() + 1;
+}
+
+function portTeamFor(series, year) {
+  return _portTeams.find(t => t.series === series && Number(t.programme_year) === year) || null;
+}
+
+function renderPortfolioTeams() {
+  const year = portTeamYear();
+  const rows = PORT_SERIES.map(s => {
+    const t = portTeamFor(s.id, year);
+    const cells = PORT_TEAM_ROLES.map(r => {
+      const name = t && t[r.key] ? esc(t[r.key]) : '';
+      return `<td data-label="${r.label}">${name ? `<span class="pf-team-name">${name}</span>` : '<span class="pf-team-empty">—</span>'}</td>`;
+    }).join('');
+    return `<tr>
+      <td><span class="pf-team-series"><span class="pf-chip" style="background:var(--chart-${s.chart})"></span>${esc(s.short)}</span></td>
+      ${cells}
+      <td class="pf-team-act"><button type="button" class="btn btn-ghost btn-sm" onclick="openPortTeamModal('${s.id}')">${t ? 'Edit' : 'Add team'}</button></td>
+    </tr>`;
+  }).join('');
+  return `<section class="pf-panel pf-teams">
+    <div class="pf-panel-hd">
+      <div>
+        <h2 class="pf-panel-title">Portfolio teams</h2>
+        <p class="pf-panel-desc">Who runs each portfolio in ${year}.</p>
+      </div>
+    </div>
+    <div class="table-wrap"><table class="pf-teams-table">
+      <thead><tr><th>Portfolio</th>${PORT_TEAM_ROLES.map(r => `<th>${r.label}</th>`).join('')}<th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+  </section>`;
+}
+
+async function openPortTeamModal(series) {
+  const s = PORT_SERIES_MAP[series];
+  if (!s) return;
+  const year = portTeamYear();
+  const t = portTeamFor(series, year) || {};
+  document.getElementById('portTeamSeries').value = series;
+  document.getElementById('portTeamTitle').textContent = `${s.short} team`;
+  document.getElementById('portTeamSub').textContent = `${s.name} · ${year}`;
+  PORT_TEAM_ROLES.forEach(r => { document.getElementById(`portTeam_${r.key}`).value = t[r.key] || ''; });
+  openModal('portTeamModal');
+  // Staff names as suggestions; anyone else can still be typed in.
+  try {
+    const res = await fetch('/api/employees/all');
+    const emps = res.ok ? await res.json() : [];
+    document.getElementById('portTeamPeople').innerHTML = emps.filter(e => e.active)
+      .map(e => `<option value="${esc(e.name)}"></option>`).join('');
+  } catch { /* suggestions are optional */ }
+  document.getElementById('portTeam_sales').focus();
+}
+
+async function savePortTeam() {
+  const series = document.getElementById('portTeamSeries').value;
+  const body = { year: portTeamYear() };
+  PORT_TEAM_ROLES.forEach(r => { body[r.key] = document.getElementById(`portTeam_${r.key}`).value.trim(); });
+  const res = await fetch(`/api/portfolio-teams/${encodeURIComponent(series)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); showToast(e.error || 'Could not save the team', 'error'); return; }
+  const saved = await res.json();
+  _portTeams = _portTeams.filter(t => !(t.series === saved.series && Number(t.programme_year) === Number(saved.programme_year))).concat(saved);
+  closeModal('portTeamModal');
+  showToast('Team saved', 'success');
+  renderPortfolioGrid();
 }
 
 const PF_ICON_PIN   = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>';
@@ -8174,7 +8267,9 @@ function dealPeriodDisplayHtml(d) {
   if (!monthNum) return d.deal_month ? `<span class="deal-month-disp">${esc(d.deal_month)}</span>` : '<span style="color:var(--muted)">—</span>';
   const signedYear = parsed ? parsed.year : (d.invoice_date ? parseInt(String(d.invoice_date).slice(0, 4), 10) : null);
   const progYear = dealYearOf(d);
-  const differs = signedYear && progYear && String(signedYear) !== String(progYear);
+  // "for 2027" only earns its place under All Years; on a year tab every row
+  // is already that year's.
+  const differs = _dealYearFilter === 'all' && signedYear && progYear && String(signedYear) !== String(progYear);
   return `<span class="deal-month-disp"><span>${DEAL_MONTHS[monthNum - 1]}${signedYear ? ` <span class="deal-month-yr">${String(signedYear).slice(2)}</span>` : ''}</span>` +
     (differs ? `<span class="deal-month-for" title="Signed ${DEAL_MONTHS[monthNum - 1]} ${signedYear}, for the ${progYear} programme">for ${progYear}</span>` : '') +
     `</span>`;
