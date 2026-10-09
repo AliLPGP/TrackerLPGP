@@ -122,7 +122,8 @@ Available tables and key columns:
 • hotel_expenses — id, event_name, hotel, cost, av_amount, paid_amount, currency, status, event_year
 • deals (= deal_tracker) — id, company, paid_inc_vat, deal_amount, tax_vat, status, date_invoice_issued, date_paid, invoice_number
 • portfolio_events — id, name, event_date, location
-• deal_events — deal_id, event_id, allocated_amount
+• deal_events — deal_id, event_id, allocated_amount, package_label
+• portfolio_teams — series, programme_year, sales_id, delegates_id, production_id, co_producer_id (each → employees.id, NULL if nobody or someone outside the company), sales, delegates, production, co_producer (the person's name). One row per portfolio (series) per programme year. series is one of: private-debt, cfo-coo, operational-fund, operating-partners, data-tech. To find what an employee worked on, match their id in any of the *_id columns.
 • wasteman_memory — key, value (your own long-term memory store)
 
 SELECT only. No INSERT/UPDATE/DELETE. A LIMIT is added automatically if omitted.`,

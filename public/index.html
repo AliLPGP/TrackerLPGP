@@ -976,6 +976,11 @@
         Employees use this PIN on the self-service portal to view their pay info &amp; submit holiday requests.
       </div>
     </div>
+    <!-- Portfolio work, from the Portfolio page's teams (edit only) -->
+    <div id="empPortfolioWrap" class="hidden">
+      <div class="modal-section-label" style="margin-top:12px">Portfolio roles</div>
+      <div id="empPortfolioRoles" class="epr-list"></div>
+    </div>
     <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px">
       <button class="btn btn-ghost" onclick="closeModal('empModal')">Cancel</button>
       <button class="btn btn-primary" onclick="saveEmployee()">Save Employee</button>
@@ -1678,17 +1683,30 @@
       <button class="modal-close" onclick="closeModal('portTeamModal')" aria-label="Close">✕</button>
     </div>
     <input type="hidden" id="portTeamSeries">
-    <datalist id="portTeamPeople"></datalist>
     <div class="pt-body">
-      <div class="form-row">
-        <div class="form-group"><label for="portTeam_sales">Sales</label><input type="text" id="portTeam_sales" list="portTeamPeople" maxlength="80" placeholder="Name"></div>
-        <div class="form-group"><label for="portTeam_delegates">Delegates</label><input type="text" id="portTeam_delegates" list="portTeamPeople" maxlength="80" placeholder="Name"></div>
+      <div class="pt-grid">
+        <div class="form-group">
+          <label for="portTeam_sales_sel">Sales</label>
+          <select id="portTeam_sales_sel" onchange="portTeamPick('sales')"></select>
+          <input type="text" id="portTeam_sales" class="pt-other hidden" maxlength="80" placeholder="Their name">
+        </div>
+        <div class="form-group">
+          <label for="portTeam_delegates_sel">Delegates</label>
+          <select id="portTeam_delegates_sel" onchange="portTeamPick('delegates')"></select>
+          <input type="text" id="portTeam_delegates" class="pt-other hidden" maxlength="80" placeholder="Their name">
+        </div>
+        <div class="form-group">
+          <label for="portTeam_production_sel">Production</label>
+          <select id="portTeam_production_sel" onchange="portTeamPick('production')"></select>
+          <input type="text" id="portTeam_production" class="pt-other hidden" maxlength="80" placeholder="Their name">
+        </div>
+        <div class="form-group">
+          <label for="portTeam_co_producer_sel">Co-producer</label>
+          <select id="portTeam_co_producer_sel" onchange="portTeamPick('co_producer')"></select>
+          <input type="text" id="portTeam_co_producer" class="pt-other hidden" maxlength="80" placeholder="Their name">
+        </div>
       </div>
-      <div class="form-row">
-        <div class="form-group"><label for="portTeam_production">Production</label><input type="text" id="portTeam_production" list="portTeamPeople" maxlength="80" placeholder="Name"></div>
-        <div class="form-group"><label for="portTeam_co_producer">Co-producer</label><input type="text" id="portTeam_co_producer" list="portTeamPeople" maxlength="80" placeholder="Name"></div>
-      </div>
-      <p class="pt-hint">Pick from your staff or type any name. Leave a box empty if nobody is assigned.</p>
+      <p class="pt-hint">Each role lists that department's staff first, so the work shows on their employee record. Pick "Someone outside the company" to type a name instead.</p>
     </div>
     <div class="pt-foot">
       <button class="btn btn-ghost" onclick="closeModal('portTeamModal')">Cancel</button>

@@ -356,6 +356,12 @@ function openEmpModal(emp = null) {
   document.getElementById('empPin').value = (emp && emp.portal_pin && !String(emp.portal_pin).startsWith('$2')) ? emp.portal_pin : '';
   document.getElementById('salaryChangeFields').classList.add('hidden');
   document.getElementById('empModalTitle').textContent = emp ? 'Edit Employee' : 'Add Employee';
+  const prWrap = document.getElementById('empPortfolioWrap');
+  if (prWrap) {
+    const canSee = emp && ['admin', 'manager'].includes(currentUser && currentUser.role);
+    prWrap.classList.toggle('hidden', !canSee);
+    if (canSee) loadEmpPortfolioRoles(emp.id);
+  }
 
   const togglePensionField = () => {
     const isPayroll = document.getElementById('empType').value === 'payroll';
@@ -4875,12 +4881,14 @@ function renderPortfolioGrid() {
 // ── Portfolio teams ──
 // Each portfolio (programme series) has four people per programme year. On
 // All Years the panel shows the default programme year's teams.
+// `dept` picks the department whose staff are offered first for the role.
 const PORT_TEAM_ROLES = [
-  { key: 'sales',       label: 'Sales' },
-  { key: 'delegates',   label: 'Delegates' },
-  { key: 'production',  label: 'Production' },
-  { key: 'co_producer', label: 'Co-producer' },
+  { key: 'sales',       label: 'Sales',       dept: /sales/i },
+  { key: 'delegates',   label: 'Delegates',   dept: /delegat/i },
+  { key: 'production',  label: 'Production',  dept: /produc/i },
+  { key: 'co_producer', label: 'Co-producer', dept: /produc/i },
 ];
+const PORT_TEAM_OUTSIDE = 'outside';
 
 function portTeamYear() {
   return _portYearFilter !== 'all' ? parseInt(_portYearFilter, 10) : new Date().getFullYear() + 1;
@@ -4896,7 +4904,13 @@ function renderPortfolioTeams() {
     const t = portTeamFor(s.id, year);
     const cells = PORT_TEAM_ROLES.map(r => {
       const name = t && t[r.key] ? esc(t[r.key]) : '';
-      return `<td data-label="${r.label}">${name ? `<span class="pf-team-name">${name}</span>` : '<span class="pf-team-empty">—</span>'}</td>`;
+      if (!name) return `<td data-label="${r.label}"><span class="pf-team-empty">—</span></td>`;
+      const id = t[`${r.key}_id`];
+      const tag = !id ? '<span class="pf-team-tag">outside</span>' : t[`${r.key}_active`] === false ? '<span class="pf-team-tag">left</span>' : '';
+      const nameHtml = id
+        ? `<button type="button" class="pf-team-name pf-team-link" onclick="goToEmployee(${Number(id)})" title="Open ${name}'s record">${name}</button>`
+        : `<span class="pf-team-name">${name}</span>`;
+      return `<td data-label="${r.label}">${nameHtml}${tag}</td>`;
     }).join('');
     return `<tr>
       <td><span class="pf-team-series"><span class="pf-chip" style="background:var(--chart-${s.chart})"></span>${esc(s.short)}</span></td>
@@ -4918,6 +4932,40 @@ function renderPortfolioTeams() {
   </section>`;
 }
 
+let _portTeamStaff = [];
+
+// One role's picker: that department's staff first, then everyone else, then
+// "someone outside the company". A saved person who has since left stays
+// selectable so the record is not silently changed.
+function portTeamFillPicker(role, team) {
+  const sel = document.getElementById(`portTeam_${role.key}_sel`);
+  const other = document.getElementById(`portTeam_${role.key}`);
+  const savedId = team && team[`${role.key}_id`] ? Number(team[`${role.key}_id`]) : null;
+  const savedName = team && team[role.key] ? team[role.key] : '';
+  const staff = _portTeamStaff.filter(e => e.active || e.id === savedId);
+  const inDept = staff.filter(e => role.dept.test(e.department || ''));
+  const rest = staff.filter(e => !role.dept.test(e.department || ''));
+  const opt = e => `<option value="${e.id}">${esc(e.name)}${e.active ? '' : ' (left)'}${e.department && !role.dept.test(e.department) ? ` · ${esc(e.department)}` : ''}</option>`;
+  const deptNames = [...new Set(inDept.map(e => e.department))].join(' / ');
+  sel.innerHTML = '<option value="">Nobody yet</option>' +
+    (inDept.length ? `<optgroup label="${esc(deptNames)} team">${inDept.map(opt).join('')}</optgroup>` : '') +
+    (rest.length ? `<optgroup label="${inDept.length ? 'Everyone else' : 'Staff'}">${rest.map(opt).join('')}</optgroup>` : '') +
+    `<option value="${PORT_TEAM_OUTSIDE}">Someone outside the company…</option>`;
+  if (savedId) sel.value = String(savedId);
+  else if (savedName) sel.value = PORT_TEAM_OUTSIDE;
+  else sel.value = '';
+  other.value = savedId ? '' : savedName;
+  other.classList.toggle('hidden', sel.value !== PORT_TEAM_OUTSIDE);
+}
+
+function portTeamPick(roleKey) {
+  const sel = document.getElementById(`portTeam_${roleKey}_sel`);
+  const other = document.getElementById(`portTeam_${roleKey}`);
+  const outside = sel.value === PORT_TEAM_OUTSIDE;
+  other.classList.toggle('hidden', !outside);
+  if (outside) other.focus();
+}
+
 async function openPortTeamModal(series) {
   const s = PORT_SERIES_MAP[series];
   if (!s) return;
@@ -4926,22 +4974,29 @@ async function openPortTeamModal(series) {
   document.getElementById('portTeamSeries').value = series;
   document.getElementById('portTeamTitle').textContent = `${s.short} team`;
   document.getElementById('portTeamSub').textContent = `${s.name} · ${year}`;
-  PORT_TEAM_ROLES.forEach(r => { document.getElementById(`portTeam_${r.key}`).value = t[r.key] || ''; });
-  openModal('portTeamModal');
-  // Staff names as suggestions; anyone else can still be typed in.
   try {
     const res = await fetch('/api/employees/all');
-    const emps = res.ok ? await res.json() : [];
-    document.getElementById('portTeamPeople').innerHTML = emps.filter(e => e.active)
-      .map(e => `<option value="${esc(e.name)}"></option>`).join('');
-  } catch { /* suggestions are optional */ }
-  document.getElementById('portTeam_sales').focus();
+    _portTeamStaff = res.ok ? await res.json() : [];
+  } catch { _portTeamStaff = []; }
+  _portTeamStaff.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  PORT_TEAM_ROLES.forEach(r => portTeamFillPicker(r, t));
+  openModal('portTeamModal');
+  document.getElementById('portTeam_sales_sel').focus();
 }
 
 async function savePortTeam() {
   const series = document.getElementById('portTeamSeries').value;
   const body = { year: portTeamYear() };
-  PORT_TEAM_ROLES.forEach(r => { body[r.key] = document.getElementById(`portTeam_${r.key}`).value.trim(); });
+  for (const r of PORT_TEAM_ROLES) {
+    const v = document.getElementById(`portTeam_${r.key}_sel`).value;
+    if (v === PORT_TEAM_OUTSIDE) {
+      const name = document.getElementById(`portTeam_${r.key}`).value.trim();
+      if (!name) { showToast(`Type a name for ${r.label}, or pick someone from the list`, 'error'); return; }
+      body[r.key] = name;
+    } else if (v) {
+      body[`${r.key}_id`] = parseInt(v, 10);
+    }
+  }
   const res = await fetch(`/api/portfolio-teams/${encodeURIComponent(series)}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
@@ -4951,6 +5006,66 @@ async function savePortTeam() {
   closeModal('portTeamModal');
   showToast('Team saved', 'success');
   renderPortfolioGrid();
+}
+
+// ── An employee's portfolio work, for their record ──
+// Each role they have held, with how that portfolio did that year: events,
+// money allocated against them and paid. Portfolio figures come from the
+// same events and programme data the Portfolio page uses.
+async function loadEmpPortfolioRoles(empId) {
+  const box = document.getElementById('empPortfolioRoles');
+  if (!box) return;
+  box.innerHTML = '<div class="epr-empty">Loading…</div>';
+  try {
+    const [rolesRes, evRes] = await Promise.all([
+      fetch(`/api/employees/${empId}/portfolio-roles`),
+      portfolioData.length ? null : fetch('/api/portfolio-events'),
+    ]);
+    if (!rolesRes.ok) { box.innerHTML = ''; return; }
+    const roles = await rolesRes.json();
+    if (evRes && evRes.ok) { const d = await evRes.json(); if (Array.isArray(d)) portfolioData = d; }
+    if (!_programme2027.data && _programme2027.status !== 'loading') await loadProgramme2027Quiet();
+    if (!roles.length) { box.innerHTML = '<div class="epr-empty">Not on any portfolio team yet. Teams are set on the Portfolio page.</div>'; return; }
+
+    const roleLabel = k => (PORT_TEAM_ROLES.find(r => r.key === k) || {}).label || k;
+    const stats = (series, year) => portfolioData
+      .filter(e => portRowYear(e) === Number(year) && portSeriesFor(e) === series)
+      .reduce((t, e) => { t.events++; t.allocated += parseFloat(e.total_pipeline) || 0; t.paid += parseFloat(e.total_won) || 0; t.deals += parseInt(e.deal_count) || 0; return t; },
+              { events: 0, allocated: 0, paid: 0, deals: 0 });
+    // One line per portfolio and year; several roles in it are joined.
+    const grouped = new Map();
+    roles.forEach(r => {
+      const k = `${r.programme_year}|${r.series}`;
+      if (!grouped.has(k)) grouped.set(k, { ...r, roles: [] });
+      grouped.get(k).roles.push(roleLabel(r.role));
+    });
+    const total = { allocated: 0, paid: 0 };
+    const rows = [...grouped.values()].map(g => {
+      const s = PORT_SERIES_MAP[g.series];
+      const st = stats(g.series, g.programme_year);
+      total.allocated += st.allocated; total.paid += st.paid;
+      return `<div class="epr-row">
+        <div class="epr-main">
+          <span class="pf-chip" style="background:${s ? `var(--chart-${s.chart})` : 'var(--dim)'}"></span>
+          <span class="epr-series">${esc(s ? s.short : g.series)}</span>
+          <span class="epr-year">${g.programme_year}</span>
+          <span class="epr-roles">${g.roles.map(esc).join(' · ')}</span>
+        </div>
+        <div class="epr-stats">${st.events} event${st.events === 1 ? '' : 's'} · ${fmtGBP(st.allocated)} allocated · ${fmtGBP(st.paid)} paid</div>
+      </div>`;
+    }).join('');
+    box.innerHTML = rows + `<div class="epr-total">Across these portfolios: ${fmtGBP(total.allocated)} allocated, ${fmtGBP(total.paid)} paid</div>`;
+  } catch {
+    box.innerHTML = '<div class="epr-empty">Could not load portfolio roles.</div>';
+  }
+}
+
+// Programme data without re-rendering the Portfolio page.
+async function loadProgramme2027Quiet() {
+  try {
+    const res = await fetch('/api/programme/2027');
+    if (res.ok) _programme2027 = { status: 'ready', data: await res.json(), error: null };
+  } catch { /* series fall back to guessing from the event name */ }
 }
 
 const PF_ICON_PIN   = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>';
