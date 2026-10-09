@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover">
-  <meta name="theme-color" content="#15171c">
+  <meta name="theme-color" content="#08090b">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="LPGP">
@@ -158,7 +158,6 @@
       <!-- ══ DASHBOARD ══ -->
       <div class="page active" id="page-dashboard">
         <div id="dashStats"></div>
-        <div id="contractExpiryPanel" style="margin-bottom:20px"></div>
 
         <div class="card">
           <div class="card-header es-header">
@@ -1839,6 +1838,11 @@
           <div id="dealEventsCheckboxes" class="deal-event-checkboxes"></div>
         </div>
         <div id="dealSplitPreview" style="font-size:0.75rem;color:var(--muted);margin-top:5px"></div>
+        <div id="dealPackageSingle" class="deal-package-single">
+          <label for="dealPackageLabel">Package</label>
+          <input type="text" id="dealPackageLabel" placeholder="e.g. Exhibitor, Speaker, Delegate tickets" maxlength="120">
+          <div class="deal-package-single-hint">Applies to every linked event. For a different package or amount per event, use Custom Package Split.</div>
+        </div>
         <div id="dealPackageRows" class="hidden" style="margin-top:10px;display:flex;flex-direction:column;gap:8px"></div>
       </div>
 
