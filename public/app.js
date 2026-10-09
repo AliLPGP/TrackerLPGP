@@ -7912,11 +7912,9 @@ async function openDealModal(id, defaultStage) {
     // date, then when the deal was created); year from wherever the tab comes from
     const parsed = parseDealMonth(d.deal_month);
     const fallbackDt = new Date(d.invoice_date || d.created_at || Date.now());
-    // Signed month/year come from deal_month; the programme year is its own
-    // field and, on an existing deal, counts as chosen.
-    _dealProgYearTouched = !!d.fiscal_year;
-    const progSel = document.getElementById('dealProgrammeYear');
-    if (progSel && d.fiscal_year) progSel.innerHTML = `<option value="${d.fiscal_year}">${d.fiscal_year}</option>`;
+    // Signed month/year come from deal_month. The programme year it is filed
+    // under is kept unless the events linked to it say otherwise.
+    _dealStoredYear = d.fiscal_year ? parseInt(d.fiscal_year, 10) : null;
     setDealPeriod(parsed ? parsed.month : fallbackDt.getMonth() + 1,
                   parsed ? String(parsed.year) : (dealYearOf(d) || String(fallbackDt.getFullYear())));
     document.getElementById('dealInvSent').value = d.invoice_agreement_sent ? 'true' : 'false';
@@ -7950,7 +7948,7 @@ async function openDealModal(id, defaultStage) {
     // Period defaults to this month, in whichever year tab is open — so a deal
     // added while viewing 2027 lands in 2027, not only under All Years
     const now = new Date();
-    _dealProgYearTouched = false;
+    _dealStoredYear = null;
     // Signed month is now; the programme year follows the events once picked
     // (and the open year tab until then).
     setDealPeriod(now.getMonth() + 1, String(now.getFullYear()));
@@ -8090,7 +8088,7 @@ function fillPeriodSelects(monthSel, yearSel, month, year) {
 // in September 2026 for a 2027 event is a 2027 deal. The programme year is
 // derived from the events picked and can be overridden; the signed month
 // never decides it once an event is picked.
-let _dealProgYearTouched = false;   // person chose the programme year by hand
+let _dealStoredYear = null;         // the programme year an existing deal is filed under
 let _dealEvsCache = [];             // the events the picker was rendered from
 
 function setDealPeriod(month, year) {
@@ -8110,8 +8108,9 @@ function getDealPeriod() {
 function updateDealPeriodHint() {
   const hint = document.getElementById('dealPeriodHint');
   if (!hint) return;
-  const { month, year } = getDealPeriod();
-  hint.textContent = `Signed ${DEAL_MONTHS[month - 1]} ${year}`;
+  const { month, year, fiscal_year } = getDealPeriod();
+  hint.innerHTML = `Signed ${DEAL_MONTHS[month - 1]} ${year}` +
+    (fiscal_year && fiscal_year !== year ? ` · shows under <b>${fiscal_year}</b>` : '');
 }
 
 function onDealPeriodChange() {
@@ -8133,43 +8132,21 @@ function dealProgrammeYearFromEvents() {
   return { year: years.size === 1 ? [...years][0] : null, picked: ids.length, spread: years.size > 1 };
 }
 
-function onDealProgrammeYearChange() {
-  _dealProgYearTouched = true;
-  updateDealProgrammeYear();
-}
-
 /**
- * Fill and explain the programme year. Precedence when the person has not
- * chosen one: the events picked, then the year tab that is open, then the
- * month signed. A chosen year is kept, and the hint says so if the events
- * disagree with it rather than silently overriding either.
+ * Work out the programme year (the year tab) the deal is filed under: the
+ * year its linked events share, else the year it is already filed under,
+ * else the year tab that is open, else the year it was signed. There is no
+ * field for it; the signed-month hint says where it will show.
  */
 function updateDealProgrammeYear() {
   const sel = document.getElementById('dealProgrammeYear');
-  const hint = document.getElementById('dealProgrammeYearHint');
   if (!sel) return;
-  const { year: signedYear } = getDealPeriod();
-  const fromEvents = dealProgrammeYearFromEvents();
+  const signedYear = parseInt(document.getElementById('dealPeriodYear').value, 10);
   const tabYear = _dealYearFilter !== 'all' ? parseInt(_dealYearFilter, 10) : null;
-  let value = sel.value ? parseInt(sel.value, 10) : null;
-  if (!_dealProgYearTouched) value = fromEvents.year || tabYear || signedYear;
-  const options = dealYearOptions(value);
-  if (fromEvents.year) options.push(String(fromEvents.year));
-  const uniq = [...new Set(options)].sort((a, b) => b.localeCompare(a));
-  sel.innerHTML = uniq.map(y => `<option value="${y}">${y}</option>`).join('');
+  const value = dealProgrammeYearFromEvents().year || _dealStoredYear || tabYear || signedYear;
+  sel.innerHTML = `<option value="${value}">${value}</option>`;
   sel.value = String(value);
-  if (!hint) return;
-  if (fromEvents.spread) {
-    hint.innerHTML = `<span class="deal-prog-warn">The events you picked span more than one year</span> · filed under <b>${value}</b>`;
-  } else if (fromEvents.year && fromEvents.year !== value) {
-    hint.innerHTML = `<span class="deal-prog-warn">The events you picked are ${fromEvents.year}</span> · filed under <b>${value}</b>`;
-  } else if (fromEvents.year) {
-    hint.innerHTML = `From the event${fromEvents.picked === 1 ? '' : 's'} you picked · shows under the <b>${value}</b> tab`;
-  } else if (value !== signedYear) {
-    hint.innerHTML = `Shows under the <b>${value}</b> tab, signed in ${signedYear}`;
-  } else {
-    hint.innerHTML = `Shows under the <b>${value}</b> tab · pick events to set it from them`;
-  }
+  updateDealPeriodHint();
 }
 
 // Entering an invoice date proposes its month and year as the period — unless
