@@ -6288,8 +6288,22 @@ body { font-variant-numeric: tabular-nums; }
 .hotel-settled { color: var(--positive); font-weight: 500; }
 :root #hotelTable td { font-size: 13px; }
 :root .ht-status-sel { font: 500 12.5px/1.2 var(--font-sans); }
-:root .hotel-row-paid .ht-status-sel { color: var(--positive); }
-:root .hotel-row-partial .ht-status-sel { color: var(--warning); }
+/* Paid rows read green at a glance: a soft green row, a green status pill and
+   a green paid figure. Part-paid rows get the same treatment in amber. */
+:root #hotelTable tr.hotel-row-paid > td          { background: rgba(21,128,61,0.11); }
+:root #hotelTable tr.hotel-row-partial > td       { background: rgba(180,83,9,0.10); }
+:root #hotelTable tr.hotel-row-paid:hover > td    { background: rgba(21,128,61,0.16); }
+:root #hotelTable tr.hotel-row-partial:hover > td { background: rgba(180,83,9,0.15); }
+[data-theme="dark"] #hotelTable tr.hotel-row-paid > td          { background: rgba(76,195,138,0.14); }
+[data-theme="dark"] #hotelTable tr.hotel-row-partial > td       { background: rgba(232,180,79,0.13); }
+[data-theme="dark"] #hotelTable tr.hotel-row-paid:hover > td    { background: rgba(76,195,138,0.20); }
+[data-theme="dark"] #hotelTable tr.hotel-row-partial:hover > td { background: rgba(232,180,79,0.19); }
+:root .hotel-row-paid .ht-status-sel,
+:root .hotel-row-partial .ht-status-sel { border-radius: 999px; padding: 3px 8px; font-weight: 600; }
+:root .hotel-row-paid .ht-status-sel    { color: var(--positive); background: var(--positive-soft); }
+:root .hotel-row-partial .ht-status-sel { color: var(--warning);  background: var(--warning-soft); }
+:root .hotel-row-paid td[data-field="paid_amount"]    { color: var(--positive); }
+:root .hotel-row-partial td[data-field="paid_amount"] { color: var(--warning); }
 :root .ht-upload-btn { font: 500 12px/1.2 var(--font-sans); border-radius: 8px; }
 @media (max-width: 700px) { .hotel-cur-rates { display: none; } }
 
