@@ -8138,43 +8138,55 @@ async function openDealModal(id, defaultStage) {
     setDealPayment('');
   }
 
-  // Render the picker grouped by producer team, so "which of my events" is a
-  // glance rather than a scroll. Within a group: soonest first, undated last.
-  // Events with no producer (older years, hand-added rows) sit together at the
-  // end under "Other events" rather than being dropped.
+  // Render the picker in date order, grouped by month, so the list reads like
+  // a calendar. The producer team rides along on each row (and search still
+  // matches it). Events whose day is TBC sit at the end of their month; events
+  // with no usable date at all sit together at the very end under "Date TBC".
   const container = document.getElementById('dealEventsCheckboxes');
   if (container) {
-    const byProducer = new Map();
+    // A "date TBC" event's stored date is a placeholder, so it has no month.
+    const evMonthKey = (ev) => {
+      const m = ev.date_tbc === 'date' ? null : String(ev.event_date || '').match(/^(\d{4})-(\d{2})/);
+      return m ? `${m[1]}-${m[2]}` : '';
+    };
+    const byMonth = new Map();
     for (const ev of _evs) {
-      const key = ev.producer || '';
-      if (!byProducer.has(key)) byProducer.set(key, []);
-      byProducer.get(key).push(ev);
+      const key = evMonthKey(ev);
+      if (!byMonth.has(key)) byMonth.set(key, []);
+      byMonth.get(key).push(ev);
     }
-    const producerOrder = [...byProducer.keys()].sort((a, b) => {
-      if (!a) return 1; if (!b) return -1;             // unnamed group last
+    const monthOrder = [...byMonth.keys()].sort((a, b) => {
+      if (!a) return 1; if (!b) return -1;             // undated group last
       return a.localeCompare(b);
     });
     const byDate = (a, b) => {
-      if (!a.event_date && !b.event_date) return a.name.localeCompare(b.name);
-      if (!a.event_date) return 1;
-      if (!b.event_date) return -1;
-      return new Date(a.event_date) - new Date(b.event_date);
+      const ad = a.date_tbc === 'day' ? '9' : String(a.event_date || '');
+      const bd = b.date_tbc === 'day' ? '9' : String(b.event_date || '');
+      return ad.localeCompare(bd) || a.name.localeCompare(b.name);
+    };
+    const undatedOrder = (a, b) =>
+      (a.programme_year || 9999) - (b.programme_year || 9999) || a.name.localeCompare(b.name);
+    const monthLabel = (key) => {
+      if (!key) return 'Date TBC';
+      const [y, m] = key.split('-');
+      return `${EVENT_MONTHS_SHORT[parseInt(m, 10) - 1] || ''} ${y}`;
     };
     // The first <span> inside each label is the event's name. The package
-    // rows and the split preview read it, so the date lives in a second span.
+    // rows and the split preview read it, so the team and date come after.
     const item = (ev) => {
       const on = _selectedEvIds.includes(ev.id);
-      return `<label class="deal-event-check-item${on ? ' selected' : ''}" data-name="${esc(ev.name.toLowerCase())}">
+      return `<label class="deal-event-check-item${on ? ' selected' : ''}" data-name="${esc(ev.name.toLowerCase())}" data-producer="${esc((ev.producer || '').toLowerCase())}">
         <input type="checkbox" value="${ev.id}" ${on ? 'checked' : ''} onchange="onDealEventCheck(this)">
         <span>${esc(ev.name)}</span>
-        <span class="deal-event-when${ev.date_tbc ? ' deal-event-when--tbc' : ''}">${esc(fmtEventDate(ev))}</span>
+        ${ev.producer ? `<span class="deal-event-team">${esc(ev.producer)}</span>` : ''}
+        <span class="deal-event-when${ev.date_tbc ? ' deal-event-when--tbc' : ''}">${esc(fmtEventDate(ev, { long: true }))}</span>
       </label>`;
     };
-    container.innerHTML = producerOrder.map(prod => {
-      const evs = byProducer.get(prod).sort(byDate);
-      return `<div class="deal-event-group" data-producer="${esc(prod)}">
+    container.innerHTML = monthOrder.map(key => {
+      const evs = byMonth.get(key).sort(key ? byDate : undatedOrder);
+      return `<div class="deal-event-group">
         <div class="deal-event-group-hd">
-          <span>${prod ? esc(prod) : 'Other events'}</span>
+          <span>${monthLabel(key)}</span>
           <span class="deal-event-group-n">${evs.length}</span>
         </div>
         ${evs.map(item).join('')}
@@ -8378,6 +8390,26 @@ function fillNextInvoiceNumber() {
   document.getElementById('dealInvoiceNumber').value = el.textContent;
 }
 
+// Notes pop-out: a full-size editor over the deal modal for long notes. It
+// edits the same text as the inline box, which is what saveDeal reads.
+function openDealNotesPopup() {
+  const company = document.getElementById('dealCompany')?.value.trim();
+  document.getElementById('dealNotesPopupTitle').textContent = company ? `Notes · ${company}` : 'Deal Notes';
+  const big = document.getElementById('dealNotesPopupText');
+  big.value = document.getElementById('dealNotes').value;
+  openModal('dealNotesModal');
+  big.focus();
+  big.setSelectionRange(big.value.length, big.value.length);
+  big.scrollTop = 0;
+}
+function syncDealNotesPopup() {
+  document.getElementById('dealNotes').value = document.getElementById('dealNotesPopupText').value;
+}
+function closeDealNotesPopup() {
+  syncDealNotesPopup();
+  closeModal('dealNotesModal');
+}
+
 function onDealEventCheck(cb) {
   const item = cb.closest('.deal-event-check-item');
   if (item) item.classList.toggle('selected', cb.checked);
@@ -8389,11 +8421,10 @@ function filterDealEvents() {
   const q = (document.getElementById('dealEventsSearch')?.value || '').toLowerCase().trim();
   document.querySelectorAll('#dealEventsCheckboxes .deal-event-group').forEach(group => {
     let shown = 0;
-    const prod = (group.dataset.producer || '').toLowerCase();
     group.querySelectorAll('.deal-event-check-item').forEach(item => {
       // Matches on the event's name or its producer team, so "fidak" lists
       // that team's five events.
-      const hit = !q || (item.dataset.name || '').includes(q) || prod.includes(q);
+      const hit = !q || (item.dataset.name || '').includes(q) || (item.dataset.producer || '').includes(q);
       item.style.display = hit ? '' : 'none';
       if (hit) shown++;
     });

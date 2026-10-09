@@ -4534,7 +4534,7 @@ tbody tr:last-child td { border-bottom: none; }
   outline: none;
 }
 .deal-event-search::placeholder { color: var(--dim); }
-.deal-event-checkboxes { max-height: 160px; overflow-y: auto; padding: 4px 0; }
+.deal-event-checkboxes { max-height: 240px; overflow-y: auto; padding: 4px 0; }
 .deal-event-checkboxes::-webkit-scrollbar { width: 4px; }
 .deal-event-checkboxes::-webkit-scrollbar-track { background: transparent; }
 .deal-event-checkboxes::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 2px; }
@@ -5780,6 +5780,26 @@ tbody tr { transition: background .14s var(--ease); }
   white-space: nowrap;
 }
 .deal-event-check-item .deal-event-when--tbc { color: var(--dim); font-style: italic; }
+.deal-event-check-item .deal-event-team {
+  flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 600 9.5px/1 var(--font-mono); letter-spacing: .5px; text-transform: uppercase;
+  color: var(--muted);
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  padding: 3px 6px; max-width: 110px;
+}
+
+/* Deal notes pop-out: a roomy editor for long notes */
+.modal.deal-notes-modal {
+  width: 820px; max-width: 100%;
+  display: flex; flex-direction: column; gap: 14px;
+  padding: 0 0 18px;
+}
+.form-group .deal-notes-popup-text {
+  min-height: 55vh;
+  font: 400 14px/1.6 var(--font-sans);
+  padding: 14px 16px;
+}
 .pf-prog-unlink {
   margin-left: 8px; padding: 2px 7px;
   font: 600 10px/1 var(--font-mono); letter-spacing: .3px; text-transform: uppercase;
