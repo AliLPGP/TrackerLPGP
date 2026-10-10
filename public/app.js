@@ -10722,81 +10722,96 @@ function previewInvoice() {
   ).join('');
   const amt = esc(p.amount_ex_vat || '—');
 
+  // Each page carries the template's diagonal header (logo top right) and
+  // footer (logo bottom left).
+  const head = '<div class="ig-head"><img src="/invoice_logo.png" alt="LPGP"></div>';
+  const foot = '<div class="ig-foot"><img src="/invoice_logo.png" alt=""></div>';
+  const rows = [
+    ['Contact', p.contact_name], ['Company', p.company_name], ['Address', p.address],
+    ['Email', p.email], ['Invoice Number', p.invoice_number],
+  ];
+
   const page1 = `<div class="ig-page">
-    <div class="ig-band"><img src="/invoice_logo.png" alt="LPGP Connect"></div>
-    <div class="ig-inv-title">INVOICE</div>
-    <div class="ig-addr-row">
-      <div class="ig-addr">
-        <div class="ig-addr-co">LPGPCONNECT.COM LTD</div>
+    ${head}
+    <div class="ig-body">
+      <div class="ig-inv-title">INVOICE</div>
+      <div class="ig-from">
+        <div>LPGPCONNECT.COM LTD</div>
         <div>1 Oakcroft Road</div><div>Trident Court</div><div>Studio 111</div><div>KT9 1BD</div>
+        <div class="ig-date"><strong>Date</strong>: ${esc(p.date || '—')}</div>
       </div>
-      <div class="ig-date"><strong>Date:</strong> ${esc(p.date || '—')}</div>
+      <div class="ig-client">
+        <div class="ig-client-hd">CLIENT</div>
+        ${rows.map(([k, v], i) => `<div class="ig-client-row${i % 2 === 0 && i < 3 ? ' is-band' : ''}">${k}: ${esc(v || '—')}</div>`).join('')}
+      </div>
+      <table class="ig-items">
+        <colgroup><col style="width:49.5%"><col style="width:18.5%"><col style="width:32%"></colgroup>
+        <thead><tr><th>Description</th><th>Unit price</th><th>Total</th></tr></thead>
+        <tbody>
+          <tr class="ig-line">
+            <td><em>Please refer to your sponsorship &amp; benefits in Page 2</em></td>
+            <td>£ ${amt}</td><td>£ ${amt}</td>
+          </tr>
+          <tr class="ig-sum ig-sum--first"><td class="ig-gap"></td><td class="ig-sum-lbl">SUBTOTAL</td><td>£ ${amt}</td></tr>
+          <tr class="ig-sum"><td class="ig-gap"></td><td class="ig-sum-lbl">VAT 20%</td><td>£${esc(p.vat_amount || '—')}</td></tr>
+          <tr class="ig-sum"><td class="ig-gap"></td><td class="ig-sum-lbl">TOTAL DUE</td><td>£${esc(p.total_due || '—')}</td></tr>
+        </tbody>
+      </table>
+      <div class="ig-paybox">
+        <div class="ig-paybox-main">
+          <div>If you have any questions concerning this invoice, contact <span class="ig-link">accounts@lpgpconnect.com</span></div>
+          <div>LPGPCONNECT.COM LTD</div>
+          <div>Account number: 42247054</div>
+          <div>Sort code: 40-26-12</div>
+          <div>Swift/BIC: HBUKGB4B</div>
+          <div>IBAN: GB32 HBUK40261242247054</div>
+          <div>Payment Reference: Company Name</div>
+          <div>VAT Number: 371409111</div>
+        </div>
+        <div class="ig-paybox-terms">
+          <div><strong>Payment is due within 7 days from invoice date</strong></div>
+          <div>Immediate payment is due if booking has been made 30 days prior to the start of the conference date.</div>
+        </div>
+      </div>
     </div>
-    <div class="ig-client">
-      <div class="ig-client-hd">CLIENT</div>
-      <div>Contact: ${esc(p.contact_name || '—')}</div>
-      <div>Company: ${esc(p.company_name || '—')}</div>
-      <div>Address: ${esc(p.address || '—')}</div>
-      <div>Email: ${esc(p.email || '—')}</div>
-      <div>Invoice Number: ${esc(p.invoice_number || '—')}</div>
-    </div>
-    <table class="ig-items">
-      <thead><tr><th>Description</th><th>Unit price</th><th>Total</th></tr></thead>
-      <tbody>
-        <tr>
-          <td><strong>Please refer to your sponsorship &amp; benefits in Page 2</strong></td>
-          <td>£ ${amt}</td><td>£ ${amt}</td>
-        </tr>
-        <tr class="ig-sumrow"><td></td><td>SUBTOTAL</td><td>£ ${amt}</td></tr>
-        <tr class="ig-sumrow"><td></td><td>VAT 20%</td><td>£ ${esc(p.vat_amount || '—')}</td></tr>
-        <tr class="ig-sumrow ig-due"><td></td><td>TOTAL DUE</td><td>£ ${esc(p.total_due || '—')}</td></tr>
-      </tbody>
-    </table>
-    <div class="ig-contact-line">If you have any questions concerning this invoice, contact accounts@lpgpconnect.com</div>
-    <div class="ig-bank">
-      <div>LPGPCONNECT.COM LTD</div>
-      <div>Account number: 42247054</div>
-      <div>Sort code: 40-26-12</div>
-      <div>Swift/BIC: HBUKGB4B</div>
-      <div>IBAN: GB32 HBUK40261242247054</div>
-      <div>Payment Reference: ${esc(p.company_name || 'Company Name')}</div>
-      <div>VAT Number: 371409111</div>
-    </div>
-    <div class="ig-terms-note">
-      <div>Payment is due within 7 days from invoice date</div>
-      <div class="ig-terms-sub">Immediate payment is due if booking has been made 30 days prior to the start of the conference date.</div>
-    </div>
+    ${foot}
   </div>`;
 
   const page2 = `<div class="ig-page">
-    <div class="ig-band"><img src="/invoice_logo.png" alt="LPGP Connect"></div>
-    <div class="ig-agree-title">LPGP Connect Agreement 2026</div>
-    <div class="ig-sec-hd">Sponsorship &amp; Benefits</div>
-    <div class="ig-events-lbl">Events:</div>
-    <div class="ig-event-name">${p.event_name ? p.event_name.split('\n').map(l => `<div>${esc(l)}</div>`).join('') : '—'}</div>
-    ${benefits || '<div class="ig-benefit" style="color:#999">No package details listed</div>'}
-    <div class="ig-total-cost">Total Cost - £${amt} plus VAT</div>
-    ${p.additional_notes
-      ? `<div class="ig-sec-hd" style="margin-top:22px">Additional Comments:</div>
-         <div class="ig-comments">${esc(p.additional_notes)}</div>`
-      : ''}
+    ${head}
+    <div class="ig-body ig-body--doc">
+      <div class="ig-agree-title">LPGP Connect Agreement 2026</div>
+      <div class="ig-sec-hd">Sponsorship &amp; Benefits</div>
+      <div class="ig-events-lbl">Events:</div>
+      <ul class="ig-events">${p.event_name ? p.event_name.split('\n').filter(Boolean).map(l => `<li>${esc(l)}</li>`).join('') : '<li>—</li>'}</ul>
+      ${p.benefits.length
+        ? `<ul class="ig-benefits">${p.benefits.map(b => b === '' ? '<li class="ig-gap-li"></li>' : `<li>${esc(b)}</li>`).join('')}</ul>`
+        : '<div class="ig-muted">No package details listed</div>'}
+      <div class="ig-total-cost">Total Cost - £${amt} plus VAT</div>
+      ${p.additional_notes
+        ? `<div class="ig-sec-hd" style="margin-top:22px">Additional Comments:</div>
+           <div class="ig-comments">${esc(p.additional_notes)}</div>`
+        : ''}
+    </div>
+    ${foot}
   </div>`;
 
   const page3 = `<div class="ig-page">
-    <div class="ig-agree-title" style="margin-top:6px">LPGP Connect Limited Terms &amp; Conditions</div>
-    <div class="ig-tc">
-      <div class="ig-tc-hd">Scope of Agreement</div>
-      <p>These are the conditions of the contract between you, the Sponsoring Client and LPGP Connect Limited. The above package includes the benefits to each event you are solicitated to (listed above). This agreement constitutes the entire agreement between LPGP Connect Limited and you.</p>
-      <div class="ig-tc-hd">Cancellations</div>
-      <p>Subject to the terms hereof, in the event of your cancellation 100% of the Total Fee is payable and non-refundable unless otherwise agreed to by LPGP Connect Limited. All cancellation requests must be submitted to us in writing…</p>
-      <div class="ig-tc-hd">Force Majeure</div>
-      <p>In the event that a party is prevented, hindered or delayed in or from performing any of its obligations under this agreement for any reason beyond its reasonable control… <em>(full text appears in the generated document)</em></p>
+    ${head}
+    <div class="ig-body ig-body--doc">
+      <div class="ig-agree-title">LPGP Connect Limited Terms &amp; Conditions</div>
+      <ol class="ig-tc">
+        <li><div>Scope of Agreement</div><p>These are the conditions of the contract between you, the Sponsoring Client and LPGP Connect Limited. The above package includes the benefits to each event you are solicitated to (listed above). This agreement constitutes the entire agreement between LPGP Connect Limited and you.</p></li>
+        <li><div>Cancellations</div><p>Subject to the terms hereof, in the event of your cancellation 100% of the Total Fee is payable and non-refundable unless otherwise agreed to by LPGP Connect Limited. All cancellation requests must be submitted to us in writing…</p></li>
+        <li><div>Force Majeure</div><p>3.1) In the event that a party is prevented, hindered or delayed in or from performing any of its obligations under this agreement for any reason beyond its reasonable control… <em>(full text appears in the generated document)</em></p></li>
+      </ol>
+      <div class="ig-sig">
+        <div class="ig-sig-name">${esc(p.client_name || '—')}</div>
+        <div>Name</div>
+        <div>Signature</div>
+      </div>
     </div>
-    <div class="ig-sig">
-      <div class="ig-sig-name">${esc(p.client_name || '—')}</div>
-      <div class="ig-sig-line">Name</div>
-      <div class="ig-sig-line" style="margin-top:26px">Signature</div>
-    </div>
+    ${foot}
   </div>`;
 
   document.getElementById('igPreviewSheet').innerHTML =
