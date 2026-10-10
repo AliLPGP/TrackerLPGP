@@ -6495,6 +6495,9 @@ async function initEmployeePortal(user) {
     const pageEl = document.getElementById('page-' + page);
     if (pageEl) pageEl.classList.add('active');
     document.querySelectorAll('[data-page="' + page + '"]').forEach(n => n.classList.add('active'));
+    const empTitles = { dashboard: 'Dashboard', calendar: 'Calendar', portfolio: 'Portfolio', eventkit: 'Event Kit', profile: 'My Profile', directory: 'Team' };
+    const titleEl = document.getElementById('pageTitle');
+    if (titleEl) titleEl.textContent = empTitles[page] || page;
     if (page === 'dashboard')  loadEmployeeDashboard(user);
     if (page === 'calendar')   loadEmployeeCalendar();
     if (page === 'portfolio')  loadEmployeePortfolio();
@@ -9658,457 +9661,415 @@ function openSetPinModal(empId, empName) {
   });
 }
 
-// ─── EVENT KIT ────────────────────────────────────────────────────────────────
+// ─── EVENT KIT ───────────────────────────────────────────────────────────────
+// Each event has a team (producer, delegates, sales) and a kit: six marketing
+// materials the office uploads and the team approves, plus the agendas the
+// producer uploads. The office sees every event; staff see the events they
+// are on. One layout serves both, with the office's controls switched on.
+const EK_MATERIAL_TYPES = [
+  { key: 'brochure',     label: 'Brochure',        accept: '.pdf,.png,.jpg,.jpeg' },
+  { key: 'banner',       label: 'Banner',          accept: '.pdf,.png,.jpg,.jpeg' },
+  { key: 'roundtable',   label: 'Roundtable card', accept: '.pdf,.png,.jpg,.jpeg' },
+  { key: 'presentation', label: 'Presentation',    accept: '.pdf,.pptx,.ppt' },
+  { key: 'backdrop',     label: 'Backdrop',        accept: '.pdf,.png,.jpg,.jpeg' },
+  { key: 'name_badges',  label: 'Name badges',     accept: '.pdf,.png,.jpg,.jpeg' },
+];
+const EK_STATUS = {
+  missing: { label: 'Not uploaded',         cls: 'missing' },
+  pending: { label: 'Waiting for approval', cls: 'pending' },
+  approved:{ label: 'Approved',             cls: 'ok' },
+  changes: { label: 'Changes requested',    cls: 'changes' },
+};
+const EK_TEAM_ROLES = [
+  { key: 'producer',  label: 'Producer',  dept: /produc/i },
+  { key: 'delegates', label: 'Delegates', dept: /delegat/i },
+  { key: 'sales',     label: 'Sales',     dept: /sales/i },
+];
+const EK_MAX_FILE = 10 * 1024 * 1024;
+let _ek = { office: false, events: [], staff: [], selected: null, search: '', showPast: false, editing: null };
 
-let _ekKit = {};
-let _ekEmails = [];
-let _ekEventsList = [];
-let _ekEmpEventsList = [];
-let _ekEmpSelId = '';
-
-function ekFilterEvents() {
-  const q = (document.getElementById('ekEventSearch')?.value || '').toLowerCase();
-  const dd = document.getElementById('ekEventDropdown');
-  if (!dd) return;
-  const matches = _ekEventsList.filter(e =>
-    e.name.toLowerCase().includes(q) || (e.event_date||'').slice(0,10).includes(q)
-  );
-  if (!matches.length) { dd.classList.add('hidden'); return; }
-  dd.classList.remove('hidden');
-  dd.innerHTML = matches.slice(0, 25).map(e =>
-    `<div class="ek-event-dd-item" onclick="ekSelectEvent(${e.id},${JSON.stringify(e.name + ((e.event_date || e.programme_year)?' ('+fmtEventDate(e)+')':''))})">${esc(e.name)}${(e.event_date || e.programme_year)?` <span style="color:var(--muted);font-size:0.75rem">(${esc(fmtEventDate(e))})</span>`:''}</div>`
-  ).join('');
+function ekItemStatus(kit, type) {
+  if (!kit || (!kit[`${type}_url`] && !kit[`${type}_file`])) return 'missing';
+  return (kit.item_reviews && kit.item_reviews[type] && kit.item_reviews[type].status) || 'pending';
 }
 
-function ekSelectEvent(id, label) {
-  const sel = document.getElementById('ekEventSel');
-  if (sel && !sel.querySelector(`option[value="${id}"]`)) {
-    const opt = document.createElement('option');
-    opt.value = String(id);
-    opt.textContent = label;
-    sel.appendChild(opt);
-  }
-  if (sel) sel.value = String(id);
-  const inp = document.getElementById('ekEventSearch');
-  if (inp) inp.value = label;
-  document.getElementById('ekEventDropdown')?.classList.add('hidden');
-  return loadEventKit();
+function ekProgress(kit) {
+  const st = EK_MATERIAL_TYPES.map(m => ekItemStatus(kit, m.key));
+  return {
+    total: st.length,
+    uploaded: st.filter(x => x !== 'missing').length,
+    approved: st.filter(x => x === 'approved').length,
+    changes: st.filter(x => x === 'changes').length,
+    team: !!(kit && kit.producer_id && kit.delegates_id && kit.sales_id),
+    agenda: !!(kit && (kit.agenda_file || kit.agenda_file_2)),
+  };
 }
 
-document.addEventListener('click', e => {
-  const wrap = e.target.closest('.ek-event-picker');
-  if (!wrap) {
-    document.getElementById('ekEventDropdown')?.classList.add('hidden');
-    document.getElementById('ekEmpEventDropdown')?.classList.add('hidden');
-  }
-});
-
-function ekEmpFilterEvents() {
-  const q = (document.getElementById('ekEmpEventSearch')?.value || '').toLowerCase();
-  const dd = document.getElementById('ekEmpEventDropdown');
-  if (!dd) return;
-  const matches = _ekEmpEventsList.filter(e =>
-    e.name.toLowerCase().includes(q) || (e.event_date||'').slice(0,10).includes(q)
-  );
-  if (!matches.length) { dd.classList.add('hidden'); return; }
-  dd.classList.remove('hidden');
-  dd.innerHTML = matches.slice(0, 25).map(e =>
-    `<div class="ek-event-dd-item" onclick="ekEmpSelectEvent(${e.id},${JSON.stringify(e.name + ((e.event_date || e.programme_year)?' ('+fmtEventDate(e)+')':''))})">${esc(e.name)}${(e.event_date || e.programme_year)?` <span style="color:var(--muted);font-size:0.75rem">(${esc(fmtEventDate(e))})</span>`:''}</div>`
-  ).join('');
+function ekIsPast(ev) {
+  return ev.event_date && ev.date_tbc !== 'date' && String(ev.event_date).slice(0, 10) < today();
 }
 
-function ekEmpSelectEvent(id, label) {
-  _ekEmpSelId = String(id);
-  const inp = document.getElementById('ekEmpEventSearch');
-  if (inp) inp.value = label;
-  document.getElementById('ekEmpEventDropdown')?.classList.add('hidden');
-  loadEmployeeKitEditor();
+function ekMeOnTeam(kit) {
+  const me = currentUser && currentUser.employee_id;
+  return !!me && EK_TEAM_ROLES.some(r => kit && kit[`${r.key}_id`] === me);
 }
 
 async function loadEventKitPage() {
-  const isEmployee = currentUser?.role === 'employee';
-  document.getElementById('ekAdminView').classList.toggle('hidden', isEmployee);
-  document.getElementById('ekEmployeeView').classList.toggle('hidden', !isEmployee);
-  if (isEmployee) { await loadEmployeeKits(); return; }
+  const root = document.getElementById('ekRoot');
+  if (!root) return;
+  _ek.office = !!currentUser && currentUser.role !== 'employee';
+  root.innerHTML = '<div class="ek-loading">Loading…</div>';
   try {
-    const res = await fetch('/api/portfolio-events');
-    const evs = await res.json();
-    _ekEventsList = Array.isArray(evs) ? evs : [];
-    const staffRes = await fetch('/api/employees/all');
-    const staff = await staffRes.json();
-    const ep = document.getElementById('ekEmpPicker');
-    ep.innerHTML = '<option value="">Pick from staff…</option>' +
-      staff.filter(s => s.email).map(s => `<option value="${esc(s.email)}">${esc(s.name)} (${esc(s.email)})</option>`).join('');
-    await renderKitsList();
-  } catch(e) { showToast('Failed to load events', 'error'); }
+    const kitsRes = await fetch('/api/event-kits');
+    const kits = kitsRes.ok ? await kitsRes.json() : [];
+    if (_ek.office) {
+      const [evRes, staffRes] = await Promise.all([fetch('/api/portfolio-events'), fetch('/api/employees/all')]);
+      const evs = evRes.ok ? await evRes.json() : [];
+      _ek.staff = staffRes.ok ? (await staffRes.json()).sort((a, b) => a.name.localeCompare(b.name)) : [];
+      const byEvent = new Map(kits.map(k => [k.event_id, k]));
+      _ek.events = (Array.isArray(evs) ? evs : []).map(e => ({
+        event_id: e.id, event_name: e.name, event_date: e.event_date, date_tbc: e.date_tbc,
+        programme_year: e.programme_year, location: e.location, producer_team: e.producer,
+        kit: byEvent.get(e.id) || null,
+      }));
+    } else {
+      _ek.events = kits.map(k => ({ ...k, kit: k }));
+    }
+    _ek.events.sort((a, b) => String(a.event_date || '9999').localeCompare(String(b.event_date || '9999')) || a.event_name.localeCompare(b.event_name));
+    if (!_ek.selected || !_ek.events.some(e => e.event_id === _ek.selected)) {
+      const first = _ek.events.find(e => !ekIsPast(e)) || _ek.events[0];
+      _ek.selected = first ? first.event_id : null;
+    }
+    ekRender();
+  } catch {
+    root.innerHTML = '<div class="ek-loading">Could not load event kits.</div>';
+  }
 }
+// The staff portal used to call this separately.
+const loadEmployeeKitPage = loadEventKitPage;
 
-async function renderKitsList() {
-  const res = await fetch('/api/event-kits');
-  if (!res.ok) return;
-  const kits = await res.json();
-  const el = document.getElementById('ekKitsList');
-  if (!kits.length) {
-    el.innerHTML = '<div style="color:var(--muted);font-size:0.85rem;text-align:center;padding:20px">No kits yet. Select an event above to create one.</div>';
+function ekRender() {
+  const root = document.getElementById('ekRoot');
+  if (!_ek.events.length) {
+    root.innerHTML = `<div class="ek-blank">${_ek.office
+      ? 'No events yet. Add events on the Portfolio page and they appear here.'
+      : 'You are not on any event team yet. When the office adds you to an event, its kit appears here.'}</div>`;
     return;
   }
-  el.innerHTML = '<div style="font:700 13px/1 var(--font-sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:12px">Existing Kits</div>' +
-    kits.map(k => {
-      const materials = ['brochure','banner','roundtable','presentation','backdrop','name_badges']
-        .filter(t => k[t+'_url'] || k[t+'_file']).length;
-      return `<div class="card" style="padding:14px 18px;margin-bottom:8px;display:flex;align-items:center;gap:14px">
-        <div style="flex:1;min-width:0">
-          <div style="font:600 14px/1 var(--font-sans)">${esc(k.event_name)}</div>
-          <div style="font-size:0.75rem;color:var(--muted);margin-top:3px">${(k.event_date || k.programme_year)?esc(fmtEventDate(k, {long:true})):''}</div>
-        </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          ${k.agenda_file ? '<span class="ek-badge ek-badge--agenda">📋 Agenda</span>' : ''}
-          ${materials > 0 ? `<span class="ek-badge ek-badge--mat">🎨 ${materials} material${materials!==1?'s':''}</span>` : ''}
-          <span class="ek-badge ek-badge--access">👥 ${k.access_emails.length} recipient${k.access_emails.length!==1?'s':''}</span>
-        </div>
-        <div style="display:flex;gap:6px;flex-shrink:0">
-          <button class="sub-action-btn" onclick="editKit(${k.event_id}, '${esc(k.event_name)}')">✏️ Edit</button>
-          <button class="sub-action-btn sub-action-btn--danger" onclick="deleteKit(${k.event_id}, '${esc(k.event_name)}')">🗑 Delete</button>
-        </div>
-      </div>`;
-    }).join('');
+  root.innerHTML = `<div class="ek-layout">
+    <aside class="ek-side">
+      <div class="ek-search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="search" placeholder="Search events" value="${esc(_ek.search)}" oninput="_ek.search=this.value;ekRenderList()">
+      </div>
+      ${_ek.office ? `<label class="ek-past"><input type="checkbox" ${_ek.showPast ? 'checked' : ''} onchange="_ek.showPast=this.checked;ekRenderList()"> Show past events</label>` : ''}
+      <div class="ek-list" id="ekList"></div>
+    </aside>
+    <section class="ek-main" id="ekMain"></section>
+  </div>`;
+  ekRenderList();
+  ekRenderDetail();
 }
 
-async function editKit(eventId, eventName) {
-  await ekSelectEvent(eventId, eventName);
-  const editor = document.getElementById('ekKitEditor');
-  if (editor && !editor.classList.contains('hidden')) {
-    editor.scrollIntoView({ behavior: 'smooth', block: 'start' });
+function ekRenderList() {
+  const el = document.getElementById('ekList');
+  if (!el) return;
+  const q = _ek.search.trim().toLowerCase();
+  const list = _ek.events.filter(e => (!q || e.event_name.toLowerCase().includes(q) || (e.location || '').toLowerCase().includes(q))
+    && (_ek.showPast || !_ek.office || !ekIsPast(e) || e.event_id === _ek.selected));
+  el.innerHTML = list.map(e => {
+    const p = ekProgress(e.kit);
+    const pct = Math.round(p.approved / p.total * 100);
+    const state = !e.kit ? 'No kit yet' : p.changes ? `${p.changes} change${p.changes === 1 ? '' : 's'} requested` : `${p.approved} of ${p.total} approved`;
+    return `<button type="button" class="ek-ev${e.event_id === _ek.selected ? ' active' : ''}${ekIsPast(e) ? ' is-past' : ''}" onclick="ekSelect(${e.event_id})">
+      <span class="ek-ev-name">${esc(e.event_name)}</span>
+      <span class="ek-ev-meta">${(e.event_date || e.programme_year) ? esc(fmtEventDate(e)) : 'Date TBC'}${e.location ? ' · ' + esc(e.location) : ''}</span>
+      <span class="ek-ev-bar"><span style="width:${pct}%"></span></span>
+      <span class="ek-ev-state${p.changes ? ' is-changes' : ''}">${state}</span>
+    </button>`;
+  }).join('') || '<div class="ek-list-empty">No events match.</div>';
+}
+
+function ekSelect(eventId) {
+  _ek.selected = eventId;
+  _ek.editing = null;
+  ekRenderList();
+  ekRenderDetail();
+  if (window.innerWidth < 900) document.getElementById('ekMain')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function ekCurrent() { return _ek.events.find(e => e.event_id === _ek.selected) || null; }
+
+function ekReplaceKit(kit) {
+  const ev = _ek.events.find(e => e.event_id === kit.event_id);
+  if (ev) ev.kit = kit;
+  ekRenderList();
+  ekRenderDetail();
+}
+
+function ekRenderDetail() {
+  const main = document.getElementById('ekMain');
+  const ev = ekCurrent();
+  if (!main || !ev) return;
+  const kit = ev.kit;
+  const p = ekProgress(kit);
+  const onTeam = ekMeOnTeam(kit);
+  const step = (n, title, done, sub, warn) => `<li class="ek-step${done ? ' done' : ''}${warn ? ' warn' : ''}">
+      <span class="ek-step-n">${done ? '✓' : n}</span><span><strong>${title}</strong><small>${sub}</small></span></li>`;
+
+  main.innerHTML = `
+    <header class="ek-hd">
+      <div>
+        <p class="ek-eyebrow">${(ev.event_date || ev.programme_year) ? esc(fmtEventDate(ev, { long: true })) : 'Date TBC'}${ev.location ? ' · ' + esc(ev.location) : ''}${ev.producer_team ? ' · ' + esc(ev.producer_team) : ''}</p>
+        <h2>${esc(ev.event_name)}</h2>
+      </div>
+      ${_ek.office && kit ? `<button class="btn btn-ghost btn-sm ek-danger" onclick="ekDeleteKit(${ev.event_id})">Delete kit</button>` : ''}
+    </header>
+
+    <ol class="ek-steps">
+      ${step(1, 'Team', p.team, p.team ? 'Producer, delegates and sales set' : 'Assign the event team')}
+      ${step(2, 'Materials', p.uploaded === p.total, `${p.uploaded} of ${p.total} uploaded`)}
+      ${step(3, 'Approval', p.approved === p.total, p.changes ? `${p.changes} change${p.changes === 1 ? '' : 's'} requested` : `${p.approved} of ${p.total} approved`, p.changes > 0)}
+      ${step(4, 'Agenda', p.agenda, p.agenda ? 'Uploaded' : 'From the producer')}
+    </ol>
+
+    <div class="ek-cols">
+      <section class="ek-card ek-materials">
+        <div class="ek-card-hd"><h3>Materials</h3><span>${_ek.office ? 'Upload a file or add a link; the team approves each one.' : onTeam ? 'Open each item, then approve it or ask for changes.' : 'Shared with you to view.'}</span></div>
+        ${EK_MATERIAL_TYPES.map(m => ekItemHtml(ev, m, onTeam)).join('')}
+      </section>
+
+      <div class="ek-side-cards">
+        <section class="ek-card">
+          <div class="ek-card-hd"><h3>Event team</h3></div>
+          ${EK_TEAM_ROLES.map(r => ekTeamRowHtml(kit, r)).join('')}
+          ${_ek.office ? ekSharedHtml(kit) : ''}
+        </section>
+        <section class="ek-card">
+          <div class="ek-card-hd"><h3>Agendas</h3><span>${_ek.office || onTeam ? 'The producer uploads these.' : ''}</span></div>
+          ${[1, 2].map(n => ekAgendaHtml(ev, n, _ek.office || ekStaffMaySee(kit))).join('')}
+        </section>
+      </div>
+    </div>`;
+}
+
+function ekStaffMaySee(kit) { return !!kit && !_ek.office; }
+
+function ekItemHtml(ev, m, onTeam) {
+  const kit = ev.kit;
+  const status = ekItemStatus(kit, m.key);
+  const review = kit && kit.item_reviews && kit.item_reviews[m.key];
+  const url = kit && kit[`${m.key}_url`];
+  const file = kit && kit[`${m.key}_file`];
+  const eid = ev.event_id;
+  const editing = _ek.editing === `link:${m.key}`;
+  const asking = _ek.editing === `changes:${m.key}`;
+  const s = EK_STATUS[status];
+
+  const files = [
+    url ? `<a class="ek-asset" href="${esc(url)}" target="_blank" rel="noopener">Open link ↗</a>` : '',
+    file ? `<a class="ek-asset" href="/api/event-kits/${eid}/file/${m.key}" target="_blank">${esc(file)}</a>` : '',
+  ].filter(Boolean).join('');
+  const who = review && review.by && (status === 'approved' || status === 'changes')
+    ? `<div class="ek-review ${status === 'changes' ? 'is-changes' : ''}">${status === 'changes' ? `<strong>${esc(review.by)}:</strong> ${esc(review.note)}` : `Approved by ${esc(review.by)}`} · ${fmtDateShort(review.at)}</div>` : '';
+
+  let actions = '';
+  if (_ek.office) {
+    actions = `<label class="btn btn-ghost btn-sm">${file ? 'Replace file' : 'Upload file'}<input type="file" accept="${m.accept}" hidden onchange="ekUploadItem(${eid},'${m.key}',this)"></label>
+      <button class="btn btn-ghost btn-sm" onclick="ekStartEdit('link:${m.key}')">${url ? 'Edit link' : 'Add link'}</button>
+      ${url || file ? `<button class="btn btn-ghost btn-sm ek-icon" title="Remove" aria-label="Remove ${m.label}" onclick="ekClearItem(${eid},'${m.key}')">✕</button>` : ''}
+      ${status === 'pending' ? `<button class="btn btn-ghost btn-sm" title="Approve on the team's behalf" onclick="ekReview(${eid},'${m.key}','approved')">Mark approved</button>` : ''}`;
+  } else if (onTeam && status !== 'missing') {
+    actions = status === 'approved'
+      ? `<button class="btn btn-ghost btn-sm" onclick="ekStartEdit('changes:${m.key}')">Request changes</button>`
+      : `<button class="btn btn-primary btn-sm" onclick="ekReview(${eid},'${m.key}','approved')">Approve</button>
+         <button class="btn btn-ghost btn-sm" onclick="ekStartEdit('changes:${m.key}')">Request changes</button>`;
   }
+
+  return `<div class="ek-item">
+    <div class="ek-item-top">
+      <div class="ek-item-name">${m.label}</div>
+      <span class="ek-pill ek-pill--${s.cls}">${s.label}</span>
+    </div>
+    ${files ? `<div class="ek-assets">${files}</div>` : ''}
+    ${who}
+    ${editing ? `<div class="ek-inline">
+        <input type="url" id="ekLinkInput" placeholder="https://www.canva.com/…" value="${esc(url || '')}" onkeydown="if(event.key==='Enter')ekSaveLink(${eid},'${m.key}');if(event.key==='Escape')ekStartEdit(null)">
+        <button class="btn btn-primary btn-sm" onclick="ekSaveLink(${eid},'${m.key}')">Save</button>
+        <button class="btn btn-ghost btn-sm" onclick="ekStartEdit(null)">Cancel</button>
+      </div>` : ''}
+    ${asking ? `<div class="ek-inline ek-inline--col">
+        <textarea id="ekChangesInput" rows="2" placeholder="What needs changing?"></textarea>
+        <div><button class="btn btn-primary btn-sm" onclick="ekSendChanges(${eid},'${m.key}')">Send to the office</button>
+        <button class="btn btn-ghost btn-sm" onclick="ekStartEdit(null)">Cancel</button></div>
+      </div>` : ''}
+    ${actions && !editing && !asking ? `<div class="ek-item-act">${actions}</div>` : ''}
+  </div>`;
 }
 
-async function deleteKit(eventId, eventName) {
-  if (!confirm(`Delete the kit for "${eventName}"? This cannot be undone.`)) return;
-  const res = await fetch(`/api/event-kits/${eventId}`, { method: 'DELETE' });
-  if (!res.ok) { showToast('Delete failed', 'error'); return; }
-  showToast('Kit deleted', 'success');
-  // Hide editor if it was showing this kit
-  const sel = document.getElementById('ekEventSel');
-  if (sel.value === String(eventId)) closeKitEditor();
-  renderKitsList();
+function ekTeamRowHtml(kit, role) {
+  const id = kit && kit[`${role.key}_id`];
+  const name = kit && kit[`${role.key}_name`];
+  if (!_ek.office) {
+    return `<div class="ek-team-row"><span>${role.label}</span><strong>${name ? esc(name) : '<em>Not set</em>'}${id && id === (currentUser && currentUser.employee_id) ? ' <small>(you)</small>' : ''}</strong></div>`;
+  }
+  const inDept = _ek.staff.filter(e => (e.active || e.id === id) && role.dept.test(e.department || ''));
+  const rest = _ek.staff.filter(e => (e.active || e.id === id) && !role.dept.test(e.department || ''));
+  const opt = e => `<option value="${e.id}"${e.id === id ? ' selected' : ''}>${esc(e.name)}${e.active ? '' : ' (left)'}</option>`;
+  return `<div class="ek-team-row ek-team-row--edit">
+    <label for="ekTeam_${role.key}">${role.label}</label>
+    <div class="ek-team-pick">
+      <select id="ekTeam_${role.key}" onchange="ekSaveTeam()">
+        <option value="">Not set</option>
+        ${inDept.length ? `<optgroup label="${esc([...new Set(inDept.map(e => e.department))].join(' / '))}">${inDept.map(opt).join('')}</optgroup>` : ''}
+        ${rest.length ? `<optgroup label="${inDept.length ? 'Everyone else' : 'Staff'}">${rest.map(opt).join('')}</optgroup>` : ''}
+      </select>
+      ${id ? `<button class="btn btn-ghost btn-sm ek-icon" title="Open ${esc(name || '')}'s profile" onclick="openEmployeeProfile(${id})">↗</button>` : ''}
+    </div>
+  </div>`;
 }
 
-function closeKitEditor() {
-  document.getElementById('ekKitEditor').classList.add('hidden');
-  document.getElementById('ekEventSel').value = '';
-  document.getElementById('ekSaveStatus').textContent = '';
+function ekSharedHtml(kit) {
+  const emails = (kit && kit.access_emails) || [];
+  return `<div class="ek-shared">
+    <span class="ek-shared-lbl">Also shared with</span>
+    <div class="ek-tags">${emails.map(e => `<span class="ek-tag">${esc(e)}<button type="button" aria-label="Remove ${esc(e)}" onclick="ekRemoveShare(${JSON.stringify(e).replace(/"/g, '&quot;')})">✕</button></span>`).join('') || '<span class="ek-muted">Only the team</span>'}</div>
+    <div class="ek-inline"><input type="email" id="ekShareInput" placeholder="name@company.com" onkeydown="if(event.key==='Enter')ekAddShare()">
+      <button class="btn btn-ghost btn-sm" onclick="ekAddShare()">Add</button></div>
+  </div>`;
 }
 
-async function deleteCurrentKit() {
-  const eid = document.getElementById('ekEventSel').value;
-  const name = document.getElementById('ekEditorTitle').textContent.replace('Editing: ', '');
-  if (!eid) return;
-  if (!confirm(`Delete the kit for "${name}"? This cannot be undone.`)) return;
+function ekAgendaHtml(ev, n, canUpload) {
+  const kit = ev.kit;
+  const file = kit && (n === 1 ? kit.agenda_file : kit.agenda_file_2);
+  const by = kit && (n === 1 ? kit.agenda_uploader_name : kit.agenda_uploader_name_2);
+  const type = n === 1 ? 'agenda' : 'agenda2';
+  return `<div class="ek-agenda">
+    <div class="ek-agenda-main">
+      <span class="ek-agenda-lbl">Agenda ${n}</span>
+      ${file ? `<a class="ek-asset" href="/api/event-kits/${ev.event_id}/file/${type}" target="_blank">${esc(file)}</a>${by ? `<small>by ${esc(by)}</small>` : ''}` : '<span class="ek-muted">Not uploaded</span>'}
+    </div>
+    ${canUpload ? `<div class="ek-item-act">
+      <label class="btn btn-ghost btn-sm">${file ? 'Replace' : 'Upload'}<input type="file" accept=".pdf,.pptx,.ppt,.png,.jpg,.jpeg" hidden onchange="ekUploadAgenda(${ev.event_id},${n},this)"></label>
+      ${file ? `<button class="btn btn-ghost btn-sm ek-icon" aria-label="Remove agenda ${n}" onclick="ekClearAgenda(${ev.event_id},${n})">✕</button>` : ''}
+    </div>` : ''}
+  </div>`;
+}
+
+function ekStartEdit(key) {
+  _ek.editing = key;
+  ekRenderDetail();
+  const el = document.getElementById(key && key.startsWith('link') ? 'ekLinkInput' : 'ekChangesInput');
+  if (el) el.focus();
+}
+
+function ekReadFile(input) {
+  return new Promise((resolve, reject) => {
+    const file = input.files[0];
+    if (!file) return reject(new Error('No file'));
+    if (file.size > EK_MAX_FILE) { input.value = ''; return reject(new Error('File too large (max 10 MB)')); }
+    const r = new FileReader();
+    r.onload = e => resolve({ name: file.name, data: String(e.target.result).split(',')[1] });
+    r.onerror = () => reject(new Error('Could not read the file'));
+    r.readAsDataURL(file);
+  });
+}
+
+async function ekSend(url, method, body, okMsg) {
+  const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { showToast(data.error || 'Something went wrong', 'error'); return null; }
+  if (okMsg) showToast(okMsg, 'success');
+  _ek.editing = null;
+  ekReplaceKit(data);
+  return data;
+}
+
+async function ekUploadItem(eid, type, input) {
+  try {
+    const f = await ekReadFile(input);
+    const kit = ekCurrent()?.kit;
+    await ekSend(`/api/event-kits/${eid}/items/${type}`, 'PUT', { url: (kit && kit[`${type}_url`]) || '', file: f.name, data: f.data }, 'Uploaded · sent to the team for approval');
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function ekSaveLink(eid, type) {
+  const url = (document.getElementById('ekLinkInput')?.value || '').trim();
+  await ekSend(`/api/event-kits/${eid}/items/${type}`, 'PUT', { url }, url ? 'Link saved · sent to the team for approval' : 'Link removed');
+}
+
+async function ekClearItem(eid, type) {
+  const m = EK_MATERIAL_TYPES.find(x => x.key === type);
+  if (!await showConfirm(`Remove the ${m ? m.label.toLowerCase() : 'item'}? Its link and file are both cleared.`)) return;
+  await ekSend(`/api/event-kits/${eid}/items/${type}`, 'PUT', { url: '', clear_file: true }, 'Removed');
+}
+
+async function ekReview(eid, type, decision, note) {
+  await ekSend(`/api/event-kits/${eid}/items/${type}/review`, 'POST', { decision, note }, decision === 'approved' ? 'Approved' : 'Changes sent to the office');
+}
+
+async function ekSendChanges(eid, type) {
+  const note = (document.getElementById('ekChangesInput')?.value || '').trim();
+  if (!note) { showToast('Say what needs changing', 'error'); return; }
+  await ekReview(eid, type, 'changes', note);
+}
+
+function ekTeamBody(kit, emails) {
+  const body = {};
+  EK_TEAM_ROLES.forEach(r => {
+    const sel = document.getElementById(`ekTeam_${r.key}`);
+    const v = sel ? sel.value : (kit && kit[`${r.key}_id`]);
+    if (v) body[`${r.key}_id`] = parseInt(v, 10);
+  });
+  body.access_emails = emails;
+  return body;
+}
+
+async function ekSaveTeam() {
+  const ev = ekCurrent();
+  if (!ev) return;
+  await ekSend(`/api/event-kits/${ev.event_id}/team`, 'PATCH', ekTeamBody(ev.kit, (ev.kit && ev.kit.access_emails) || []), 'Team saved');
+}
+
+async function ekAddShare() {
+  const ev = ekCurrent();
+  const input = document.getElementById('ekShareInput');
+  const email = (input?.value || '').trim().toLowerCase();
+  if (!ev || !email) return;
+  if (!/^[^\s@]+@[^\s@]+$/.test(email)) { showToast('Enter a valid email', 'error'); return; }
+  const emails = [...new Set([...((ev.kit && ev.kit.access_emails) || []), email])];
+  await ekSend(`/api/event-kits/${ev.event_id}/team`, 'PATCH', ekTeamBody(ev.kit, emails), 'Shared');
+}
+
+async function ekRemoveShare(email) {
+  const ev = ekCurrent();
+  if (!ev) return;
+  const emails = ((ev.kit && ev.kit.access_emails) || []).filter(e => e !== email);
+  await ekSend(`/api/event-kits/${ev.event_id}/team`, 'PATCH', ekTeamBody(ev.kit, emails), null);
+}
+
+async function ekUploadAgenda(eid, slot, input) {
+  try {
+    const f = await ekReadFile(input);
+    await ekSend(`/api/event-kits/${eid}/agenda`, 'PATCH', { agenda_file: f.name, agenda_data: f.data, slot },
+      _ek.office ? 'Agenda uploaded' : 'Agenda uploaded · the office has been told');
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function ekClearAgenda(eid, slot) {
+  if (!await showConfirm(`Remove agenda ${slot}?`)) return;
+  await ekSend(`/api/event-kits/${eid}/agenda`, 'PATCH', { agenda_file: '', agenda_data: '', slot }, 'Agenda removed');
+}
+
+async function ekDeleteKit(eid) {
+  const ev = ekCurrent();
+  if (!await showConfirm(`Delete the kit for "${ev ? ev.event_name : 'this event'}"? Its team, materials, approvals and agendas are removed. This cannot be undone.`)) return;
   const res = await fetch(`/api/event-kits/${eid}`, { method: 'DELETE' });
   if (!res.ok) { showToast('Delete failed', 'error'); return; }
   showToast('Kit deleted', 'success');
-  closeKitEditor();
-  renderKitsList();
-}
-
-const EK_MATERIAL_TYPES = [
-  { key:'brochure',     label:'Brochure',       accept:'.pdf,.png,.jpg' },
-  { key:'banner',       label:'Banner',          accept:'.pdf,.png,.jpg' },
-  { key:'roundtable',   label:'Roundtable Card', accept:'.pdf,.png,.jpg' },
-  { key:'presentation', label:'Presentation',    accept:'.pdf,.pptx,.ppt' },
-  { key:'backdrop',     label:'Backdrop',        accept:'.pdf,.png,.jpg' },
-  { key:'name_badges',  label:'Name Badges',     accept:'.pdf,.png,.jpg' },
-];
-
-async function loadEventKit() {
-  const sel = document.getElementById('ekEventSel');
-  const eid = sel.value;
-  const editor = document.getElementById('ekKitEditor');
-  if (!eid) { editor.classList.add('hidden'); return; }
-  editor.classList.remove('hidden');
-  const eventLabel = document.getElementById('ekEventSearch')?.value || eid;
-  const titleEl = document.getElementById('ekEditorTitle');
-  if (titleEl) titleEl.textContent = 'Editing: ' + eventLabel;
-  document.getElementById('ekMaterialsList').innerHTML = EK_MATERIAL_TYPES.map(m => `
-    <div class="ek-material-row" data-type="${m.key}">
-      <span class="ek-type-label">${m.label}</span>
-      <input type="text" id="ekUrl-${m.key}" placeholder="Canva / URL (optional)" class="ek-url-input" style="flex:1;min-width:0">
-      <span class="ek-or">or</span>
-      <span class="ek-file-area">
-        <span id="ekFile-${m.key}" class="ek-file-name">No file</span>
-        <input type="file" id="ekFileInput-${m.key}" accept="${m.accept}" onchange="ekHandleFile('${m.key}',this)" style="display:none">
-        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('ekFileInput-${m.key}').click()">Upload</button>
-        <button class="btn btn-ghost btn-sm ek-clear-btn hidden" id="ekClear-${m.key}" onclick="ekClearFile('${m.key}')">✕</button>
-      </span>
-    </div>`).join('');
-  _ekKit = {}; _ekEmails = [];
-  const agendaBanner = document.getElementById('ekAgendaBanner');
-  if (agendaBanner) agendaBanner.remove();
-  try {
-    const res = await fetch(`/api/event-kits/${eid}`);
-    const kit = await res.json();
-    if (kit) {
-      _ekKit = kit;
-      _ekEmails = Array.isArray(kit.access_emails) ? [...kit.access_emails] : [];
-      EK_MATERIAL_TYPES.forEach(m => {
-        const urlEl = document.getElementById(`ekUrl-${m.key}`);
-        if (urlEl) urlEl.value = kit[m.key+'_url'] || '';
-        if (kit[m.key+'_file']) {
-          document.getElementById(`ekFile-${m.key}`).textContent = kit[m.key+'_file'];
-          document.getElementById(`ekClear-${m.key}`)?.classList.remove('hidden');
-        }
-      });
-      const agendaWrap = document.createElement('div');
-      agendaWrap.id = 'ekAgendaBanner';
-      let agendaHtml = '';
-      if (kit.agenda_file) {
-        const lbl = kit.agenda_uploader_name ? `${esc(kit.agenda_uploader_name)} — Agenda 1` : 'Agenda 1';
-        agendaHtml += `<div class="card" style="padding:14px 20px;margin-bottom:8px;display:flex;align-items:center;gap:12px"><span style="font-size:1.1rem">📋</span><div style="flex:1"><div style="font-size:0.78rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px">${lbl}</div><div style="font-size:0.88rem">${esc(kit.agenda_file)}</div></div><a class="btn btn-ghost btn-sm" href="/api/event-kits/${eid}/file/agenda" target="_blank">Download</a></div>`;
-      }
-      if (kit.agenda_file_2) {
-        const lbl2 = kit.agenda_uploader_name_2 ? `${esc(kit.agenda_uploader_name_2)} — Agenda 2` : 'Agenda 2';
-        agendaHtml += `<div class="card" style="padding:14px 20px;margin-bottom:8px;display:flex;align-items:center;gap:12px"><span style="font-size:1.1rem">📋</span><div style="flex:1"><div style="font-size:0.78rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px">${lbl2}</div><div style="font-size:0.88rem">${esc(kit.agenda_file_2)}</div></div><a class="btn btn-ghost btn-sm" href="/api/event-kits/${eid}/file/agenda2" target="_blank">Download</a></div>`;
-      }
-      if (agendaHtml) {
-        agendaWrap.innerHTML = agendaHtml;
-        agendaWrap.style.marginBottom = '16px';
-        document.getElementById('ekKitEditor').insertBefore(agendaWrap, document.getElementById('ekKitEditor').firstChild);
-      }
-    }
-  } catch {}
-  renderEkAccessTags();
-  document.getElementById('ekSaveStatus').textContent = '';
-}
-
-function ekHandleFile(type, input) {
-  const file = input.files[0];
-  if (!file) return;
-  if (file.size > 10 * 1024 * 1024) { showToast('File too large (max 10 MB)', 'error'); return; }
-  const reader = new FileReader();
-  reader.onload = e => {
-    _ekKit[type+'_data'] = e.target.result.split(',')[1];
-    _ekKit[type+'_file'] = file.name;
-    document.getElementById(`ekFile-${type}`).textContent = file.name;
-    document.getElementById(`ekClear-${type}`)?.classList.remove('hidden');
-  };
-  reader.readAsDataURL(file);
-}
-
-function ekClearFile(type) {
-  _ekKit[type+'_data'] = ''; _ekKit[type+'_file'] = '';
-  document.getElementById(`ekFile-${type}`).textContent = 'No file';
-  document.getElementById(`ekClear-${type}`)?.classList.add('hidden');
-  const inp = document.getElementById(`ekFileInput-${type}`);
-  if (inp) inp.value = '';
-}
-
-function renderEkAccessTags() {
-  const el = document.getElementById('ekAccessTags');
-  if (!el) return;
-  el.innerHTML = _ekEmails.map(e =>
-    `<span class="ek-tag">${esc(e)}<button onclick="ekRemoveEmail('${esc(e)}')" style="background:none;border:none;cursor:pointer;margin-left:4px;color:var(--muted);font-size:11px">✕</button></span>`
-  ).join('');
-}
-
-function ekRemoveEmail(email) { _ekEmails = _ekEmails.filter(e => e !== email); renderEkAccessTags(); }
-function ekEmailKeydown(event) { if (event.key === 'Enter') { event.preventDefault(); ekAddEmailFromInput(); } }
-
-function ekAddEmailFromInput() {
-  const inp = document.getElementById('ekEmailInput');
-  const val = (inp.value || '').trim().toLowerCase();
-  if (!val) return;
-  if (!val.includes('@')) { showToast('Enter a valid email', 'error'); return; }
-  if (!_ekEmails.includes(val)) { _ekEmails.push(val); renderEkAccessTags(); }
-  inp.value = '';
-}
-
-function ekPickEmployee(sel) {
-  const email = sel.value;
-  if (!email) return;
-  if (!_ekEmails.includes(email)) { _ekEmails.push(email); renderEkAccessTags(); }
-  sel.value = '';
-}
-
-async function saveEventKit() {
-  const eid = document.getElementById('ekEventSel').value;
-  if (!eid) { showToast('Select an event first', 'error'); return; }
-  const body = { access_emails: _ekEmails };
-  EK_MATERIAL_TYPES.map(m => m.key).forEach(type => {
-    const urlEl = document.getElementById(`ekUrl-${type}`);
-    body[type+'_url'] = urlEl ? urlEl.value.trim() : '';
-    body[type+'_file'] = _ekKit[type+'_file'] || '';
-    body[type+'_data'] = _ekKit[type+'_data'] || '';
-  });
-  // Preserve employee-uploaded agendas so admin saves don't wipe them
-  body.agenda_file   = _ekKit.agenda_file   || '';
-  body.agenda_data   = _ekKit.agenda_data   || '';
-  body.agenda_file_2 = _ekKit.agenda_file_2 || '';
-  body.agenda_data_2 = _ekKit.agenda_data_2 || '';
-  const status = document.getElementById('ekSaveStatus');
-  status.textContent = 'Saving…';
-  const res = await fetch(`/api/event-kits/${eid}`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  if (!res.ok) { showToast('Save failed', 'error'); status.textContent = ''; return; }
-  showToast('Kit saved', 'success');
-  status.textContent = '✓ Saved';
-  renderKitsList();
-}
-
-let _empKits = [];
-
-async function loadEmployeeKitPage() {
-  document.getElementById('ekAdminView').classList.add('hidden');
-  const empView = document.getElementById('ekEmployeeView');
-  empView.classList.remove('hidden');
-  empView.innerHTML = '<div style="color:var(--muted);font-size:0.85rem;padding:20px">Loading…</div>';
-  try {
-    const res = await fetch('/api/portfolio-events');
-    const events = res.ok ? await res.json() : [];
-    _ekEmpEventsList = Array.isArray(events) ? events : [];
-    _ekEmpSelId = '';
-    if (!events.length) {
-      empView.innerHTML = '<div style="color:var(--muted);font-size:0.85rem;text-align:center;padding:40px">No events found.</div>';
-      return;
-    }
-    empView.innerHTML = `
-      <div style="margin-bottom:20px">
-        <div class="ek-event-picker">
-          <input type="text" id="ekEmpEventSearch" class="deal-select" placeholder="🔍 Search events…"
-                 oninput="ekEmpFilterEvents()" onfocus="ekEmpFilterEvents()" autocomplete="off" style="width:100%">
-          <div id="ekEmpEventDropdown" class="ek-event-dropdown hidden"></div>
-        </div>
-      </div>
-      <div id="ekEmpEditor"></div>`;
-  } catch { empView.innerHTML = '<div style="color:var(--danger)">Failed to load events.</div>'; }
-}
-
-async function loadEmployeeKitEditor() {
-  const eid = _ekEmpSelId;
-  const el = document.getElementById('ekEmpEditor');
-  if (!eid) { el.innerHTML = ''; return; }
-  el.innerHTML = '<div style="color:var(--muted);font-size:0.85rem;padding:12px 0">Loading…</div>';
-  try {
-    const res = await fetch(`/api/event-kits/${eid}`);
-    const kit = res.ok ? await res.json() : null;
-
-    const myEmail = (currentUser?.email || '').toLowerCase();
-    const hasAccess = kit && Array.isArray(kit.access_emails) && kit.access_emails.map(e => e.toLowerCase()).includes(myEmail);
-
-    const matRows = hasAccess ? EK_MATERIAL_TYPES.map(m => {
-      const url = kit[m.key+'_url'], file = kit[m.key+'_file'];
-      if (!url && !file) return '';
-      return `<div class="ek-emp-mat-row">
-        <span class="ek-emp-mat-label">${m.label}</span>
-        <div style="display:flex;gap:6px;flex-wrap:wrap">
-          ${url ? `<a class="btn btn-ghost btn-sm" href="${esc(url)}" target="_blank" rel="noopener">🔗 Open Link</a>` : ''}
-          ${file ? `<a class="btn btn-ghost btn-sm" href="/api/event-kits/${eid}/file/${m.key}" target="_blank">📄 ${esc(file)}</a>` : ''}
-        </div>
-      </div>`;
-    }).filter(Boolean).join('') : '';
-
-    const hasFile1 = !!(kit && kit.agenda_file);
-    const hasFile2 = !!(kit && kit.agenda_file_2);
-
-    const agendaRow = (slot, hasFile, fileKey) => {
-      const fileUrl  = fileKey === 'agenda' ? 'agenda' : 'agenda2';
-      const fileName = slot === 1 ? kit?.agenda_file : kit?.agenda_file_2;
-      const inputId  = `ekEmpFileInput-${eid}-${slot}`;
-      const labelId  = `ekEmpFile-${eid}-${slot}`;
-      return `<div class="ek-material-row">
-        <span class="ek-type-label">Agenda ${slot}</span>
-        <span class="ek-file-area">
-          ${hasFile
-            ? `<a class="btn btn-ghost btn-sm" href="/api/event-kits/${eid}/file/${fileUrl}" target="_blank">📄 ${esc(fileName)}</a>
-               <button class="btn btn-ghost btn-sm" onclick="ekEmpClearAgenda('${eid}',${slot})">✕ Remove</button>`
-            : `<span class="ek-file-name" id="${labelId}">No file</span>
-               <input type="file" id="${inputId}" accept=".pdf,.pptx,.ppt,.png,.jpg" onchange="ekEmpUploadAgenda('${eid}',this,${slot})" style="display:none">
-               <button class="btn btn-ghost btn-sm" onclick="document.getElementById('${inputId}').click()">Upload PDF</button>`
-          }
-        </span>
-      </div>`;
-    };
-
-    el.innerHTML = `
-      ${matRows ? `<div class="card" style="padding:24px;margin-bottom:16px">
-        <div style="font:700 13px/1 var(--font-sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:16px">🎨 Marketing Materials</div>
-        ${matRows}
-      </div>` : (hasAccess ? `<div class="card" style="padding:20px;margin-bottom:16px;color:var(--muted);font-size:0.85rem">🎨 Marketing materials will appear here once your admin prepares them.</div>` : '')}
-      <div class="card" style="padding:24px">
-        <div style="font:700 13px/1 var(--font-sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:16px">📋 My Agendas</div>
-        ${agendaRow(1, hasFile1, 'agenda')}
-        ${agendaRow(2, hasFile2, 'agenda2')}
-      </div>`;
-  } catch { el.innerHTML = '<div style="color:var(--danger)">Failed to load.</div>'; }
-}
-
-async function loadEmployeeKits() {}
-
-function renderEmployeeKitCard(k) {
-  const eid = k.event_id;
-  const matRows = EK_MATERIAL_TYPES.map(m => {
-    const url = k[m.key+'_url'], file = k[m.key+'_file'];
-    if (!url && !file) return '';
-    return `<div class="ek-emp-mat-row"><span class="ek-emp-mat-label">${m.label}</span><div style="display:flex;gap:6px;flex-wrap:wrap">
-      ${url ? `<a class="btn btn-ghost btn-sm" href="${esc(url)}" target="_blank" rel="noopener">🔗 Open Link</a>` : ''}
-      ${file ? `<a class="btn btn-ghost btn-sm" href="/api/event-kits/${eid}/file/${m.key}" target="_blank">📄 ${esc(file)}</a>` : ''}
-    </div></div>`;
-  }).filter(Boolean).join('');
-
-  const agendaSection = `<div class="card" style="padding:16px;margin-bottom:12px;background:var(--bg-2)">
-    <div style="font:700 11px/1 var(--font-sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:12px">📋 My Agenda</div>
-    <div class="ek-material-row">
-      <span class="ek-type-label">Agenda</span>
-      <span class="ek-file-area">
-        ${k.agenda_file
-          ? `<a class="btn btn-ghost btn-sm" href="/api/event-kits/${eid}/file/agenda" target="_blank">📄 ${esc(k.agenda_file)}</a>
-             <button class="btn btn-ghost btn-sm" onclick="ekEmpClearAgenda('${eid}')">✕ Remove</button>`
-          : `<span class="ek-file-name" id="ekEmpFile-${eid}">No file</span>
-             <input type="file" id="ekEmpFileInput-${eid}" accept=".pdf,.pptx,.ppt,.png,.jpg" onchange="ekEmpUploadAgenda('${eid}',this)" style="display:none">
-             <button class="btn btn-ghost btn-sm" onclick="document.getElementById('ekEmpFileInput-${eid}').click()">Upload PDF</button>`
-        }
-      </span>
-    </div>
-  </div>`;
-
-  return `<div class="card" style="padding:20px;margin-bottom:16px">
-    <div style="font:700 16px/1 var(--font-sans);margin-bottom:4px">${esc(k.event_name)}</div>
-    <div style="font-size:0.75rem;color:var(--muted);margin-bottom:16px">${(k.event_date || k.programme_year)?esc(fmtEventDate(k, {long:true})):''}</div>
-    ${agendaSection}
-    ${matRows ? `<div style="font:700 11px/1 var(--font-sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:10px;margin-top:4px">🎨 Materials</div>${matRows}` : ''}
-  </div>`;
-}
-
-async function ekEmpUploadAgenda(eid, input, slot = 1) {
-  const file = input.files[0];
-  if (!file) return;
-  if (file.size > 10 * 1024 * 1024) { showToast('File too large (max 10MB)', 'error'); input.value = ''; return; }
-  const labelId = `ekEmpFile-${eid}-${slot}`;
-  const label = document.getElementById(labelId);
-  if (label) label.textContent = 'Uploading…';
-  const reader = new FileReader();
-  reader.onload = async ev => {
-    const res = await fetch(`/api/event-kits/${eid}/agenda`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agenda_file: file.name, agenda_data: ev.target.result.split(',')[1], slot })
-    });
-    if (res.ok) { showToast(`Agenda ${slot} uploaded — admins have been notified`, 'success'); await loadEmployeeKitEditor(); }
-    else { showToast('Upload failed', 'error'); if (label) label.textContent = 'No file'; }
-  };
-  reader.readAsDataURL(file);
-}
-
-async function ekEmpClearAgenda(eid, slot = 1) {
-  if (!await showConfirm(`Remove agenda ${slot}?`)) return;
-  const res = await fetch(`/api/event-kits/${eid}/agenda`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agenda_file: '', agenda_data: '', slot })
-  });
-  if (res.ok) { showToast('Agenda removed', 'success'); await loadEmployeeKitEditor(); }
-  else showToast('Failed to remove', 'error');
+  if (ev) ev.kit = null;
+  ekRenderList();
+  ekRenderDetail();
 }
 
 // ── Invoice Generator ──────────────────────────────────────────────────────────

@@ -712,47 +712,7 @@
 
 <!-- ══ EVENT KIT PAGE ══ -->
 <div class="page" id="page-eventkit">
-  <div id="ekAdminView">
-    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:20px">
-      <div class="ek-event-picker">
-        <input type="text" id="ekEventSearch" class="deal-select" placeholder="🔍 Search events…"
-               oninput="ekFilterEvents()" onfocus="ekFilterEvents()" autocomplete="off" style="width:100%">
-        <div id="ekEventDropdown" class="ek-event-dropdown hidden"></div>
-        <select id="ekEventSel" style="display:none"><option value="">— Select Event —</option></select>
-      </div>
-      <span id="ekSaveStatus" style="font-size:0.8rem;color:var(--muted)"></span>
-    </div>
-    <div id="ekKitEditor" class="hidden">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px">
-        <div style="font:700 16px/1 var(--font-sans);color:var(--text)" id="ekEditorTitle">Editing Kit</div>
-        <button class="btn btn-ghost btn-sm" style="color:var(--negative);border-color:var(--negative)" onclick="deleteCurrentKit()">🗑 Delete Kit</button>
-      </div>
-      <div class="card" style="padding:24px;margin-bottom:16px">
-        <div style="font:700 13px/1 var(--font-sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:16px">🎨 Marketing Materials</div>
-        <div id="ekMaterialsList"></div>
-      </div>
-      <div class="card" style="padding:24px;margin-bottom:16px">
-        <div style="font:700 13px/1 var(--font-sans);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:12px">👥 Participants</div>
-        <div style="font-size:0.8rem;color:var(--muted);margin-bottom:10px">Select employees or type an email address and press Enter</div>
-        <div id="ekAccessTags" style="display:flex;flex-wrap:wrap;gap:6px;min-height:32px;margin-bottom:10px"></div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <input type="text" id="ekEmailInput" placeholder="name@example.com" style="flex:1;min-width:180px" onkeydown="ekEmailKeydown(event)">
-          <button class="btn btn-ghost btn-sm" onclick="ekAddEmailFromInput()">+ Add</button>
-          <select id="ekEmpPicker" style="flex:1;min-width:160px" onchange="ekPickEmployee(this)">
-            <option value="">Pick from staff…</option>
-          </select>
-        </div>
-      </div>
-      <div style="display:flex;gap:10px;justify-content:flex-end">
-        <button class="btn btn-ghost" onclick="closeKitEditor()">Cancel</button>
-        <button class="btn btn-primary" onclick="saveEventKit()">Save Kit</button>
-      </div>
-    </div>
-    <div id="ekKitsList" style="margin-top:8px"></div>
-  </div>
-  <div id="ekEmployeeView" class="hidden">
-    <div id="ekEmployeeKits"></div>
-  </div>
+  <div id="ekRoot" class="ek"></div>
 </div>
 
 <!-- ══ MY PROFILE (staff portal) ══ -->
