@@ -184,6 +184,19 @@ async function runLateMigrations() {
     `ALTER TABLE event_kits ADD COLUMN IF NOT EXISTS delegates_id INT REFERENCES employees(id) ON DELETE SET NULL`,
     `ALTER TABLE event_kits ADD COLUMN IF NOT EXISTS sales_id INT REFERENCES employees(id) ON DELETE SET NULL`,
     `ALTER TABLE event_kits ADD COLUMN IF NOT EXISTS item_reviews TEXT NOT NULL DEFAULT '{}'`,
+    // Teams per producer group (the producer label on events), keyed by the
+    // upper-cased label so "Gio & Karam" and "GIO & KARAM" are one group.
+    `CREATE TABLE IF NOT EXISTS producer_teams (
+      key TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      producer TEXT NOT NULL DEFAULT '', co_producer TEXT NOT NULL DEFAULT '',
+      sales TEXT NOT NULL DEFAULT '', delegates TEXT NOT NULL DEFAULT '',
+      producer_id INT REFERENCES employees(id) ON DELETE SET NULL,
+      co_producer_id INT REFERENCES employees(id) ON DELETE SET NULL,
+      sales_id INT REFERENCES employees(id) ON DELETE SET NULL,
+      delegates_id INT REFERENCES employees(id) ON DELETE SET NULL,
+      updated_by INT, updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`,
     // Event kit final versions: once the team approves a draft, the office
     // uploads the final file or link. item_finals: {"<type>": {by, at}}.
     ...['brochure', 'banner', 'roundtable', 'presentation', 'backdrop', 'name_badges'].flatMap(t => [
@@ -2028,41 +2041,38 @@ app.delete('/api/portfolio-events/:id', requireAuth, requireAdminOrManager, asyn
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ─── PORTFOLIO TEAMS ──────────────────────────────────────────────────────────
-// One team per programme series per programme year: the sales, delegates and
-// production people, and the co-producer. A role is normally an employee
-// (<role>_id); someone outside the company is recorded by name alone.
-const PORTFOLIO_TEAM_ROLES = ['sales', 'delegates', 'production', 'co_producer'];
+// ─── PRODUCER TEAMS ───────────────────────────────────────────────────────────
+// Teams belong to producer groups: the label on each event's producer field
+// ("GIO & KARAM"). Each group has a producer, co-producer, sales and
+// delegates person, linked to staff records (or a typed name for someone
+// outside the company). Renaming a group renames it on its events, so a new
+// co-producer can take over the same set of events.
+const PRODUCER_TEAM_ROLES = ['producer', 'co_producer', 'sales', 'delegates'];
+const producerKey = name => String(name || '').trim().replace(/\s+/g, ' ').toUpperCase();
 
-// Team rows with each linked employee's current name, so a renamed or
-// departed employee reads correctly everywhere.
-const PORTFOLIO_TEAM_SELECT = `
-  SELECT t.series, t.programme_year, t.updated_at,
-    ${PORTFOLIO_TEAM_ROLES.map(r => `t.${r}_id, COALESCE(e_${r}.name, t.${r}) AS ${r}, (COALESCE(e_${r}.active::int, 1) = 1) AS ${r}_active`).join(',\n    ')}
-  FROM portfolio_teams t
-  ${PORTFOLIO_TEAM_ROLES.map(r => `LEFT JOIN employees e_${r} ON e_${r}.id = t.${r}_id`).join('\n  ')}`;
+const PRODUCER_TEAM_SELECT = `
+  SELECT t.key, t.name, t.updated_at,
+    ${PRODUCER_TEAM_ROLES.map(r => `t.${r}_id, COALESCE(e_${r}.name, t.${r}) AS ${r}, (COALESCE(e_${r}.active::int, 1) = 1) AS ${r}_active`).join(',\n    ')}
+  FROM producer_teams t
+  ${PRODUCER_TEAM_ROLES.map(r => `LEFT JOIN employees e_${r} ON e_${r}.id = t.${r}_id`).join('\n  ')}`;
 
-app.get('/api/portfolio-teams', requireAuth, requireAdminOrManager, async (req, res) => {
+app.get('/api/producer-teams', requireAuth, requireAdminOrManager, async (_req, res) => {
   try {
-    const year = parseInt(req.query.year, 10);
-    const { rows } = Number.isInteger(year)
-      ? await q(`${PORTFOLIO_TEAM_SELECT} WHERE t.programme_year=? ORDER BY t.series`, [year])
-      : await q(`${PORTFOLIO_TEAM_SELECT} ORDER BY t.programme_year DESC, t.series`);
+    const { rows } = await q(`${PRODUCER_TEAM_SELECT} ORDER BY t.name`);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/portfolio-teams/:series', requireAuth, requireAdminOrManager, async (req, res) => {
+// Body: { old_name?, name, <role>_id | <role> (typed name) }.
+app.put('/api/producer-teams', requireAuth, requireAdminOrManager, async (req, res) => {
   try {
-    const series = programmeSeries.normaliseSeries(req.params.series);
-    if (!series) return res.status(400).json({ error: 'Unknown portfolio' });
-    const year = parseInt(req.body.year, 10);
-    if (!Number.isInteger(year) || year < 2000 || year > 2100) return res.status(400).json({ error: 'A programme year is required' });
+    const name = String(req.body.name || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+    const key = producerKey(name);
+    if (!key) return res.status(400).json({ error: 'Give the group a name' });
+    const oldKey = producerKey(req.body.old_name) || key;
 
-    // Each role: an employee id (the name is copied from the record), or a
-    // typed name for someone who is not an employee, or nobody.
     const ids = [], names = [];
-    for (const r of PORTFOLIO_TEAM_ROLES) {
+    for (const r of PRODUCER_TEAM_ROLES) {
       const id = parseInt(req.body[`${r}_id`], 10);
       if (Number.isInteger(id)) {
         const { rows } = await q('SELECT name FROM employees WHERE id=?', [id]);
@@ -2072,32 +2082,40 @@ app.put('/api/portfolio-teams/:series', requireAuth, requireAdminOrManager, asyn
         ids.push(null); names.push(String(req.body[r] ?? '').trim().slice(0, 80));
       }
     }
+
+    if (oldKey !== key) {
+      const { rows: clash } = await q(
+        `SELECT 1 FROM producer_teams WHERE key=? UNION ALL
+         SELECT 1 FROM portfolio_events WHERE UPPER(TRIM(producer))=? LIMIT 1`, [key, key]);
+      if (clash.length) return res.status(409).json({ error: `There is already a group called ${name}` });
+      await q('UPDATE portfolio_events SET producer=? WHERE UPPER(TRIM(producer))=?', [name, oldKey]);
+      await q('DELETE FROM producer_teams WHERE key=?', [oldKey]);
+    }
     await q(
-      `INSERT INTO portfolio_teams (series, programme_year, sales, delegates, production, co_producer,
-         sales_id, delegates_id, production_id, co_producer_id, updated_by, updated_at)
+      `INSERT INTO producer_teams (key, name, producer, co_producer, sales, delegates,
+         producer_id, co_producer_id, sales_id, delegates_id, updated_by, updated_at)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,NOW())
-       ON CONFLICT (series, programme_year) DO UPDATE SET
-         sales = EXCLUDED.sales, delegates = EXCLUDED.delegates, production = EXCLUDED.production,
-         co_producer = EXCLUDED.co_producer, sales_id = EXCLUDED.sales_id, delegates_id = EXCLUDED.delegates_id,
-         production_id = EXCLUDED.production_id, co_producer_id = EXCLUDED.co_producer_id,
-         updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
-      [series, year, ...names, ...ids, req.admin.id]
+       ON CONFLICT (key) DO UPDATE SET name=EXCLUDED.name,
+         producer=EXCLUDED.producer, co_producer=EXCLUDED.co_producer, sales=EXCLUDED.sales, delegates=EXCLUDED.delegates,
+         producer_id=EXCLUDED.producer_id, co_producer_id=EXCLUDED.co_producer_id, sales_id=EXCLUDED.sales_id,
+         delegates_id=EXCLUDED.delegates_id, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [key, name, ...names, ...ids, req.admin.id]
     );
-    const { rows } = await q(`${PORTFOLIO_TEAM_SELECT} WHERE t.series=? AND t.programme_year=?`, [series, year]);
-    res.json(rows[0]);
+    const { rows } = await q(`${PRODUCER_TEAM_SELECT} WHERE t.key=?`, [key]);
+    res.json({ ...rows[0], renamed_from: oldKey !== key ? req.body.old_name : null });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Every portfolio role an employee has held, newest year first.
-app.get('/api/employees/:id/portfolio-roles', requireAuth, requireAdminOrManager, async (req, res) => {
+// The producer groups an employee is on, with the role and the events.
+app.get('/api/employees/:id/producer-teams', requireAuth, requireAdminOrManager, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad employee id' });
     const { rows } = await q(
-      `SELECT series, programme_year, role FROM (
-         ${PORTFOLIO_TEAM_ROLES.map(r => `SELECT series, programme_year, '${r}' AS role FROM portfolio_teams WHERE ${r}_id = ?`).join(' UNION ALL ')}
-       ) x ORDER BY programme_year DESC, series, role`,
-      PORTFOLIO_TEAM_ROLES.map(() => id)
+      `SELECT t.key, t.name, x.role FROM (
+         ${PRODUCER_TEAM_ROLES.map(r => `SELECT key, '${r}' AS role FROM producer_teams WHERE ${r}_id = ?`).join(' UNION ALL ')}
+       ) x JOIN producer_teams t ON t.key = x.key ORDER BY t.name`,
+      PRODUCER_TEAM_ROLES.map(() => id)
     );
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2490,7 +2508,7 @@ function myDealEmployeeId(req) {
 async function isSalesStaff(empId) {
   const { rows } = await q(`
     SELECT 1 FROM employees WHERE id=? AND active=1 AND (department ILIKE '%sales%'
-      OR EXISTS (SELECT 1 FROM portfolio_teams WHERE sales_id=?)
+      OR EXISTS (SELECT 1 FROM producer_teams WHERE sales_id=?)
       OR EXISTS (SELECT 1 FROM event_kits WHERE sales_id=?))`, [empId, empId, empId]);
   return rows.length > 0;
 }
@@ -3109,18 +3127,29 @@ EK_MATERIALS.forEach(t => {
   EK_FILE_TYPES[t] = [`${t}_file`, `${t}_data`];
   EK_FILE_TYPES[`${t}_final`] = [`${t}_final_file`, `${t}_final_data`];
 });
+// The kit's team comes from the event's producer group; a kit can name a
+// different person for any role (own_<role>_id), which wins for that event.
+// The group's co-producer is on the team too.
 const EK_TEAM = ['producer', 'delegates', 'sales'];
+const EK_ACCESS = [...EK_TEAM, 'co_producer'];
 
-// Every column except the base64 file bodies, plus the event and team names.
+// Every event, with its kit (if one exists yet) minus the base64 file bodies,
+// and the team with names. Events without a kit row have id NULL.
 const EK_SELECT = `
-  SELECT ek.id, ek.event_id, ek.agenda_file, ek.agenda_file_2, ek.agenda_uploader_name, ek.agenda_uploader_name_2,
+  SELECT ek.id, pe.id AS event_id, ek.agenda_file, ek.agenda_file_2, ek.agenda_uploader_name, ek.agenda_uploader_name_2,
     ${EK_MATERIALS.map(t => `ek.${t}_url, ek.${t}_file, ek.${t}_final_url, ek.${t}_final_file`).join(', ')},
     ek.access_emails, ek.notes, ek.item_reviews, ek.item_finals, ek.updated_at,
-    ${EK_TEAM.map(r => `ek.${r}_id, e_${r}.name AS ${r}_name`).join(', ')},
+    ${EK_TEAM.map(r => `COALESCE(ek.${r}_id, pt.${r}_id) AS ${r}_id, ek.${r}_id AS own_${r}_id,
+      COALESCE(e_${r}.name, CASE WHEN ek.${r}_id IS NULL THEN NULLIF(pt.${r}, '') END) AS ${r}_name,
+      COALESCE(g_${r}.name, NULLIF(pt.${r}, '')) AS group_${r}_name`).join(',\n    ')},
+    pt.co_producer_id, COALESCE(g_co.name, NULLIF(pt.co_producer, '')) AS co_producer_name, pt.name AS group_name,
     pe.name AS event_name, pe.event_date, pe.date_tbc, pe.programme_year, pe.location, pe.producer AS producer_team
-  FROM event_kits ek
-  JOIN portfolio_events pe ON pe.id = ek.event_id
-  ${EK_TEAM.map(r => `LEFT JOIN employees e_${r} ON e_${r}.id = ek.${r}_id`).join('\n  ')}`;
+  FROM portfolio_events pe
+  LEFT JOIN event_kits ek ON ek.event_id = pe.id
+  LEFT JOIN producer_teams pt ON pt.key = UPPER(TRIM(pe.producer))
+  LEFT JOIN employees g_co ON g_co.id = pt.co_producer_id
+  ${EK_TEAM.map(r => `LEFT JOIN employees e_${r} ON e_${r}.id = COALESCE(ek.${r}_id, pt.${r}_id)
+  LEFT JOIN employees g_${r} ON g_${r}.id = pt.${r}_id`).join('\n  ')}`;
 
 function ekShape(row) {
   return { ...row, access_emails: safeJsonParse(row.access_emails, []), item_reviews: safeJsonParse(row.item_reviews, {}),
@@ -3129,15 +3158,15 @@ function ekShape(row) {
 
 // Staff see a kit when they are on its team or their email is on its list.
 function ekStaffCanSee(kit, user) {
-  if (EK_TEAM.some(r => kit[`${r}_id`] && kit[`${r}_id`] === user.employee_id)) return true;
+  if (EK_ACCESS.some(r => kit[`${r}_id`] && kit[`${r}_id`] === user.employee_id)) return true;
   const email = String(user.email || '').trim().toLowerCase();
   return !!email && (kit.access_emails || []).some(e => String(e).trim().toLowerCase() === email);
 }
 const ekIsOffice = user => user.role === 'admin' || user.role === 'manager';
-const ekIsTeam = (kit, user) => user.role === 'employee' && EK_TEAM.some(r => kit[`${r}_id`] && kit[`${r}_id`] === user.employee_id);
+const ekIsTeam = (kit, user) => user.role === 'employee' && EK_ACCESS.some(r => kit[`${r}_id`] && kit[`${r}_id`] === user.employee_id);
 
 async function ekLoad(eventId) {
-  const { rows } = await q(`${EK_SELECT} WHERE ek.event_id=?`, [eventId]);
+  const { rows } = await q(`${EK_SELECT} WHERE pe.id=?`, [eventId]);
   return rows.length ? ekShape(rows[0]) : null;
 }
 
@@ -3162,7 +3191,7 @@ app.get('/api/event-kits', requireAuth, async (req, res) => {
 app.get('/api/event-kits/:eventId', requireAuth, async (req, res) => {
   try {
     const kit = await ekLoad(parseInt(req.params.eventId, 10));
-    if (!kit) return res.json(null);
+    if (!kit) return res.status(404).json({ error: 'No such event' });
     if (!ekIsOffice(req.admin) && !(req.admin.role === 'employee' && ekStaffCanSee(kit, req.admin))) return res.status(404).json({ error: 'Not found' });
     res.json(kit);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -3248,7 +3277,7 @@ app.put('/api/event-kits/:eventId/items/:type/final', requireAuth, requireAdminO
     if (!EK_MATERIALS.includes(type)) return res.status(400).json({ error: 'Unknown material' });
     const eventId = parseInt(req.params.eventId, 10);
     const kit = await ekLoad(eventId);
-    if (!kit) return res.status(404).json({ error: 'No kit for this event' });
+    if (!kit || !kit.id) return res.status(404).json({ error: 'No kit for this event' });
     const url = String(req.body.url ?? '').trim().slice(0, 1000);
     if (url && !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Links must start with http:// or https://' });
     const adding = !!url || !!req.body.data;
@@ -3273,7 +3302,7 @@ app.post('/api/event-kits/:eventId/items/:type/review', requireAuth, async (req,
     if (!EK_MATERIALS.includes(type)) return res.status(400).json({ error: 'Unknown material' });
     const eventId = parseInt(req.params.eventId, 10);
     const kit = await ekLoad(eventId);
-    if (!kit) return res.status(404).json({ error: 'No kit for this event' });
+    if (!kit || !kit.id) return res.status(404).json({ error: 'No kit for this event' });
     if (!ekIsOffice(req.admin) && !ekIsTeam(kit, req.admin)) return res.status(403).json({ error: 'Only the event team can review materials' });
     if (!kit[`${type}_url`] && !kit[`${type}_file`]) return res.status(400).json({ error: 'Nothing uploaded to review yet' });
     if (!ekIsOffice(req.admin) && (kit[`${type}_final_url`] || kit[`${type}_final_file`])) return res.status(409).json({ error: 'The final version is in. Ask the office if it needs changing.' });
@@ -3299,8 +3328,8 @@ app.patch('/api/event-kits/:eventId/agenda', requireAuth, async (req, res) => {
     const { agenda_file, agenda_data, slot } = req.body;
     const kit = await ekLoad(eid);
     const office = ekIsOffice(req.admin);
-    if (!office && !(kit && req.admin.role === 'employee' && ekStaffCanSee(kit, req.admin))) return res.status(403).json({ error: 'Only the event team can upload agendas' });
-    if (!kit && !(await ekEnsure(eid, req.admin.id))) return res.status(404).json({ error: 'No such event' });
+    if (!office && !(kit && ekIsTeam(kit, req.admin))) return res.status(403).json({ error: 'Only the event team can upload agendas' });
+    if (!(await ekEnsure(eid, office ? req.admin.id : null))) return res.status(404).json({ error: 'No such event' });
     const useSlot2 = Number(slot) === 2;
     const fileCol = useSlot2 ? 'agenda_file_2'          : 'agenda_file';
     const dataCol = useSlot2 ? 'agenda_data_2'          : 'agenda_data';

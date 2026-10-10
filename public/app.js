@@ -981,7 +981,7 @@ function empLink(id, name, cls = '') {
 
 // ─── EMPLOYEE PROFILE (slide-in panel) ───────────────────────────────────────
 // Everything about one person in one place: who they are, how to reach them,
-// this year's pay and days off, their portfolio roles and events. Opens over
+// this year's pay and days off, their producer teams and events. Opens over
 // any page, so a name can link to it wherever it appears.
 let _profileEmpId = null;
 
@@ -1074,7 +1074,7 @@ async function openEmployeeProfile(empId) {
       <div id="epEvents" class="ep-list"><div class="ep-loading">Loading…</div></div>
     </section>
     <section class="ep-sec">
-      <h3>Portfolio roles</h3>
+      <h3>Producer teams</h3>
       <div id="epPortfolio" class="epr-list"></div>
     </section>` : ''}`;
   drawer.classList.add('open');
@@ -4712,7 +4712,7 @@ async function deleteSub(id) {
 // portfolio_events (total_pipeline = allocated, total_won = paid).
 
 let portfolioData = [];
-let _portTeams = [];   // [{ series, programme_year, sales, delegates, production, co_producer }]
+let _portTeams = [];   // [{ key, name, producer, co_producer, sales, delegates, <role>_id }]
 let _portYearFilter = String(new Date().getFullYear() + 1); // default to next year (2027)
 let _portExtraYears = new Set();
 let _portSearch = '';
@@ -4819,7 +4819,7 @@ function addPortYear() {
 
 async function loadPortfolio() {
   try {
-    const teamsRes = await fetch('/api/portfolio-teams').catch(() => null);
+    const teamsRes = await fetch('/api/producer-teams').catch(() => null);
     _portTeams = teamsRes && teamsRes.ok ? await teamsRes.json() : [];
   } catch { _portTeams = []; }
   try {
@@ -5021,7 +5021,7 @@ function renderPortfolioGrid() {
     if (!byProducer.has(k)) byProducer.set(k, []);
     byProducer.get(k).push(e);
   });
-  const producerRank = (p) => { const i = PORT_PRODUCERS.indexOf(p); return i === -1 ? PORT_PRODUCERS.length : i; };
+  const producerRank = (p) => { const i = PORT_PRODUCERS.map(portGroupKey).indexOf(portGroupKey(p)); return i === -1 ? PORT_PRODUCERS.length : i; };
   const producers = [...byProducer.keys()].sort((a, b) => {
     if (!a) return 1; if (!b) return -1;
     return producerRank(a) - producerRank(b) || a.localeCompare(b);
@@ -5053,12 +5053,13 @@ function renderPortfolioGrid() {
             <span class="pf-group-n">${evs.length} event${evs.length === 1 ? '' : 's'}</span>
             <span class="pf-group-total">${fmtGBP(pAlloc)} <small>· ${fmtGBP(pPaid)} paid</small></span>
           </div>
+          ${p ? renderGroupTeam(p) : ''}
           ${evs.map(e => renderPortfolioEventCard(e, rowScale)).join('')}
         </div>`;
       }).join('')}
     </section>`;
 
-  grid.innerHTML = toolbarHtml + heroHtml + kpiHtml + seriesHtml + renderPortfolioTeams() + programmeHtml + listHtml;
+  grid.innerHTML = toolbarHtml + heroHtml + kpiHtml + seriesHtml + programmeHtml + listHtml;
 
   // Bars grow in after paint.
   requestAnimationFrame(() => setTimeout(() => {
@@ -5068,58 +5069,52 @@ function renderPortfolioGrid() {
   if (_portSearch) portFilterCards(_portSearch);
 }
 
-// ── Portfolio teams ──
-// Each portfolio (programme series) has four people per programme year. On
-// All Years the panel shows the default programme year's teams.
-// `dept` picks the department whose staff are offered first for the role.
+// ── Producer teams ──
+// Each producer group (the producer label on events, e.g. "GIO & KARAM") has
+// a producer, co-producer, sales and delegates person. Their team shows on the
+// group's header in the event list; the Event Kit uses it for every event in
+// the group. `dept` picks the department whose staff are offered first.
 const PORT_TEAM_ROLES = [
+  { key: 'producer',    label: 'Producer',    dept: /produc/i },
+  { key: 'co_producer', label: 'Co-producer', dept: /produc/i },
   { key: 'sales',       label: 'Sales',       dept: /sales/i },
   { key: 'delegates',   label: 'Delegates',   dept: /delegat/i },
-  { key: 'production',  label: 'Production',  dept: /produc/i },
-  { key: 'co_producer', label: 'Co-producer', dept: /produc/i },
 ];
 const PORT_TEAM_OUTSIDE = 'outside';
+const portGroupKey = name => String(name || '').trim().replace(/\s+/g, ' ').toUpperCase();
 
-function portTeamYear() {
-  return _portYearFilter !== 'all' ? parseInt(_portYearFilter, 10) : new Date().getFullYear() + 1;
+function portTeamFor(groupName) {
+  const k = portGroupKey(groupName);
+  return k ? _portTeams.find(t => t.key === k) || null : null;
 }
 
-function portTeamFor(series, year) {
-  return _portTeams.find(t => t.series === series && Number(t.programme_year) === year) || null;
+// The team line on a producer group's header.
+function renderGroupTeam(groupName) {
+  const t = portTeamFor(groupName);
+  const people = PORT_TEAM_ROLES.map(r => {
+    const name = t && t[r.key];
+    if (!name) return '';
+    const id = t[`${r.key}_id`];
+    const nameHtml = id
+      ? `<button type="button" class="pf-gt-name emp-link" onclick="openEmployeeProfile(${Number(id)})">${esc(name)}</button>`
+      : `<span class="pf-gt-name">${esc(name)}</span>`;
+    return `<span class="pf-gt-person"><span class="pf-gt-role">${r.label}</span>${nameHtml}${id && t[`${r.key}_active`] === false ? '<span class="pf-team-tag">left</span>' : ''}</span>`;
+  }).filter(Boolean);
+  const btn = `<button type="button" class="btn btn-ghost btn-sm pf-gt-edit" onclick="openPortTeamModal(${esc(JSON.stringify(groupName))})">${t ? 'Edit team' : 'Set team'}</button>`;
+  return `<div class="pf-gt">${people.length ? people.join('') : '<span class="pf-gt-none">No team set</span>'}${btn}</div>`;
 }
 
-function renderPortfolioTeams() {
-  const year = portTeamYear();
-  const rows = PORT_SERIES.map(s => {
-    const t = portTeamFor(s.id, year);
-    const cells = PORT_TEAM_ROLES.map(r => {
-      const name = t && t[r.key] ? esc(t[r.key]) : '';
-      if (!name) return `<td data-label="${r.label}"><span class="pf-team-empty">—</span></td>`;
-      const id = t[`${r.key}_id`];
-      const tag = !id ? '<span class="pf-team-tag">outside</span>' : t[`${r.key}_active`] === false ? '<span class="pf-team-tag">left</span>' : '';
-      const nameHtml = id
-        ? `<button type="button" class="pf-team-name pf-team-link" onclick="goToEmployee(${Number(id)})" title="Open ${name}'s record">${name}</button>`
-        : `<span class="pf-team-name">${name}</span>`;
-      return `<td data-label="${r.label}">${nameHtml}${tag}</td>`;
-    }).join('');
-    return `<tr>
-      <td><span class="pf-team-series"><span class="pf-chip" style="background:var(--chart-${s.chart})"></span>${esc(s.short)}</span></td>
-      ${cells}
-      <td class="pf-team-act"><button type="button" class="btn btn-ghost btn-sm" onclick="openPortTeamModal('${s.id}')">${t ? 'Edit' : 'Add team'}</button></td>
-    </tr>`;
-  }).join('');
-  return `<section class="pf-panel pf-teams">
-    <div class="pf-panel-hd">
-      <div>
-        <h2 class="pf-panel-title">Portfolio teams</h2>
-        <p class="pf-panel-desc">Who runs each portfolio in ${year}.</p>
-      </div>
-    </div>
-    <div class="table-wrap"><table class="pf-teams-table">
-      <thead><tr><th>Portfolio</th>${PORT_TEAM_ROLES.map(r => `<th>${r.label}</th>`).join('')}<th></th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table></div>
-  </section>`;
+// Producer groups the event form offers: every group on an event or with a
+// team (the usual ones only when there are none yet, so a renamed group does
+// not come back), one entry per group whatever the casing.
+function portProducerOptions(current) {
+  const seen = new Map();
+  const add = n => { const k = portGroupKey(n); if (k && !seen.has(k)) seen.set(k, String(n).trim()); };
+  portfolioData.forEach(e => add(e.producer));
+  _portTeams.forEach(t => add(t.name));
+  if (!seen.size) PORT_PRODUCERS.forEach(add);
+  if (current) add(current);
+  return [...seen.values()].sort((a, b) => a.localeCompare(b));
 }
 
 let _portTeamStaff = [];
@@ -5154,16 +5149,19 @@ function portTeamPick(roleKey) {
   const outside = sel.value === PORT_TEAM_OUTSIDE;
   other.classList.toggle('hidden', !outside);
   if (outside) other.focus();
+  portTeamAutoName();
 }
 
-async function openPortTeamModal(series) {
-  const s = PORT_SERIES_MAP[series];
-  if (!s) return;
-  const year = portTeamYear();
-  const t = portTeamFor(series, year) || {};
-  document.getElementById('portTeamSeries').value = series;
-  document.getElementById('portTeamTitle').textContent = `${s.short} team`;
-  document.getElementById('portTeamSub').textContent = `${s.name} · ${year}`;
+async function openPortTeamModal(groupName) {
+  const t = portTeamFor(groupName) || {};
+  const n = portfolioData.filter(e => portGroupKey(e.producer) === portGroupKey(groupName)).length;
+  document.getElementById('portTeamSeries').value = groupName;
+  document.getElementById('portTeamTitle').textContent = `${groupName} team`;
+  document.getElementById('portTeamSub').textContent = `${n} event${n === 1 ? '' : 's'} in this group`;
+  const nameEl = document.getElementById('portTeamName');
+  nameEl.value = groupName;
+  delete nameEl.dataset.touched;
+  document.getElementById('portTeamNameHint').textContent = '';
   try {
     const res = await fetch('/api/employees/all');
     _portTeamStaff = res.ok ? await res.json() : [];
@@ -5171,12 +5169,39 @@ async function openPortTeamModal(series) {
   _portTeamStaff.sort((a, b) => String(a.name).localeCompare(String(b.name)));
   PORT_TEAM_ROLES.forEach(r => portTeamFillPicker(r, t));
   openModal('portTeamModal');
-  document.getElementById('portTeam_sales_sel').focus();
+  document.getElementById('portTeam_producer_sel').focus();
+}
+
+// The person's short name for the group label: first name, upper-cased.
+function portTeamShort(roleKey) {
+  const sel = document.getElementById(`portTeam_${roleKey}_sel`);
+  if (!sel || !sel.value) return '';
+  const full = sel.value === PORT_TEAM_OUTSIDE
+    ? document.getElementById(`portTeam_${roleKey}`).value
+    : (_portTeamStaff.find(e => String(e.id) === sel.value) || {}).name;
+  return String(full || '').trim().split(/\s+/)[0].toUpperCase();
+}
+
+// Changing the producer or co-producer suggests a new group name (unless the
+// name was typed by hand), and says what a rename does.
+function portTeamAutoName() {
+  const nameEl = document.getElementById('portTeamName');
+  const old = document.getElementById('portTeamSeries').value;
+  if (!nameEl.dataset.touched) {
+    const parts = [portTeamShort('producer'), portTeamShort('co_producer')].filter(Boolean);
+    if (parts.length) nameEl.value = parts.join(' & ');
+  }
+  const hint = document.getElementById('portTeamNameHint');
+  const n = portfolioData.filter(e => portGroupKey(e.producer) === portGroupKey(old)).length;
+  hint.textContent = portGroupKey(nameEl.value) && portGroupKey(nameEl.value) !== portGroupKey(old)
+    ? `Renames ${old} to ${nameEl.value.trim()} on ${n} event${n === 1 ? '' : 's'}.` : '';
 }
 
 async function savePortTeam() {
-  const series = document.getElementById('portTeamSeries').value;
-  const body = { year: portTeamYear() };
+  const oldName = document.getElementById('portTeamSeries').value;
+  const name = document.getElementById('portTeamName').value.trim();
+  if (!name) { showToast('Give the group a name', 'error'); return; }
+  const body = { old_name: oldName, name };
   for (const r of PORT_TEAM_ROLES) {
     const v = document.getElementById(`portTeam_${r.key}_sel`).value;
     if (v === PORT_TEAM_OUTSIDE) {
@@ -5187,66 +5212,60 @@ async function savePortTeam() {
       body[`${r.key}_id`] = parseInt(v, 10);
     }
   }
-  const res = await fetch(`/api/portfolio-teams/${encodeURIComponent(series)}`, {
+  const res = await fetch('/api/producer-teams', {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
   if (!res.ok) { const e = await res.json().catch(() => ({})); showToast(e.error || 'Could not save the team', 'error'); return; }
   const saved = await res.json();
-  _portTeams = _portTeams.filter(t => !(t.series === saved.series && Number(t.programme_year) === Number(saved.programme_year))).concat(saved);
+  _portTeams = _portTeams.filter(t => t.key !== saved.key && t.key !== portGroupKey(oldName)).concat(saved);
   closeModal('portTeamModal');
-  showToast('Team saved', 'success');
+  if (saved.renamed_from) {
+    portfolioData.forEach(e => { if (portGroupKey(e.producer) === portGroupKey(oldName)) e.producer = saved.name; });
+    showToast(`Team saved · events moved to ${saved.name}`, 'success');
+  } else showToast('Team saved', 'success');
   renderPortfolioGrid();
 }
 
-// ── An employee's portfolio work, for their record ──
-// Each role they have held, with how that portfolio did that year: events,
-// money allocated against them and paid. Portfolio figures come from the
-// same events and programme data the Portfolio page uses.
+// ── An employee's producer teams, for their record ──
+// Each group they are on and their role, with how the group's events did:
+// events, money allocated against them and paid.
 async function loadEmpPortfolioRoles(empId, boxId = 'empPortfolioRoles') {
   const box = document.getElementById(boxId);
   if (!box) return;
   box.innerHTML = '<div class="epr-empty">Loading…</div>';
   try {
     const [rolesRes, evRes] = await Promise.all([
-      fetch(`/api/employees/${empId}/portfolio-roles`),
+      fetch(`/api/employees/${empId}/producer-teams`),
       portfolioData.length ? null : fetch('/api/portfolio-events'),
     ]);
     if (!rolesRes.ok) { box.innerHTML = ''; return; }
     const roles = await rolesRes.json();
     if (evRes && evRes.ok) { const d = await evRes.json(); if (Array.isArray(d)) portfolioData = d; }
-    if (!_programme2027.data && _programme2027.status !== 'loading') await loadProgramme2027Quiet();
-    if (!roles.length) { box.innerHTML = '<div class="epr-empty">Not on any portfolio team yet. Teams are set on the Portfolio page.</div>'; return; }
+    if (!roles.length) { box.innerHTML = '<div class="epr-empty">Not on a producer team yet. Teams are set on the Portfolio page.</div>'; return; }
 
     const roleLabel = k => (PORT_TEAM_ROLES.find(r => r.key === k) || {}).label || k;
-    const stats = (series, year) => portfolioData
-      .filter(e => portRowYear(e) === Number(year) && portSeriesFor(e) === series)
-      .reduce((t, e) => { t.events++; t.allocated += parseFloat(e.total_pipeline) || 0; t.paid += parseFloat(e.total_won) || 0; t.deals += parseInt(e.deal_count) || 0; return t; },
-              { events: 0, allocated: 0, paid: 0, deals: 0 });
-    // One line per portfolio and year; several roles in it are joined.
     const grouped = new Map();
     roles.forEach(r => {
-      const k = `${r.programme_year}|${r.series}`;
-      if (!grouped.has(k)) grouped.set(k, { ...r, roles: [] });
-      grouped.get(k).roles.push(roleLabel(r.role));
+      if (!grouped.has(r.key)) grouped.set(r.key, { ...r, roles: [] });
+      grouped.get(r.key).roles.push(roleLabel(r.role));
     });
     const total = { allocated: 0, paid: 0 };
     const rows = [...grouped.values()].map(g => {
-      const s = PORT_SERIES_MAP[g.series];
-      const st = stats(g.series, g.programme_year);
+      const st = portfolioData.filter(e => portGroupKey(e.producer) === g.key)
+        .reduce((t, e) => { t.events++; t.allocated += parseFloat(e.total_pipeline) || 0; t.paid += parseFloat(e.total_won) || 0; return t; },
+                { events: 0, allocated: 0, paid: 0 });
       total.allocated += st.allocated; total.paid += st.paid;
       return `<div class="epr-row">
         <div class="epr-main">
-          <span class="pf-chip" style="background:${s ? `var(--chart-${s.chart})` : 'var(--dim)'}"></span>
-          <span class="epr-series">${esc(s ? s.short : g.series)}</span>
-          <span class="epr-year">${g.programme_year}</span>
+          <span class="epr-series">${esc(g.name)}</span>
           <span class="epr-roles">${g.roles.map(esc).join(' · ')}</span>
         </div>
         <div class="epr-stats">${st.events} event${st.events === 1 ? '' : 's'} · ${fmtGBP(st.allocated)} allocated · ${fmtGBP(st.paid)} paid</div>
       </div>`;
     }).join('');
-    box.innerHTML = rows + `<div class="epr-total">Across these portfolios: ${fmtGBP(total.allocated)} allocated, ${fmtGBP(total.paid)} paid</div>`;
+    box.innerHTML = rows + (grouped.size > 1 ? `<div class="epr-total">Across these groups: ${fmtGBP(total.allocated)} allocated, ${fmtGBP(total.paid)} paid</div>` : '');
   } catch {
-    box.innerHTML = '<div class="epr-empty">Could not load portfolio roles.</div>';
+    box.innerHTML = '<div class="epr-empty">Could not load producer teams.</div>';
   }
 }
 
@@ -5655,14 +5674,14 @@ function openPortfolioModal(id) {
   const producerSel = document.getElementById('portProducer');
   const ev = id ? portfolioData.find(x => x.id === id) : null;
   if (id && !ev) return;
-  // A producer the select does not know (an older row) is still shown, not silently dropped.
-  if (ev && ev.producer && ![...producerSel.options].some(o => o.value === ev.producer)) {
-    producerSel.add(new Option(ev.producer, ev.producer));
-  }
+  producerSel.innerHTML = '<option value="">No producer</option>'
+    + portProducerOptions(ev && ev.producer).map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  // Match the event's group whatever its casing.
+  const evKey = ev && portGroupKey(ev.producer);
   document.getElementById('portName').value     = ev ? ev.name : '';
   document.getElementById('portDate').value     = ev && ev.event_date ? String(ev.event_date).slice(0, 10) : '';
   document.getElementById('portDateTbc').value  = ev ? (ev.date_tbc || '') : '';
-  producerSel.value                             = ev ? (ev.producer || '') : '';
+  producerSel.value = evKey ? ([...producerSel.options].find(o => portGroupKey(o.value) === evKey)?.value || '') : '';
   document.getElementById('portYear').value     = ev ? (ev.programme_year || '') : (_portYearFilter !== 'all' ? _portYearFilter : '');
   document.getElementById('portLocation').value = ev ? (ev.location || '') : '';
   document.getElementById('portNotes').value    = ev ? (ev.notes || '') : '';
@@ -9786,6 +9805,7 @@ function ekProgress(kit) {
 function ekStage(kit, p) {
   if (!kit) return 'Not started';
   if (p.finals === p.total) return 'Complete';
+  if (!kit.id && !p.team) return 'No team yet';
   if (p.changes) return `${p.changes} change${p.changes === 1 ? '' : 's'} requested`;
   if (!p.agenda && !p.uploaded) return 'Waiting for the agenda';
   if (p.uploaded < p.total) return `Drafts · ${p.uploaded} of ${p.total}`;
@@ -9799,7 +9819,7 @@ function ekIsPast(ev) {
 
 function ekMeOnTeam(kit) {
   const me = currentUser && currentUser.employee_id;
-  return !!me && EK_TEAM_ROLES.some(r => kit && kit[`${r.key}_id`] === me);
+  return !!me && !!kit && (EK_TEAM_ROLES.some(r => kit[`${r.key}_id`] === me) || kit.co_producer_id === me);
 }
 
 async function loadEventKitPage() {
@@ -9814,6 +9834,7 @@ async function loadEventKitPage() {
       const [evRes, staffRes] = await Promise.all([fetch('/api/portfolio-events'), fetch('/api/employees/all')]);
       const evs = evRes.ok ? await evRes.json() : [];
       _ek.staff = staffRes.ok ? (await staffRes.json()).sort((a, b) => a.name.localeCompare(b.name)) : [];
+      // Every event comes back with its team; id is null until a kit exists.
       const byEvent = new Map(kits.map(k => [k.event_id, k]));
       _ek.events = (Array.isArray(evs) ? evs : []).map(e => ({
         event_id: e.id, event_name: e.name, event_date: e.event_date, date_tbc: e.date_tbc,
@@ -9911,7 +9932,7 @@ function ekRenderDetail() {
         <p class="ek-eyebrow">${(ev.event_date || ev.programme_year) ? esc(fmtEventDate(ev, { long: true })) : 'Date TBC'}${ev.location ? ' · ' + esc(ev.location) : ''}${ev.producer_team ? ' · ' + esc(ev.producer_team) : ''}</p>
         <h2>${esc(ev.event_name)}</h2>
       </div>
-      ${_ek.office && kit ? `<button class="btn btn-ghost btn-sm ek-danger" onclick="ekDeleteKit(${ev.event_id})">Delete kit</button>` : ''}
+      ${_ek.office && kit && kit.id ? `<button class="btn btn-ghost btn-sm ek-danger" onclick="ekDeleteKit(${ev.event_id})">Delete kit</button>` : ''}
     </header>
 
     <ol class="ek-steps">
@@ -9937,8 +9958,11 @@ function ekRenderDetail() {
 
       <div class="ek-side-cards">
         <section class="ek-card">
-          <div class="ek-card-hd"><h3>Event team</h3>${p.team ? '' : `<span>${_ek.office ? 'Pick who works this event. They see the kit in their staff portal.' : ''}</span>`}</div>
+          <div class="ek-card-hd"><h3>Event team</h3><span>${_ek.office
+            ? (kit && kit.group_name ? `From the ${esc(kit.group_name)} team. Change a role here for this event only.` : 'Set the producer group\'s team on the Portfolio page, or pick people for this event.')
+            : ''}</span></div>
           ${EK_TEAM_ROLES.map(r => ekTeamRowHtml(kit, r)).join('')}
+          ${kit && kit.co_producer_name ? `<div class="ek-team-row"><span>Co-producer</span><strong>${kit.co_producer_id ? `<button type="button" class="emp-link" onclick="openEmployeeProfile(${kit.co_producer_id})">${esc(kit.co_producer_name)}</button>` : esc(kit.co_producer_name)}${kit.co_producer_id && kit.co_producer_id === (currentUser && currentUser.employee_id) ? ' <small>(you)</small>' : ''}</strong></div>` : ''}
           ${_ek.office ? ekSharedHtml(kit) : ''}
         </section>
       </div>
@@ -10014,18 +10038,21 @@ function ekItemHtml(ev, m, onTeam) {
 
 function ekTeamRowHtml(kit, role) {
   const id = kit && kit[`${role.key}_id`];
+  const own = kit && kit[`own_${role.key}_id`];
   const name = kit && kit[`${role.key}_name`];
+  const groupName = kit && kit[`group_${role.key}_name`];
   if (!_ek.office) {
     return `<div class="ek-team-row"><span>${role.label}</span><strong>${name ? esc(name) : '<em>Not set</em>'}${id && id === (currentUser && currentUser.employee_id) ? ' <small>(you)</small>' : ''}</strong></div>`;
   }
-  const inDept = _ek.staff.filter(e => (e.active || e.id === id) && role.dept.test(e.department || ''));
-  const rest = _ek.staff.filter(e => (e.active || e.id === id) && !role.dept.test(e.department || ''));
-  const opt = e => `<option value="${e.id}"${e.id === id ? ' selected' : ''}>${esc(e.name)}${e.active ? '' : ' (left)'}</option>`;
+  // "" means the producer group's person; picking someone sets this event only.
+  const inDept = _ek.staff.filter(e => (e.active || e.id === own) && role.dept.test(e.department || ''));
+  const rest = _ek.staff.filter(e => (e.active || e.id === own) && !role.dept.test(e.department || ''));
+  const opt = e => `<option value="${e.id}"${e.id === own ? ' selected' : ''}>${esc(e.name)}${e.active ? '' : ' (left)'}</option>`;
   return `<div class="ek-team-row ek-team-row--edit">
-    <label for="ekTeam_${role.key}">${role.label}</label>
+    <label for="ekTeam_${role.key}">${role.label}${own && groupName ? '<small class="ek-team-from">this event only</small>' : ''}</label>
     <div class="ek-team-pick">
       <select id="ekTeam_${role.key}" onchange="ekSaveTeam()">
-        <option value="">Not set</option>
+        <option value="">${groupName ? `${esc(groupName)} (team)` : 'Not set'}</option>
         ${inDept.length ? `<optgroup label="${esc([...new Set(inDept.map(e => e.department))].join(' / '))}">${inDept.map(opt).join('')}</optgroup>` : ''}
         ${rest.length ? `<optgroup label="${inDept.length ? 'Everyone else' : 'Staff'}">${rest.map(opt).join('')}</optgroup>` : ''}
       </select>
@@ -10144,7 +10171,7 @@ function ekTeamBody(kit, emails) {
   const body = {};
   EK_TEAM_ROLES.forEach(r => {
     const sel = document.getElementById(`ekTeam_${r.key}`);
-    const v = sel ? sel.value : (kit && kit[`${r.key}_id`]);
+    const v = sel ? sel.value : (kit && kit[`own_${r.key}_id`]);
     if (v) body[`${r.key}_id`] = parseInt(v, 10);
   });
   body.access_emails = emails;

@@ -940,7 +940,7 @@
     </div>
     <!-- Portfolio work, from the Portfolio page's teams (edit only) -->
     <div id="empPortfolioWrap" class="hidden">
-      <div class="modal-section-label" style="margin-top:12px">Portfolio roles</div>
+      <div class="modal-section-label" style="margin-top:12px">Producer teams</div>
       <div id="empPortfolioRoles" class="epr-list"></div>
     </div>
     <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px">
@@ -1647,29 +1647,34 @@
     </div>
     <input type="hidden" id="portTeamSeries">
     <div class="pt-body">
+      <div class="form-group pt-name">
+        <label for="portTeamName">Group name</label>
+        <input type="text" id="portTeamName" maxlength="60" placeholder="e.g. GIO &amp; KARAM" oninput="this.dataset.touched='1'">
+        <p class="pt-name-hint" id="portTeamNameHint"></p>
+      </div>
       <div class="pt-grid">
         <div class="form-group">
-          <label for="portTeam_sales_sel">Sales</label>
-          <select id="portTeam_sales_sel" onchange="portTeamPick('sales')"></select>
-          <input type="text" id="portTeam_sales" class="pt-other hidden" maxlength="80" placeholder="Their name">
-        </div>
-        <div class="form-group">
-          <label for="portTeam_delegates_sel">Delegates</label>
-          <select id="portTeam_delegates_sel" onchange="portTeamPick('delegates')"></select>
-          <input type="text" id="portTeam_delegates" class="pt-other hidden" maxlength="80" placeholder="Their name">
-        </div>
-        <div class="form-group">
-          <label for="portTeam_production_sel">Production</label>
-          <select id="portTeam_production_sel" onchange="portTeamPick('production')"></select>
-          <input type="text" id="portTeam_production" class="pt-other hidden" maxlength="80" placeholder="Their name">
+          <label for="portTeam_producer_sel">Producer</label>
+          <select id="portTeam_producer_sel" onchange="portTeamPick('producer')"></select>
+          <input type="text" id="portTeam_producer" class="pt-other hidden" maxlength="80" placeholder="Their name" oninput="portTeamAutoName()">
         </div>
         <div class="form-group">
           <label for="portTeam_co_producer_sel">Co-producer</label>
           <select id="portTeam_co_producer_sel" onchange="portTeamPick('co_producer')"></select>
-          <input type="text" id="portTeam_co_producer" class="pt-other hidden" maxlength="80" placeholder="Their name">
+          <input type="text" id="portTeam_co_producer" class="pt-other hidden" maxlength="80" placeholder="Their name" oninput="portTeamAutoName()">
+        </div>
+        <div class="form-group">
+          <label for="portTeam_sales_sel">Sales</label>
+          <select id="portTeam_sales_sel" onchange="portTeamPick('sales')"></select>
+          <input type="text" id="portTeam_sales" class="pt-other hidden" maxlength="80" placeholder="Their name" oninput="portTeamAutoName()">
+        </div>
+        <div class="form-group">
+          <label for="portTeam_delegates_sel">Delegates</label>
+          <select id="portTeam_delegates_sel" onchange="portTeamPick('delegates')"></select>
+          <input type="text" id="portTeam_delegates" class="pt-other hidden" maxlength="80" placeholder="Their name" oninput="portTeamAutoName()">
         </div>
       </div>
-      <p class="pt-hint">Each role lists that department's staff first, so the work shows on their employee record. Pick "Someone outside the company" to type a name instead.</p>
+      <p class="pt-hint">This team works every event in the group, and sees those events' kits in their staff portal. Each role lists that department's staff first. Pick "Someone outside the company" to type a name instead.</p>
     </div>
     <div class="pt-foot">
       <button class="btn btn-ghost" onclick="closeModal('portTeamModal')">Cancel</button>
@@ -1700,11 +1705,6 @@
       <div class="form-group"><label>Producer</label>
         <select id="portProducer">
           <option value="">No producer</option>
-          <option value="Gio &amp; Karam">Gio &amp; Karam</option>
-          <option value="Tara &amp; Maryam">Tara &amp; Maryam</option>
-          <option value="Fidak">Fidak</option>
-          <option value="Santos">Santos</option>
-          <option value="Arj &amp; Leena">Arj &amp; Leena</option>
         </select>
       </div>
       <div class="form-group"><label>Programme year</label><input type="number" id="portYear" min="2000" max="2100" step="1" placeholder="2027"></div>
