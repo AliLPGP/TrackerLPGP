@@ -1268,49 +1268,86 @@ tbody tr:last-child td { border-bottom: none; }
 .ig-pageno { font: 700 10px/1 var(--font-mono); letter-spacing: .1em; color: var(--muted); margin: 18px 2px 8px; text-transform: uppercase; }
 .ig-pageno:first-child { margin-top: 0; }
 .ig-page {
-  background: #fff; color: #262626; border-radius: 3px;
-  padding: 0 0 36px; overflow: hidden;
-  box-shadow: 0 6px 28px rgba(0,0,0,.22);
+  position: relative; background: #fff; color: #262626; border-radius: 3px; overflow: hidden;
+  box-shadow: 0 6px 28px rgba(0,0,0,.22); font-family: Calibri, Carlito, 'Segoe UI', var(--font-sans);
 }
-.ig-page > *:not(.ig-band) { margin-left: 44px; margin-right: 44px; }
-.ig-band { background: #7f7f7f; padding: 14px 44px; margin-bottom: 24px; }
-.ig-band img { height: 40px; display: block; }
-.ig-inv-title { font: 700 26px/1 Calibri, var(--font-sans); letter-spacing: .02em; color: #262626; margin-bottom: 18px; }
-.ig-addr-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; margin-bottom: 20px; }
-.ig-addr { font: 400 12px/1.55 Calibri, var(--font-sans); color: #262626; }
-.ig-addr-co { font-size: 13px; font-weight: 600; }
-.ig-date { font: 400 12px/1.4 Calibri, var(--font-sans); }
-.ig-client { font: 400 12.5px/1.9 Calibri, var(--font-sans); margin-bottom: 22px; }
-.ig-client-hd { font-size: 13px; font-weight: 600; letter-spacing: .04em; }
-.ig-items { width: 100%; border-collapse: collapse; font: 400 12px/1.4 Calibri, var(--font-sans); margin-bottom: 20px; }
-.ig-items th { border: 1px solid #bfbfbf; padding: 7px 10px; font-weight: 600; text-align: center; background: #f2f2f2; }
-.ig-items td { border: 1px solid #bfbfbf; padding: 9px 10px; }
-.ig-items td:nth-child(2), .ig-items td:nth-child(3) { text-align: center; font-weight: 700; font-size: 12.5px; white-space: nowrap; }
-.ig-items .ig-sumrow td:first-child { border: none; }
-.ig-items .ig-sumrow td:nth-child(2) { font-weight: 600; background: #7f7f7f; color: #fff; }
-.ig-items .ig-due td:nth-child(2) { background: #595959; }
-.ig-items .ig-due td:nth-child(3) { font-size: 13.5px; }
-.ig-contact-line { font: 700 13px/1.5 Calibri, var(--font-sans); color: #0563C1; margin-bottom: 16px; }
-.ig-bank { font: 700 13px/1.7 Calibri, var(--font-sans); color: #262626; margin-bottom: 16px; }
-.ig-terms-note { font: 700 11.5px/1.5 Calibri, var(--font-sans); }
-.ig-terms-sub { font-weight: 400; margin-top: 3px; }
-.ig-agree-title { font: 700 13px/1.4 Calibri, var(--font-sans); color: #121C23; text-align: center; margin: 4px 44px 20px; }
-.ig-sec-hd { font: 700 12.5px/1.4 Calibri, var(--font-sans); color: #000; margin-bottom: 8px; }
-.ig-events-lbl { font: 700 11.5px/1.4 Calibri, var(--font-sans); margin-bottom: 3px; }
-.ig-event-name { font: 400 13px/1.5 Calibri, var(--font-sans); color: #262626; margin-bottom: 14px; }
-.ig-benefit { font: 400 12.5px/1.7 Calibri, var(--font-sans); color: #262626; }
-.ig-total-cost { font: 700 12px/1.4 Calibri, var(--font-sans); margin-top: 14px; }
-.ig-comments { font: 700 11.5px/1.6 Calibri, var(--font-sans); color: #121C23; }
-.ig-tc { font: 400 9.5px/1.55 Calibri, var(--font-sans); color: #121C23; margin-bottom: 26px; }
-.ig-tc p { margin: 0 0 10px; }
-.ig-tc-hd { font-size: 11px; font-weight: 600; margin-bottom: 3px; }
-.ig-sig { text-align: center; margin-top: 10px; }
-.ig-sig-name { font: 700 12.5px/1.4 Calibri, var(--font-sans); color: #000; padding-bottom: 4px; }
-.ig-sig-line { font: 400 11px/1.4 Calibri, var(--font-sans); border-top: 1px solid #262626; width: 220px; margin: 0 auto; padding-top: 4px; }
+/* Diagonal header and footer bands, as in invoice_template.docx */
+.ig-head { position: relative; height: 104px; }
+.ig-head::before {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, #000 0%, #1a1a1a 35%, #8c8c8c 100%);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 30%);
+}
+.ig-head img { position: absolute; right: 36px; top: 18px; height: 44px; }
+.ig-foot { position: relative; height: 104px; margin-top: 28px; }
+.ig-foot::before {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, #000 0%, #1a1a1a 45%, #9a9a9a 100%);
+  clip-path: polygon(0 0, 100% 72%, 100% 100%, 0 100%);
+}
+.ig-foot img { position: absolute; left: 36px; bottom: 16px; height: 40px; }
+.ig-body { padding: 0 40px; margin-top: -54px; position: relative; }
+.ig-body--doc { margin-top: 24px; min-height: 380px; }
+.ig-inv-title { font: 700 27px/1 Calibri, Carlito, var(--font-sans); color: #000; margin: 0 0 4px; }
+.ig-from {
+  background: #EAF1DD; padding: 40px 10px 22px 62%; font: 400 10px/1.75 'Segoe UI', Arial, var(--font-sans); color: #262626;
+}
+.ig-date { margin-top: 10px; }
+.ig-client { font: 400 10px/1.7 'Segoe UI', Arial, var(--font-sans); color: #262626; margin: 6px 0 26px; width: 66%; }
+.ig-client-hd { font-size: 11.5px; letter-spacing: .02em; padding: 0 5px; }
+.ig-client-row { padding: 0 5px; }
+.ig-client-row.is-band { background: #EAF1DD; }
+
+/* The line-item table: white with thin black borders. Pinned so the app's
+   own table styles (dark header, hover tint) never reach the paper. */
+:root .ig-page table.ig-items { width: 90%; margin: 0 auto 22px; border-collapse: collapse; table-layout: fixed; background: #fff; }
+:root .ig-page .ig-items th, :root .ig-page .ig-items td {
+  background: #fff !important; color: #262626 !important; border: 1px solid #000; padding: 6px 7px;
+  font: 400 9.5px/1.35 'Microsoft Sans Serif', Arial, var(--font-sans); text-align: center; vertical-align: top;
+  text-transform: none; letter-spacing: 0; box-shadow: none;
+}
+:root .ig-page .ig-items th {
+  font: 400 11px/1.2 'Franklin Gothic Demi', 'Franklin Gothic Medium', Arial, var(--font-sans); color: #000 !important;
+  text-transform: uppercase; letter-spacing: .02em; padding: 8px 4px; vertical-align: middle; white-space: nowrap; overflow: visible;
+}
+:root .ig-page .ig-items .ig-line td { height: 34px; }
+:root .ig-page .ig-items .ig-line td:first-child { text-align: left; font: italic 700 8.5px/1.35 Calibri, Carlito, var(--font-sans); }
+:root .ig-page .ig-items .ig-sum td { vertical-align: middle; padding: 4px 7px; }
+:root .ig-page .ig-items td.ig-gap { border: none; }
+:root .ig-page .ig-items td.ig-sum-lbl { border-top: none; border-bottom: none; border-left: none; color: #868686 !important; text-align: right; }
+:root .ig-page .ig-items .ig-sum--first td.ig-sum-lbl { border-top: 1px solid #000; }
+:root .ig-page .ig-items tr:hover td { background: #fff !important; }
+
+.ig-paybox { border: 1px solid #000; margin: 0 0 4px; }
+.ig-paybox-main { padding: 6px 8px; text-align: right; font: 700 10.5px/1.45 'Segoe UI', Arial, var(--font-sans); color: #000; }
+.ig-link { color: #0563C1; text-decoration: underline; }
+.ig-paybox-terms {
+  background: #EAF1DD; border-top: 1px solid #000; padding: 5px 8px; text-align: right;
+  font: 400 7.5px/1.6 Calibri, Carlito, var(--font-sans); color: #262626;
+}
+
+.ig-agree-title { font: 700 10.5px/1.4 'Segoe UI', Arial, var(--font-sans); color: #000; text-align: center; margin: 0 0 34px; }
+.ig-sec-hd { font: 700 9.5px/1.4 Calibri, Carlito, var(--font-sans); color: #000; text-decoration: underline; margin-bottom: 14px; }
+.ig-events-lbl { font: 700 8.5px/1.4 Calibri, Carlito, var(--font-sans); color: #000; }
+.ig-events { list-style: none; margin: 0 0 30px; padding: 0 0 0 16px; font: 400 10.5px/1.5 Arial, var(--font-sans); color: #262626; }
+.ig-events li::before { content: '➢'; margin-right: 10px; font-size: 9px; }
+.ig-benefits { margin: 0 0 30px; padding: 0 0 0 36px; font: 400 10.5px/1.3 Arial, var(--font-sans); color: #262626; }
+.ig-benefits li { list-style: disc; }
+.ig-benefits .ig-gap-li { list-style: none; height: 10px; }
+.ig-muted { color: #999; font-size: 10.5px; margin-bottom: 30px; }
+.ig-total-cost { font: 700 10px/1.4 'Segoe UI', Arial, var(--font-sans); color: #000; }
+.ig-comments { font: 700 10px/1.6 Calibri, Carlito, var(--font-sans); color: #121C23; }
+.ig-tc { margin: 0 0 30px; padding-left: 18px; font: 400 8.5px/1.45 Calibri, Carlito, var(--font-sans); color: #121C23; }
+.ig-tc li { margin-bottom: 12px; padding-left: 8px; }
+.ig-tc p { margin: 0; }
+.ig-sig { text-align: center; font: 400 8.5px/2.3 Calibri, Carlito, var(--font-sans); color: #121C23; }
+.ig-sig-name { font-weight: 700; text-decoration: underline; color: #000; }
 @media (max-width: 640px) {
-  .ig-page > *:not(.ig-band) { margin-left: 20px; margin-right: 20px; }
-  .ig-band { padding: 12px 20px; }
+  .ig-body { padding: 0 18px; }
+  .ig-from { padding-left: 45%; }
+  .ig-client { width: 100%; }
   .ig-preview-scroll { padding: 12px; }
+}
 }
 .deal-edit-only-row { display: none; }
 .deal-modal-editing .deal-edit-only-row { display: block; }
