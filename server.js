@@ -2552,18 +2552,37 @@ async function myDealInput(body) {
   const amount = parseFloat(body.amount);
   if (!Number.isFinite(amount) || amount <= 0 || amount > 1e9) return { error: 'Enter the deal value' };
   const currency = MY_DEAL_CURRENCIES.includes(body.currency) ? body.currency : 'GBP';
+  let tax_vat = null;
+  if (body.tax_vat !== undefined && body.tax_vat !== null && body.tax_vat !== '') {
+    tax_vat = parseFloat(body.tax_vat);
+    if (!Number.isFinite(tax_vat) || tax_vat < 0 || tax_vat > 1e9) return { error: 'VAT must be a positive number' };
+  }
   const deal_month = String(body.deal_month || '').trim();
   if (!/^\d{2} - (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/.test(deal_month)) return { error: 'Pick the month it was signed' };
-  const ids = [...new Set((Array.isArray(body.event_ids) ? body.event_ids : []).map(Number).filter(n => Number.isInteger(n) && n > 0))];
+  // A custom split names each event's amount and package; otherwise the
+  // value is split evenly and every event carries the one package name.
+  const custom = Array.isArray(body.packages) && body.packages.length ? body.packages : null;
+  const ids = [...new Set((custom ? custom.map(p => p && p.event_id) : (Array.isArray(body.event_ids) ? body.event_ids : []))
+    .map(Number).filter(n => Number.isInteger(n) && n > 0))];
   if (!ids.length) return { error: 'Pick at least one event' };
   const { rows: found } = await q(`SELECT id FROM portfolio_events WHERE id IN (${ids.map(() => '?').join(',')})`, ids);
   if (found.length !== ids.length) return { error: 'One of those events no longer exists' };
-  // Even split in pence; the first events absorb the remainder so it adds up.
-  const pence = Math.round(amount * 100), base = Math.floor(pence / ids.length);
-  const label = String(body.package_label || '').trim().slice(0, 80);
-  const event_packages = ids.map((id, i) => ({ event_id: id, amount: (base + (i < pence - base * ids.length ? 1 : 0)) / 100, package_label: label }));
+  let event_packages;
+  if (custom) {
+    if (ids.length !== custom.length) return { error: 'Each event can only appear once in the split' };
+    event_packages = custom.map(p => ({ event_id: Number(p.event_id), amount: Math.round((parseFloat(p.amount) || 0) * 100) / 100,
+      package_label: String(p.package_label || '').trim().slice(0, 80) }));
+    if (event_packages.some(p => p.amount < 0)) return { error: 'Split amounts cannot be negative' };
+    const sum = event_packages.reduce((t, p) => t + p.amount, 0);
+    if (Math.abs(sum - amount) > 0.01) return { error: 'The split has to add up to the deal value' };
+  } else {
+    // Even split in pence; the first events absorb the remainder so it adds up.
+    const pence = Math.round(amount * 100), base = Math.floor(pence / ids.length);
+    const label = String(body.package_label || '').trim().slice(0, 80);
+    event_packages = ids.map((id, i) => ({ event_id: id, amount: (base + (i < pence - base * ids.length ? 1 : 0)) / 100, package_label: label }));
+  }
   return {
-    company, amount, currency, deal_month, event_packages,
+    company, amount, currency, tax_vat, deal_month, event_packages,
     contact_name: String(body.contact_name || '').trim().slice(0, 120),
     notes: String(body.notes || '').trim().slice(0, 2000),
     fiscal_year: await programmeYearForEvents(ids),
@@ -2594,10 +2613,10 @@ app.post('/api/my-deals', requireAuth, async (req, res) => {
     const { rows: me } = await q('SELECT name FROM employees WHERE id=?', [empId]);
     const initials = (me[0]?.name || '').split(/\s+/).filter(Boolean).map(w => w[0]).join('').slice(0, 3).toUpperCase();
     const { rows } = await q(
-      `INSERT INTO deals (title, company, contact_name, amount, currency, stage, notes, initials, deal_month, fiscal_year,
+      `INSERT INTO deals (title, company, contact_name, amount, currency, tax_vat, stage, notes, initials, deal_month, fiscal_year,
          sales_employee_id, from_portal, office_seen)
-       VALUES (?,?,?,?,?,'Prospect',?,?,?,?,?,TRUE,FALSE) RETURNING id`,
-      [v.company, v.company, v.contact_name, v.amount, v.currency, v.notes, initials, v.deal_month,
+       VALUES (?,?,?,?,?,?,'Prospect',?,?,?,?,?,TRUE,FALSE) RETURNING id`,
+      [v.company, v.company, v.contact_name, v.amount, v.currency, v.tax_vat, v.notes, initials, v.deal_month,
        Number.isInteger(v.fiscal_year) ? v.fiscal_year : null, empId]
     );
     await insertDealEvents(rows[0].id, v.amount, null, v.event_packages);
@@ -2615,9 +2634,9 @@ app.put('/api/my-deals/:id', requireAuth, async (req, res) => {
     const v = await myDealInput(req.body);
     if (v.error) return res.status(400).json({ error: v.error });
     await q(
-      `UPDATE deals SET title=?, company=?, contact_name=?, amount=?, currency=?, notes=?, deal_month=?,
+      `UPDATE deals SET title=?, company=?, contact_name=?, amount=?, currency=?, tax_vat=?, notes=?, deal_month=?,
          fiscal_year=COALESCE(?, fiscal_year), office_seen=FALSE WHERE id=? AND sales_employee_id=?`,
-      [v.company, v.company, v.contact_name, v.amount, v.currency, v.notes, v.deal_month,
+      [v.company, v.company, v.contact_name, v.amount, v.currency, v.tax_vat, v.notes, v.deal_month,
        Number.isInteger(v.fiscal_year) ? v.fiscal_year : null, cur.id, empId]
     );
     await q('DELETE FROM deal_events WHERE deal_id=?', [cur.id]);
