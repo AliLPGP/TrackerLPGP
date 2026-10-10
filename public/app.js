@@ -263,26 +263,22 @@ async function loadEmployees() {
   });
 }
 
+// Employees page filters: department chip, type and status switches, search.
+const _empFilter = { dept: '', type: '', status: 'active' };
+
 async function loadEmpTable() {
   const res = await fetch('/api/employees/all');
   allEmployeesData = await res.json();
+  const active = allEmployeesData.filter(e => e.active);
+  const payroll = active.filter(e => e.employment_type === 'payroll').length;
+  const sub = document.getElementById('empSub');
+  if (sub) sub.innerHTML = `<strong>${active.length}</strong> active · ${payroll} payroll · ${active.length - payroll} self-employed` +
+    (allEmployeesData.length > active.length ? ` · ${allEmployeesData.length - active.length} left` : '');
+  renderEmpTable();
+}
 
-  // Populate dept filter
-  const deptSel = document.getElementById('empDeptFilter');
-  if (deptSel) {
-    const depts = [...new Set(allEmployeesData.map(e => e.department).filter(Boolean))].sort();
-    deptSel.innerHTML = '<option value="">All</option>' + depts.map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('');
-  }
-
-  // Update count tag and sub
-  const activeEmps = allEmployeesData.filter(e => e.active);
-  const countTag = document.getElementById('empCountTag');
-  if (countTag) countTag.textContent = activeEmps.length;
-  const payrollCount = activeEmps.filter(e => e.employment_type === 'payroll').length;
-  const seCount = activeEmps.filter(e => e.employment_type === 'self_employed').length;
-  const empSub = document.getElementById('empSub');
-  if (empSub) empSub.textContent = `// ${payrollCount} payroll · ${seCount} self-employed`;
-
+function setEmpFilter(key, value) {
+  _empFilter[key] = value;
   renderEmpTable();
 }
 
@@ -292,49 +288,53 @@ function filterEmpTable() {
 
 function renderEmpTable() {
   const search = (document.getElementById('empSearch')?.value || '').trim().toLowerCase();
-  const deptFilter = (document.getElementById('empDeptFilter')?.value || '').toLowerCase();
-  const typeFilter = document.getElementById('empTypeFilter')?.value || '';
-  let list = allEmployeesData;
-  if (search) list = list.filter(e => (e.name || '').toLowerCase().includes(search) || (e.department || '').toLowerCase().includes(search));
-  if (deptFilter) list = list.filter(e => (e.department || '').toLowerCase() === deptFilter);
-  if (typeFilter) list = list.filter(e => e.employment_type === typeFilter);
+  const byStatus = e => !_empFilter.status || (_empFilter.status === 'active' ? e.active : !e.active);
+  const byType = e => !_empFilter.type || e.employment_type === _empFilter.type;
+  const bySearch = e => !search || [e.name, e.job_title, e.department, e.email].some(v => (v || '').toLowerCase().includes(search));
+  const base = (allEmployeesData || []).filter(e => byStatus(e) && byType(e) && bySearch(e));
+
+  // Department chips count what the other filters leave.
+  const counts = {};
+  base.forEach(e => { const d = e.department || 'No department'; counts[d] = (counts[d] || 0) + 1; });
+  if (_empFilter.dept && !counts[_empFilter.dept]) _empFilter.dept = '';
+  const chips = document.getElementById('empDeptChips');
+  if (chips) chips.innerHTML = [['', 'All departments', base.length], ...Object.keys(counts).sort().map(d => [d, d, counts[d]])]
+    .map(([v, label, n]) => `<button type="button" class="emp-chip${_empFilter.dept === v ? ' active' : ''}" data-dept="${esc(v)}" onclick="setEmpFilter('dept', this.dataset.dept)">${esc(label)}<span>${n}</span></button>`).join('');
+  document.querySelectorAll('#empTypeSeg button').forEach(b => b.classList.toggle('active', b.dataset.v === _empFilter.type));
+  document.querySelectorAll('#empStatusSeg button').forEach(b => b.classList.toggle('active', b.dataset.v === _empFilter.status));
+
+  const list = base.filter(e => !_empFilter.dept || (e.department || 'No department') === _empFilter.dept)
+    .sort((a, b) => (a.department || '~').localeCompare(b.department || '~') || a.name.localeCompare(b.name));
   const tbody = document.getElementById('empTable');
-  tbody.innerHTML = '';
   if (!list.length) {
-    const msg = (search || deptFilter || typeFilter) ? 'No employees match your search.' : 'No employees yet.';
-    tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="icon">👥</div><div>${msg}</div></div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7"><div class="emp-empty">${search || _empFilter.dept || _empFilter.type ? 'Nobody matches these filters.' : 'No employees yet.'}</div></td></tr>`;
     return;
   }
-  list.forEach(emp => {
-    const typeLabel  = emp.employment_type === 'self_employed' ? 'Self-Employed' : 'Payroll';
-    const typeBadge  = emp.employment_type === 'self_employed' ? 'badge-yellow' : 'badge-blue';
-    const terminated = !emp.active && emp.termination_date;
-    const statusBadge = emp.active ? 'badge-green' : (terminated ? 'badge-red' : 'badge-grey');
-    const statusLabel = emp.active ? 'Active' : (terminated ? `Terminated ${emp.termination_date.slice(0,10)}` : 'Inactive');
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
+  const isAdmin = currentUser && currentUser.role === 'admin';
+  let lastDept = null;
+  tbody.innerHTML = list.map(emp => {
+    const dept = emp.department || 'No department';
+    const groupRow = !_empFilter.dept && dept !== lastDept
+      ? `<tr class="emp-group"><td colspan="7">${esc(dept)}<span>${counts[dept] || ''}</span></td></tr>` : '';
+    lastDept = dept;
+    const status = emp.active
+      ? '<span class="emp-dot emp-dot--on"></span>Active'
+      : `<span class="emp-dot"></span>${emp.termination_date ? 'Left ' + fmtDateShort(emp.termination_date) : 'Inactive'}`;
+    return groupRow + `<tr class="emp-row${emp.active ? '' : ' is-left'}" onclick="openEmployeeProfile(${emp.id})">
       <td>
-        <div style="font-weight:600;color:var(--text);font-size:12.5px">${esc(emp.name)}</div>
-        <div style="font-size:10.5px;color:var(--muted);font-family:var(--font-mono)">${esc(emp.job_title||emp.department||'')}</div>
+        <div class="emp-name-cell">
+          <span class="emp-avatar">${esc(empInitials(emp.name))}</span>
+          <span><span class="emp-name">${esc(emp.name)}</span><small>${esc(emp.job_title || emp.email || '')}</small></span>
+        </div>
       </td>
-      <td>
-        ${emp.department ? `<div style="font-weight:600;font-size:0.83rem">${esc(emp.department)}</div>` : ''}
-        ${emp.job_title  ? `<div style="font-size:0.76rem;color:var(--muted)">${esc(emp.job_title)}</div>` : (!emp.department ? '<span style="color:var(--muted)">—</span>' : '')}
-      </td>
-      <td><span class="badge ${typeBadge}">${typeLabel}</span></td>
-      <td>${emp.annual_salary > 0 ? fmtMoney(emp.annual_salary, emp.currency) + '/yr' : '—'}</td>
-      <td>${emp.start_date ? emp.start_date.slice(0,10) : '<span style="color:var(--muted)">—</span>'}</td>
-      <td><span class="badge ${statusBadge}" style="white-space:normal">${esc(statusLabel)}</span></td>
-      <td style="text-align:right;white-space:nowrap">
-        <button class="btn btn-ghost btn-sm" onclick='openEmpModal(${JSON.stringify(emp)})'>Edit</button>
-        ${!emp.portal_pin ? `<button class="btn btn-ghost btn-sm" style="color:#818cf8;border-color:#4f46e5" onclick="openAddPinModal(${emp.id},'${esc(emp.name)}')">Add PIN</button>` : ''}
-        ${emp.active
-          ? `<button class="btn btn-danger btn-sm" onclick="openTerminateModal(${emp.id},'${esc(emp.name)}')">Terminate</button>`
-          : `<button class="btn btn-ghost btn-sm" onclick="reactivateEmployee(${emp.id})">Reactivate</button>
-             <button class="btn btn-danger btn-sm" onclick="hardDeleteEmployee(${emp.id},'${esc(emp.name)}')">Delete</button>`}
-      </td>`;
-    tbody.appendChild(tr);
-  });
+      <td>${esc(emp.department || '—')}</td>
+      <td>${emp.employment_type === 'self_employed' ? 'Self-employed' : 'Payroll'}${emp.currency && emp.currency !== 'GBP' ? ` <span class="es-cur">${esc(emp.currency)}</span>` : ''}</td>
+      <td class="dt-r">${isAdmin && emp.annual_salary > 0 ? fmtMoney(emp.annual_salary, emp.currency).replace(/\.00$/, '') : '—'}</td>
+      <td>${emp.start_date ? fmtDateShort(emp.start_date) : '—'}</td>
+      <td class="emp-status">${status}</td>
+      <td class="emp-act"><button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();epEdit(${emp.id})">Edit</button></td>
+    </tr>`;
+  }).join('');
 }
 
 function openEmpModal(emp = null) {
@@ -603,7 +603,7 @@ async function loadDashboard() {
     tr.dataset.name = `${row.name || ''} ${emp?.department || ''} ${emp?.job_title || ''}`.toLowerCase();
     tr.innerHTML = `
       <td>
-        <div style="font-weight:700">${esc(row.name)}</div>
+        <div style="font-weight:600">${empLink(row.employee_id, row.name)}</div>
         ${emp?.job_title ? `<div style="font-size:0.73rem;color:var(--muted)">${esc(emp.job_title)}</div>` : ''}
       </td>
       <td>${emp?.department ? `<span style="font-size:0.82rem;font-weight:600">${esc(emp.department)}</span>` : '<span style="color:var(--muted)">—</span>'}</td>
@@ -866,7 +866,7 @@ function renderDashOverview(o) {
       ${expiring.slice(0, 5).map(e => {
         const expired = e.contract_end_date < today;
         return `<li class="db-row">
-          <span class="db-list-name">${esc(e.name)}${(e.job_title || e.department) ? `<small>${esc(e.job_title || e.department)}</small>` : ''}</span>
+          <span class="db-list-name">${empLink(e.id, e.name)}${(e.job_title || e.department) ? `<small>${esc(e.job_title || e.department)}</small>` : ''}</span>
           <span class="db-tag ${expired ? 'is-alert' : 'is-warn'}">${expired ? 'Expired' : 'Ends ' + fmtDateShort(e.contract_end_date)}</span>
         </li>`;
       }).join('')}
@@ -875,7 +875,7 @@ function renderDashOverview(o) {
   // ── Coming up: reminders and days off in the next 30 days
   const soon = [
     ...(o.upcoming || []).map(r => ({ date: String(r.virtual_date || '').slice(0, 10), name: r.title || '', note: r.category || 'Reminder' })),
-    ...(o.dayOffs || []).map(r => ({ date: r.record_date || '', name: r.employee_name || 'Employee',
+    ...(o.dayOffs || []).map(r => ({ date: r.record_date || '', name: r.employee_name || 'Employee', empId: r.employee_id,
       note: parseFloat(r.is_day_off) === 0.5 ? 'Half day off' : 'Day off' })),
   ].filter(x => x.date).sort((a, b) => a.date.localeCompare(b.date));
   const soonCard = dashCard('Coming up', { page: 'calendar', label: 'Calendar' }, soon.length ? `
@@ -884,7 +884,7 @@ function renderDashOverview(o) {
         const d = new Date(x.date + 'T00:00:00');
         return `<li class="db-row">
           <span class="db-date"><b>${d.getDate()}</b>${DEAL_MONTHS[d.getMonth()]}</span>
-          <span class="db-list-name">${esc(x.name)}<small>${esc(x.note)}</small></span>
+          <span class="db-list-name">${x.empId ? empLink(x.empId, x.name) : esc(x.name)}<small>${esc(x.note)}</small></span>
         </li>`;
       }).join('')}
     </ul>` : dashEmpty('Nothing in the next 30 days.'));
@@ -968,14 +968,164 @@ function goToTracking(empId) {
 }
 
 // Open the Employees page and pop the clicked employee's record
-async function goToEmployee(empId) {
-  navigate('employees');
-  // navigate() kicks off loadEmpTable(); wait for the data to arrive
-  for (let i = 0; i < 20 && !(allEmployeesData || []).find(e => e.id === empId); i++) {
-    await new Promise(r => setTimeout(r, 150));
+// Clicking an employee's name anywhere opens their profile.
+function goToEmployee(empId) {
+  openEmployeeProfile(empId);
+}
+
+// A name that opens the employee's profile. Plain text when there is no id.
+function empLink(id, name, cls = '') {
+  if (!id) return esc(name || '');
+  return `<button type="button" class="emp-link ${cls}" onclick="event.stopPropagation();openEmployeeProfile(${Number(id)})">${esc(name || '')}</button>`;
+}
+
+// ─── EMPLOYEE PROFILE (slide-in panel) ───────────────────────────────────────
+// Everything about one person in one place: who they are, how to reach them,
+// this year's pay and days off, their portfolio roles and events. Opens over
+// any page, so a name can link to it wherever it appears.
+let _profileEmpId = null;
+
+function empInitials(name) {
+  return (name || '?').split(/\s+/).filter(Boolean).map(w => w[0]).join('').slice(0, 2).toUpperCase();
+}
+
+function ensureProfileDrawer() {
+  let el = document.getElementById('empDrawer');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'empDrawer';
+  el.className = 'ep-overlay';
+  el.innerHTML = '<aside class="ep-panel" role="dialog" aria-modal="true" aria-labelledby="epName"><div id="epBody"></div></aside>';
+  el.addEventListener('click', e => { if (e.target === el) closeEmployeeProfile(); });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && el.classList.contains('open') && !document.querySelector('.modal-overlay.open')) closeEmployeeProfile();
+  });
+  document.body.appendChild(el);
+  return el;
+}
+
+function closeEmployeeProfile() {
+  document.getElementById('empDrawer')?.classList.remove('open');
+  _profileEmpId = null;
+}
+
+async function openEmployeeProfile(empId) {
+  empId = Number(empId);
+  if (!empId) return;
+  const drawer = ensureProfileDrawer();
+  const body = document.getElementById('epBody');
+  _profileEmpId = empId;
+  if (!(allEmployeesData || []).some(e => e.id === empId)) {
+    try { const r = await fetch('/api/employees/all'); if (r.ok) allEmployeesData = await r.json(); } catch {}
   }
   const emp = (allEmployeesData || []).find(e => e.id === empId);
+  if (!emp) { showToast('Employee not found', 'error'); return; }
+  const isAdmin = currentUser && currentUser.role === 'admin';
+  const canManage = currentUser && ['admin', 'manager'].includes(currentUser.role);
+  const year = new Date().getFullYear();
+  const typeLabel = emp.employment_type === 'self_employed' ? 'Self-employed' : 'Payroll';
+  const status = emp.active
+    ? '<span class="ep-status ep-status--on">Active</span>'
+    : `<span class="ep-status">${emp.termination_date ? 'Left ' + fmtDateShort(emp.termination_date) : 'Inactive'}</span>`;
+  const detail = (label, value) => `<div class="ep-detail"><span>${label}</span><strong>${value || '<em>—</em>'}</strong></div>`;
+
+  body.innerHTML = `
+    <header class="ep-head">
+      <div class="ep-avatar">${esc(empInitials(emp.name))}</div>
+      <div class="ep-who">
+        <h2 id="epName">${esc(emp.name)}</h2>
+        <p>${esc([emp.job_title, emp.department].filter(Boolean).join(' · ') || 'No role set')}</p>
+        <div class="ep-chips">${status}<span class="ep-chip">${typeLabel}</span>${emp.currency && emp.currency !== 'GBP' ? `<span class="ep-chip">${esc(emp.currency)}</span>` : ''}</div>
+      </div>
+      <button class="modal-close ep-close" onclick="closeEmployeeProfile()" aria-label="Close">✕</button>
+    </header>
+    ${canManage ? `<div class="ep-actions">
+      <button class="btn btn-sm" onclick="epEdit(${emp.id})">Edit details</button>
+      ${isAdmin ? `<button class="btn btn-sm" onclick="closeEmployeeProfile();openAddPinModal(${emp.id}, ${esc(JSON.stringify(emp.name))})">${emp.portal_pin ? 'Change PIN' : 'Add portal PIN'}</button>` : ''}
+      ${isAdmin ? (emp.active
+        ? `<button class="btn btn-sm ep-danger" onclick="closeEmployeeProfile();openTerminateModal(${emp.id}, ${esc(JSON.stringify(emp.name))})">Terminate</button>`
+        : `<button class="btn btn-sm" onclick="closeEmployeeProfile();reactivateEmployee(${emp.id})">Reactivate</button>`) : ''}
+    </div>` : ''}
+
+    <section class="ep-sec">
+      <h3>Details</h3>
+      <div class="ep-details">
+        ${detail('Email', emp.email ? `<a href="mailto:${esc(emp.email)}">${esc(emp.email)}</a>` : '')}
+        ${detail('Phone', emp.phone ? `<a href="tel:${esc(emp.phone)}">${esc(emp.phone)}</a>` : '')}
+        ${detail('Started', emp.start_date ? fmtDateShort(emp.start_date) : '')}
+        ${detail('Contract ends', emp.contract_end_date ? fmtDateShort(emp.contract_end_date) : (emp.active ? 'Permanent' : ''))}
+        ${isAdmin ? detail('Annual salary', emp.annual_salary > 0 ? fmtMoney(emp.annual_salary, emp.currency) : '') : ''}
+        ${isAdmin && emp.employment_type === 'payroll' ? detail('Pension', emp.pension_rate ? emp.pension_rate + '%' : 'None') : ''}
+      </div>
+    </section>
+
+    <section class="ep-sec">
+      <h3>${year} so far</h3>
+      <div class="ep-tiles" id="epTiles"><div class="ep-loading">Loading…</div></div>
+    </section>
+
+    ${isAdmin ? `<section class="ep-sec">
+      <h3>Recent payments</h3>
+      <div id="epPayments" class="ep-list"><div class="ep-loading">Loading…</div></div>
+    </section>` : ''}
+
+    ${canManage ? `<section class="ep-sec">
+      <h3>Events</h3>
+      <div id="epEvents" class="ep-list"><div class="ep-loading">Loading…</div></div>
+    </section>
+    <section class="ep-sec">
+      <h3>Portfolio roles</h3>
+      <div id="epPortfolio" class="epr-list"></div>
+    </section>` : ''}`;
+  drawer.classList.add('open');
+
+  // Figures that need their own calls; each fills its section when ready.
+  const [statsRes, payRes] = await Promise.all([
+    fetch(`/api/employees/${empId}/year-stats?year=${year}`).catch(() => null),
+    isAdmin ? fetch(`/api/payments/${empId}`).catch(() => null) : null,
+  ]);
+  if (_profileEmpId !== empId) return;
+  const stats = statsRes && statsRes.ok ? await statsRes.json() : null;
+  const pays = payRes && payRes.ok ? await payRes.json() : [];
+  const paidYear = pays.filter(p => Number(p.payment_year) === year).reduce((a, p) => a + (parseFloat(p.amount) || 0), 0);
+  const last = pays[0];
+  const tile = (label, value, sub) => `<div class="ep-tile"><span>${label}</span><strong>${value}</strong>${sub ? `<small>${sub}</small>` : ''}</div>`;
+  document.getElementById('epTiles').innerHTML =
+    (isAdmin ? tile('Paid', fmtMoney(paidYear, emp.currency), `${pays.filter(p => Number(p.payment_year) === year).length} payments`) : '') +
+    (isAdmin ? tile('Last payment', last ? fmtMoney(last.amount, last.currency || emp.currency) : '—', last ? `${MONTHS[Number(last.payment_month)]} ${last.payment_year}` : 'None yet') : '') +
+    (stats ? tile('Days off', `${stats.total_days_off} / ${stats.allowance_days}`, stats.excess_days > 0 ? `${stats.excess_days} over allowance` : `${stats.remaining_allowance} left`) : '') +
+    (stats && isAdmin ? tile('Day-off deductions', stats.excess_deduction > 0 ? fmtMoney(stats.excess_deduction, emp.currency) : 'None', '') : '');
+  const payEl = document.getElementById('epPayments');
+  if (payEl) payEl.innerHTML = pays.length
+    ? pays.slice(0, 6).map(p => `<div class="ep-row"><span>${MONTHS[Number(p.payment_month)]} ${p.payment_year}${p.notes ? `<small>${esc(p.notes)}</small>` : ''}</span><strong>${fmtMoney(p.amount, p.currency || emp.currency)}</strong></div>`).join('')
+    : '<div class="ep-empty">No payments recorded.</div>';
+  if (canManage) {
+    loadEmpPortfolioRoles(empId, 'epPortfolio');
+    loadEmpEvents(empId, 'epEvents');
+  }
+}
+
+function epEdit(empId) {
+  const emp = (allEmployeesData || []).find(e => e.id === empId);
+  closeEmployeeProfile();
   if (emp) openEmpModal(emp);
+}
+
+// Events this person is on the team for (producer, delegates or sales).
+async function loadEmpEvents(empId, boxId) {
+  const box = document.getElementById(boxId);
+  if (!box) return;
+  try {
+    const res = await fetch('/api/event-kits');
+    const kits = res.ok ? await res.json() : [];
+    const roleOf = k => [k.producer_id === empId && 'Producer', k.delegates_id === empId && 'Delegates', k.sales_id === empId && 'Sales'].filter(Boolean);
+    const mine = kits.filter(k => roleOf(k).length);
+    box.innerHTML = mine.length ? mine.map(k => `<div class="ep-row">
+        <span>${esc(k.event_name)}<small>${(k.event_date || k.programme_year) ? esc(fmtEventDate(k, { long: true })) : 'Date TBC'}</small></span>
+        <span class="epr-roles">${roleOf(k).join(' · ')}</span>
+      </div>`).join('')
+      : '<div class="ep-empty">Not on any event team yet. Teams are set in Event Kit.</div>';
+  } catch { box.innerHTML = '<div class="ep-empty">Could not load events.</div>'; }
 }
 
 // ─── TRACKING ────────────────────────────────────────────────────────────────
@@ -2037,7 +2187,7 @@ async function loadSalaryPage() {
               : `<span class="sal-grp-payleft sal-grp-payleft--done">Fully paid</span>`)
           : '';
         return `<div class="sal-grp-payitem">
-          <span class="sal-grp-payname">${esc(r.name)}${remainHtml}</span>
+          <span class="sal-grp-payname">${empLink(r.employee_id, r.name)}${remainHtml}</span>
           <span class="sal-grp-payamt">${sym}${amt.toLocaleString('en-GB',{minimumFractionDigits:2})}/mo${netMo ? '<span class="srr-net">net</span>' : ''}</span>
           <span class="sal-grp-payactions">
             <button class="srr-skip" onclick="skipGroupReminder(${r.employee_id})">Skip ${monthShort}</button>
@@ -2211,7 +2361,7 @@ async function loadSalaryPage() {
 
         <div class="sc-head">
           <div class="sc-info">
-            <div class="sc-emp-name">${esc(emp.name || '')}</div>
+            <div class="sc-emp-name">${empLink(emp.employee_id, emp.name || '')}</div>
             ${emp.job_title || emp.department ? `<div class="sc-emp-role">${[emp.job_title, emp.department].filter(Boolean).map(s => esc(s)).join(' · ')}</div>` : ''}
             <div class="sc-emp-badges">
               <span class="badge ${typeBadge}" style="font-size:0.67rem">${typeLabel}</span>
@@ -3052,7 +3202,7 @@ async function renderCalSummary(byDate, empFilter) {
         <div class="cal-upcoming-badge-mon">${MONS_SHORT[d.getUTCMonth()]}</div>
       </div>
       <div style="flex:1;min-width:0">
-        <div class="cal-upcoming-name">${esc(r.employee_name)}</div>
+        <div class="cal-upcoming-name">${empLink(r.employee_id, r.employee_name)}</div>
         <div class="cal-upcoming-sub"><span class="cal-chip ${cls}" style="font-size:9px;padding:1px 5px">${typeLabel}</span></div>
       </div>
     </div>`;
@@ -5012,8 +5162,8 @@ async function savePortTeam() {
 // Each role they have held, with how that portfolio did that year: events,
 // money allocated against them and paid. Portfolio figures come from the
 // same events and programme data the Portfolio page uses.
-async function loadEmpPortfolioRoles(empId) {
-  const box = document.getElementById('empPortfolioRoles');
+async function loadEmpPortfolioRoles(empId, boxId = 'empPortfolioRoles') {
+  const box = document.getElementById(boxId);
   if (!box) return;
   box.innerHTML = '<div class="epr-empty">Loading…</div>';
   try {
