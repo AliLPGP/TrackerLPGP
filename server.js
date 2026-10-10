@@ -3100,6 +3100,20 @@ app.get('/api/portal/calendar', async (req, res) => {
 // ─── START ────────────────────────────────────────────────────────────────────
 
 // ─── INVOICE GENERATOR ───────────────────────────────────────────────────────
+// Removes the table row whose text contains `label` from the rendered
+// document (the row's own <w:tr> … </w:tr>, nothing else).
+function dropInvoiceRow(zip, label) {
+  const file = 'word/document.xml';
+  const xml = zip.file(file).asText();
+  const at = xml.indexOf(`>${label}<`);
+  if (at === -1) return;
+  let start = -1;
+  for (const m of xml.slice(0, at).matchAll(/<w:tr[ >]/g)) start = m.index;
+  const end = xml.indexOf('</w:tr>', at);
+  if (start === -1 || end === -1) return;
+  zip.file(file, xml.slice(0, start) + xml.slice(end + '</w:tr>'.length));
+}
+
 app.post('/api/generate-invoice', requireAuth, requireAdminOrManager, async (req, res) => {
   try {
     const templatePath = path.join(__dirname, 'public', 'invoice_template.docx');
@@ -3125,6 +3139,8 @@ app.post('/api/generate-invoice', requireAuth, requireAdminOrManager, async (req
       event_name, package_name, amount_ex_vat, vat_amount, total_due, client_name,
       benefits: benefitsArr, additional_notes: notesText,
       notes_block: notesText ? [notesText] : [] });
+    // No VAT: leave the VAT row out of the totals entirely.
+    if (!(parseFloat(String(vat_amount).replace(/[^0-9.]/g, '')) > 0)) dropInvoiceRow(doc.getZip(), 'VAT 20%');
     const buf = doc.getZip().generate({ type: 'nodebuffer', compression: 'DEFLATE' });
     const filename = `LPGPCONNECTCOMLTD${invoice_number || 'DRAFT'}.docx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');

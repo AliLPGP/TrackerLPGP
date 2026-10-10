@@ -10611,6 +10611,14 @@ async function igUseNextInvoice() {
   else showToast('No previous invoice number found', 'error');
 }
 
+// VAT at 20% of the amount (ex VAT), the rate the invoice shows.
+function igAddVat20() {
+  const ex = igParseMoney(document.getElementById('igAmountExVat').value);
+  if (!ex) { showToast('Enter the amount first', 'error'); return; }
+  document.getElementById('igVatAmount').value = (Math.round(ex * 0.2 * 100) / 100).toLocaleString('en-GB', { maximumFractionDigits: 2 });
+  igRecalcTotals(false);
+}
+
 function igParseMoney(v) {
   return parseFloat(String(v || '').replace(/[^0-9.\-]/g, '')) || 0;
 }
@@ -10705,8 +10713,9 @@ function igCollectPayload() {
     event_name:     eventLines.join('\n'),
     package_name:   '',
     amount_ex_vat:  document.getElementById('igAmountExVat').value.trim(),
+    // With no VAT the invoice leaves the VAT row out.
     vat_amount:     document.getElementById('igVatAmount').value.trim(),
-    total_due:      document.getElementById('igTotalDue').value.trim(),
+    total_due:      document.getElementById('igTotalDue').value.trim() || document.getElementById('igAmountExVat').value.trim(),
     client_name:    document.getElementById('igClientName').value.trim(),
     benefits,
     additional_notes: document.getElementById('igAdditionalNotes').value.trim(),
@@ -10753,7 +10762,7 @@ function previewInvoice() {
             <td>£ ${amt}</td><td>£ ${amt}</td>
           </tr>
           <tr class="ig-sum ig-sum--first"><td class="ig-gap"></td><td class="ig-sum-lbl">SUBTOTAL</td><td>£ ${amt}</td></tr>
-          <tr class="ig-sum"><td class="ig-gap"></td><td class="ig-sum-lbl">VAT 20%</td><td>£${esc(p.vat_amount || '—')}</td></tr>
+          ${igParseMoney(p.vat_amount) > 0 ? `<tr class="ig-sum"><td class="ig-gap"></td><td class="ig-sum-lbl">VAT 20%</td><td>£${esc(p.vat_amount)}</td></tr>` : ''}
           <tr class="ig-sum"><td class="ig-gap"></td><td class="ig-sum-lbl">TOTAL DUE</td><td>£${esc(p.total_due || '—')}</td></tr>
         </tbody>
       </table>
