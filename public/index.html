@@ -301,41 +301,34 @@
 
       <!-- ══ EMPLOYEES ══ -->
       <div class="page" id="page-employees">
-        <div class="page-head">
-          <div>
-            <h1>Employees <span class="tag" id="empCountTag">0</span></h1>
-            <div class="sub" id="empSub">// Active workforce</div>
-          </div>
-          <div class="actions">
-            <button class="btn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Import</button>
-            <button class="btn btn-primary" onclick="openEmpModal()"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg> Add employee</button>
+        <div class="emp-head">
+          <p class="emp-summary" id="empSub"></p>
+          <div class="emp-head-actions">
+            <button class="btn btn-primary" onclick="openEmpModal()">+ Add employee</button>
           </div>
         </div>
-        <div class="filter-bar" style="margin-bottom:18px">
-          <div class="form-group" style="flex:1;min-width:180px;max-width:320px;margin:0">
-            <label>Search</label>
-            <input type="search" id="empSearch" placeholder="Name or department…" oninput="filterEmpTable()" autocomplete="off" />
+        <div class="emp-filters">
+          <div class="emp-search">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="search" id="empSearch" placeholder="Search name, title or email" oninput="filterEmpTable()" autocomplete="off" />
           </div>
-          <div class="form-group" style="margin:0;min-width:140px">
-            <label>Department</label>
-            <select id="empDeptFilter" onchange="filterEmpTable()">
-              <option value="">All</option>
-            </select>
+          <div class="emp-seg" id="empTypeSeg" role="group" aria-label="Type">
+            <button type="button" data-v="" class="active" onclick="setEmpFilter('type','')">All types</button>
+            <button type="button" data-v="payroll" onclick="setEmpFilter('type','payroll')">Payroll</button>
+            <button type="button" data-v="self_employed" onclick="setEmpFilter('type','self_employed')">Self-employed</button>
           </div>
-          <div class="form-group" style="margin:0;min-width:120px">
-            <label>Type</label>
-            <select id="empTypeFilter" onchange="filterEmpTable()">
-              <option value="">All</option>
-              <option value="payroll">Payroll</option>
-              <option value="self_employed">Self-Employed</option>
-            </select>
+          <div class="emp-seg" id="empStatusSeg" role="group" aria-label="Status">
+            <button type="button" data-v="active" class="active" onclick="setEmpFilter('status','active')">Active</button>
+            <button type="button" data-v="left" onclick="setEmpFilter('status','left')">Left</button>
+            <button type="button" data-v="" onclick="setEmpFilter('status','')">Everyone</button>
           </div>
         </div>
-        <div class="card">
+        <div class="emp-depts" id="empDeptChips"></div>
+        <div class="card emp-card">
           <div class="table-wrap">
-            <table>
+            <table class="emp-table">
               <thead>
-                <tr><th>Name</th><th>Department / Title</th><th>Type</th><th>Annual Salary</th><th>Start Date</th><th>Status</th><th></th></tr>
+                <tr><th>Name</th><th>Department</th><th>Type</th><th class="dt-r">Salary</th><th>Started</th><th>Status</th><th></th></tr>
               </thead>
               <tbody id="empTable"></tbody>
             </table>
@@ -975,6 +968,11 @@
       <div style="padding-top:26px;font-size:0.75rem;color:var(--muted);line-height:1.5">
         Employees use this PIN on the self-service portal to view their pay info &amp; submit holiday requests.
       </div>
+    </div>
+    <!-- Portfolio work, from the Portfolio page's teams (edit only) -->
+    <div id="empPortfolioWrap" class="hidden">
+      <div class="modal-section-label" style="margin-top:12px">Portfolio roles</div>
+      <div id="empPortfolioRoles" class="epr-list"></div>
     </div>
     <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px">
       <button class="btn btn-ghost" onclick="closeModal('empModal')">Cancel</button>
@@ -1678,17 +1676,30 @@
       <button class="modal-close" onclick="closeModal('portTeamModal')" aria-label="Close">✕</button>
     </div>
     <input type="hidden" id="portTeamSeries">
-    <datalist id="portTeamPeople"></datalist>
     <div class="pt-body">
-      <div class="form-row">
-        <div class="form-group"><label for="portTeam_sales">Sales</label><input type="text" id="portTeam_sales" list="portTeamPeople" maxlength="80" placeholder="Name"></div>
-        <div class="form-group"><label for="portTeam_delegates">Delegates</label><input type="text" id="portTeam_delegates" list="portTeamPeople" maxlength="80" placeholder="Name"></div>
+      <div class="pt-grid">
+        <div class="form-group">
+          <label for="portTeam_sales_sel">Sales</label>
+          <select id="portTeam_sales_sel" onchange="portTeamPick('sales')"></select>
+          <input type="text" id="portTeam_sales" class="pt-other hidden" maxlength="80" placeholder="Their name">
+        </div>
+        <div class="form-group">
+          <label for="portTeam_delegates_sel">Delegates</label>
+          <select id="portTeam_delegates_sel" onchange="portTeamPick('delegates')"></select>
+          <input type="text" id="portTeam_delegates" class="pt-other hidden" maxlength="80" placeholder="Their name">
+        </div>
+        <div class="form-group">
+          <label for="portTeam_production_sel">Production</label>
+          <select id="portTeam_production_sel" onchange="portTeamPick('production')"></select>
+          <input type="text" id="portTeam_production" class="pt-other hidden" maxlength="80" placeholder="Their name">
+        </div>
+        <div class="form-group">
+          <label for="portTeam_co_producer_sel">Co-producer</label>
+          <select id="portTeam_co_producer_sel" onchange="portTeamPick('co_producer')"></select>
+          <input type="text" id="portTeam_co_producer" class="pt-other hidden" maxlength="80" placeholder="Their name">
+        </div>
       </div>
-      <div class="form-row">
-        <div class="form-group"><label for="portTeam_production">Production</label><input type="text" id="portTeam_production" list="portTeamPeople" maxlength="80" placeholder="Name"></div>
-        <div class="form-group"><label for="portTeam_co_producer">Co-producer</label><input type="text" id="portTeam_co_producer" list="portTeamPeople" maxlength="80" placeholder="Name"></div>
-      </div>
-      <p class="pt-hint">Pick from your staff or type any name. Leave a box empty if nobody is assigned.</p>
+      <p class="pt-hint">Each role lists that department's staff first, so the work shows on their employee record. Pick "Someone outside the company" to type a name instead.</p>
     </div>
     <div class="pt-foot">
       <button class="btn btn-ghost" onclick="closeModal('portTeamModal')">Cancel</button>

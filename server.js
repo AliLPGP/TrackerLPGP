@@ -171,6 +171,13 @@ async function runLateMigrations() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (series, programme_year)
     )`,
+    // Each role links to the employee who holds it, so an employee's record
+    // can list every portfolio they have worked on. The name columns stay as
+    // the label for someone outside the company (no employee row).
+    `ALTER TABLE portfolio_teams ADD COLUMN IF NOT EXISTS sales_id INT REFERENCES employees(id) ON DELETE SET NULL`,
+    `ALTER TABLE portfolio_teams ADD COLUMN IF NOT EXISTS delegates_id INT REFERENCES employees(id) ON DELETE SET NULL`,
+    `ALTER TABLE portfolio_teams ADD COLUMN IF NOT EXISTS production_id INT REFERENCES employees(id) ON DELETE SET NULL`,
+    `ALTER TABLE portfolio_teams ADD COLUMN IF NOT EXISTS co_producer_id INT REFERENCES employees(id) ON DELETE SET NULL`,
   ];
   for (const step of steps) {
     try { await sql(step); } catch(e) { console.warn('Migration step skipped:', e.message); }
@@ -2004,16 +2011,24 @@ app.delete('/api/portfolio-events/:id', requireAuth, requireAdminOrManager, asyn
 
 // ─── PORTFOLIO TEAMS ──────────────────────────────────────────────────────────
 // One team per programme series per programme year: the sales, delegates and
-// production people, and the co-producer. Names are free text so an outside
-// co-producer can be recorded as easily as a member of staff.
+// production people, and the co-producer. A role is normally an employee
+// (<role>_id); someone outside the company is recorded by name alone.
 const PORTFOLIO_TEAM_ROLES = ['sales', 'delegates', 'production', 'co_producer'];
+
+// Team rows with each linked employee's current name, so a renamed or
+// departed employee reads correctly everywhere.
+const PORTFOLIO_TEAM_SELECT = `
+  SELECT t.series, t.programme_year, t.updated_at,
+    ${PORTFOLIO_TEAM_ROLES.map(r => `t.${r}_id, COALESCE(e_${r}.name, t.${r}) AS ${r}, (COALESCE(e_${r}.active::int, 1) = 1) AS ${r}_active`).join(',\n    ')}
+  FROM portfolio_teams t
+  ${PORTFOLIO_TEAM_ROLES.map(r => `LEFT JOIN employees e_${r} ON e_${r}.id = t.${r}_id`).join('\n  ')}`;
 
 app.get('/api/portfolio-teams', requireAuth, requireAdminOrManager, async (req, res) => {
   try {
     const year = parseInt(req.query.year, 10);
     const { rows } = Number.isInteger(year)
-      ? await q('SELECT * FROM portfolio_teams WHERE programme_year=? ORDER BY series', [year])
-      : await q('SELECT * FROM portfolio_teams ORDER BY programme_year DESC, series');
+      ? await q(`${PORTFOLIO_TEAM_SELECT} WHERE t.programme_year=? ORDER BY t.series`, [year])
+      : await q(`${PORTFOLIO_TEAM_SELECT} ORDER BY t.programme_year DESC, t.series`);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2024,17 +2039,48 @@ app.put('/api/portfolio-teams/:series', requireAuth, requireAdminOrManager, asyn
     if (!series) return res.status(400).json({ error: 'Unknown portfolio' });
     const year = parseInt(req.body.year, 10);
     if (!Number.isInteger(year) || year < 2000 || year > 2100) return res.status(400).json({ error: 'A programme year is required' });
-    const v = PORTFOLIO_TEAM_ROLES.map(r => String(req.body[r] ?? '').trim().slice(0, 80));
-    const { rows } = await q(
-      `INSERT INTO portfolio_teams (series, programme_year, sales, delegates, production, co_producer, updated_by, updated_at)
-       VALUES (?,?,?,?,?,?,?,NOW())
+
+    // Each role: an employee id (the name is copied from the record), or a
+    // typed name for someone who is not an employee, or nobody.
+    const ids = [], names = [];
+    for (const r of PORTFOLIO_TEAM_ROLES) {
+      const id = parseInt(req.body[`${r}_id`], 10);
+      if (Number.isInteger(id)) {
+        const { rows } = await q('SELECT name FROM employees WHERE id=?', [id]);
+        if (!rows.length) return res.status(400).json({ error: `No such employee for ${r.replace('_', '-')}` });
+        ids.push(id); names.push(rows[0].name);
+      } else {
+        ids.push(null); names.push(String(req.body[r] ?? '').trim().slice(0, 80));
+      }
+    }
+    await q(
+      `INSERT INTO portfolio_teams (series, programme_year, sales, delegates, production, co_producer,
+         sales_id, delegates_id, production_id, co_producer_id, updated_by, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,NOW())
        ON CONFLICT (series, programme_year) DO UPDATE SET
          sales = EXCLUDED.sales, delegates = EXCLUDED.delegates, production = EXCLUDED.production,
-         co_producer = EXCLUDED.co_producer, updated_by = EXCLUDED.updated_by, updated_at = NOW()
-       RETURNING *`,
-      [series, year, ...v, req.admin.id]
+         co_producer = EXCLUDED.co_producer, sales_id = EXCLUDED.sales_id, delegates_id = EXCLUDED.delegates_id,
+         production_id = EXCLUDED.production_id, co_producer_id = EXCLUDED.co_producer_id,
+         updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+      [series, year, ...names, ...ids, req.admin.id]
     );
+    const { rows } = await q(`${PORTFOLIO_TEAM_SELECT} WHERE t.series=? AND t.programme_year=?`, [series, year]);
     res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Every portfolio role an employee has held, newest year first.
+app.get('/api/employees/:id/portfolio-roles', requireAuth, requireAdminOrManager, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Bad employee id' });
+    const { rows } = await q(
+      `SELECT series, programme_year, role FROM (
+         ${PORTFOLIO_TEAM_ROLES.map(r => `SELECT series, programme_year, '${r}' AS role FROM portfolio_teams WHERE ${r}_id = ?`).join(' UNION ALL ')}
+       ) x ORDER BY programme_year DESC, series, role`,
+      PORTFOLIO_TEAM_ROLES.map(() => id)
+    );
+    res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
