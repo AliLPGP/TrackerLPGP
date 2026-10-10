@@ -4075,13 +4075,15 @@ async function htDeleteInvoice(id) {
 
 async function refreshNotifBadge() {
   try {
-    const [hrRes, agRes] = await Promise.all([
+    const [hrRes, agRes, pdRes] = await Promise.all([
       fetch('/api/holiday-requests/count'),
-      fetch('/api/agenda-notifications')
+      fetch('/api/agenda-notifications'),
+      fetch('/api/deals/portal-new')
     ]);
     const { count: hrCount } = hrRes.ok ? await hrRes.json() : { count: 0 };
     const agItems = agRes.ok ? await agRes.json() : [];
-    const total = hrCount + agItems.length;
+    const pdItems = pdRes.ok ? await pdRes.json() : [];
+    const total = hrCount + agItems.length + pdItems.length;
     const badge = document.getElementById('notifBadge');
     badge.textContent = total;
     badge.classList.toggle('hidden', total === 0);
@@ -4106,13 +4108,26 @@ async function loadNotifPanel() {
   const list = document.getElementById('notifList');
   list.innerHTML = '<div class="notif-empty">Loading…</div>';
   try {
-    const [hrRes, agRes] = await Promise.all([
+    const [hrRes, agRes, pdRes] = await Promise.all([
       fetch('/api/holiday-requests?status=pending'),
-      fetch('/api/agenda-notifications')
+      fetch('/api/agenda-notifications'),
+      fetch('/api/deals/portal-new')
     ]);
     const hrItems = hrRes.ok ? await hrRes.json() : [];
     const agItems = agRes.ok ? await agRes.json() : [];
-    if (!hrItems.length && !agItems.length) { list.innerHTML = '<div class="notif-empty">No pending notifications</div>'; return; }
+    const pdItems = pdRes.ok ? await pdRes.json() : [];
+    if (!hrItems.length && !agItems.length && !pdItems.length) { list.innerHTML = '<div class="notif-empty">No pending notifications</div>'; return; }
+    const dealHtml = pdItems.map(d => {
+      const since = new Date(d.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+      return `<div class="notif-item" id="pd-notif-${d.id}">
+        <div class="notif-item-name">Deal from ${esc(d.sales_name || 'the sales team')}</div>
+        <div class="notif-item-meta">${esc(d.company)} · ${mdMoney(d.amount, d.currency)} · ${since}</div>
+        <div class="notif-item-actions">
+          <button class="notif-approve-btn" onclick="openPortalDeal(${d.id})">Open</button>
+          <button class="notif-deny-btn" onclick="dismissPortalDeal(${d.id})">Dismiss</button>
+        </div>
+      </div>`;
+    }).join('');
     const agendaHtml = agItems.map(a => {
       const since = new Date(a.uploaded_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
       return `<div class="notif-item" id="ag-notif-${a.id}">
@@ -4142,8 +4157,33 @@ async function loadNotifPanel() {
         </div>
       </div>`;
     }).join('');
-    list.innerHTML = agendaHtml + hrHtml;
+    list.innerHTML = dealHtml + agendaHtml + hrHtml;
   } catch { list.innerHTML = '<div class="notif-empty">Failed to load</div>'; }
+}
+
+// A deal the sales team added from the staff portal: open it in the tracker,
+// or just mark it seen.
+async function markPortalDealSeen(id) {
+  await fetch(`/api/deals/${id}/seen`, { method: 'PATCH' }).catch(() => {});
+  const d = typeof dealsData !== 'undefined' && dealsData.find(x => x.id === id);
+  if (d) d.office_seen = true;
+  document.getElementById(`pd-notif-${id}`)?.remove();
+  if (!document.querySelectorAll('#notifList .notif-item').length) {
+    const l = document.getElementById('notifList');
+    if (l) l.innerHTML = '<div class="notif-empty">No pending notifications</div>';
+  }
+  refreshNotifBadge();
+}
+async function dismissPortalDeal(id) {
+  await markPortalDealSeen(id);
+  if (document.getElementById('page-deals')?.classList.contains('active')) renderDealsTable();
+}
+async function openPortalDeal(id) {
+  document.getElementById('notifPanel')?.classList.add('hidden');
+  navigate('deals');
+  for (let i = 0; i < 40 && !(dealsData || []).some(x => x.id === id); i++) await new Promise(r => setTimeout(r, 100));
+  if ((dealsData || []).some(x => x.id === id)) openDealModal(id);
+  else markPortalDealSeen(id);
 }
 
 async function dismissAgendaNotif(id) {
@@ -5980,7 +6020,7 @@ function renderDealsTable() {
         <button type="button" class="deal-flag${isFlagged ? ' is-on' : ''}" onclick="event.stopPropagation();dealToggleFlag(${d.id})" title="${isFlagged ? 'Flagged — click to clear' : 'Flag this row'}">${FLAG_SVG}</button>
       </td>
       ${ec('deal_month', 'period', d.deal_month || '', dealPeriodDisplayHtml(d), 'deal-td-month')}
-      <td class="deal-cell-company${coHl ? ' deal-cell-orange' : ''}" data-id="${d.id}" data-hlkey="${coHlKey}" onclick="dealCompanyClick(event,${d.id},this)" title="Open the deal · Shift+click to highlight"><span class="deal-co-link">${esc(d.company || d.title)}</span></td>
+      <td class="deal-cell-company${coHl ? ' deal-cell-orange' : ''}" data-id="${d.id}" data-hlkey="${coHlKey}" onclick="dealCompanyClick(event,${d.id},this)" title="Open the deal · Shift+click to highlight"><span class="deal-co-link">${esc(d.company || d.title)}</span>${d.office_seen === false ? `<span class="deal-new" title="Added by ${esc(d.sales_name || 'the sales team')} from the staff portal">New</span>` : ''}</td>
       ${ec('amount', 'number', d.amount || 0, `<span class="deal-figure">${sym}${fmt(dealAmt)}</span>`, 'deal-num dt-r')}
       ${ec('paid_inc_vat', 'number', d.paid_inc_vat ?? '', paidDisplay, `deal-num dt-r${paidOff ? ' deal-cell-check' : ''}`, `oncontextmenu="dealCellContextMenu(event,this)"${paidTitle}`)}
       ${ec('tax_vat', 'number', d.tax_vat ?? '', d.tax_vat ? `${sym}${fmt(parseFloat(d.tax_vat))}` : dash, 'deal-num dt-r')}
@@ -5990,7 +6030,7 @@ function renderDealsTable() {
       ${ec('invoice_number', 'text', d.invoice_number || '', d.invoice_number ? `<span class="deal-inv-num">${esc(d.invoice_number)}</span>` : dash)}
       <td class="deal-td-files" onclick="openDealInvoicePanel(${d.id})" title="${esc(st.title)} · click to view or upload"><span class="deal-files${filesCls}">${filesGlyph}</span></td>
       <td class="deal-cell-toggle deal-td-signed" onclick="dealToggleBool(${d.id},'signature_received',${!!d.signature_received})" title="${d.signature_received ? 'Signed copy received — click to clear' : 'Click when the signed copy arrives'}">${d.signature_received ? `<span class="deal-tick">${TICK_SVG}</span>` : dash}</td>
-      ${ec('initials', 'text', d.initials || '', d.initials ? `<span class="deal-by">${esc(d.initials)}</span>` : dash, 'dt-c')}
+      ${ec('initials', 'text', d.initials || '', d.initials ? `<span class="deal-by"${d.sales_name ? ` title="${esc(d.sales_name)}"` : ''}>${esc(d.initials)}</span>` : dash, 'dt-c')}
       ${ec('notes', 'textarea', d.notes || '', notesDisplay, 'deal-td-notes')}
       <td class="deal-act-cell">
         <button class="deal-act-invoice" onclick="event.stopPropagation();openInvoiceGenModal(${d.id})" title="Generate the invoice document">${DOC_SVG}</button>
@@ -6475,7 +6515,7 @@ async function initEmployeePortal(user) {
   document.querySelectorAll('.employee-only').forEach(el => el.classList.remove('hidden'));
 
   // Hide non-allowed nav items
-  const EMP_PAGES = ['dashboard', 'calendar', 'portfolio', 'eventkit', 'profile', 'directory'];
+  const EMP_PAGES = ['dashboard', 'calendar', 'portfolio', 'eventkit', 'mydeals', 'profile', 'directory'];
   document.querySelectorAll('.nav-item').forEach(el => {
     if (!EMP_PAGES.includes(el.dataset.page)) el.style.display = 'none';
   });
@@ -6486,6 +6526,7 @@ async function initEmployeePortal(user) {
   if (addEmpBtn) addEmpBtn.style.display = 'none';
 
   document.title = 'LPGP – My Portal';
+  mdCheckAccess();
 
   // Override navigate
   window.navigate = function(page) {
@@ -6495,13 +6536,14 @@ async function initEmployeePortal(user) {
     const pageEl = document.getElementById('page-' + page);
     if (pageEl) pageEl.classList.add('active');
     document.querySelectorAll('[data-page="' + page + '"]').forEach(n => n.classList.add('active'));
-    const empTitles = { dashboard: 'Dashboard', calendar: 'Calendar', portfolio: 'Portfolio', eventkit: 'Event Kit', profile: 'My Profile', directory: 'Team' };
+    const empTitles = { dashboard: 'Dashboard', calendar: 'Calendar', portfolio: 'Portfolio', eventkit: 'Event Kit', mydeals: 'My Deals', profile: 'My Profile', directory: 'Team' };
     const titleEl = document.getElementById('pageTitle');
     if (titleEl) titleEl.textContent = empTitles[page] || page;
     if (page === 'dashboard')  loadEmployeeDashboard(user);
     if (page === 'calendar')   loadEmployeeCalendar();
     if (page === 'portfolio')  loadEmployeePortfolio();
     if (page === 'eventkit')   loadEmployeeKitPage();
+    if (page === 'mydeals')    loadMyDealsPage();
     if (page === 'profile')    loadEmployeeProfile();
     if (page === 'directory')  loadEmployeeDirectory();
   };
@@ -8233,6 +8275,30 @@ async function cycleDealStatus(id, newStatus) {
   renderDealsTable();
 }
 
+// "Sold by" links the deal to a staff record; picking someone fills the Rep
+// initials. Sales staff are listed first.
+let _dealStaffCache = null;
+async function dealFillSoldBy(selectedId) {
+  const sel = document.getElementById('dealSoldBy');
+  if (!sel) return;
+  if (!_dealStaffCache) {
+    try { const r = await fetch('/api/employees/all'); _dealStaffCache = r.ok ? await r.json() : []; } catch { _dealStaffCache = []; }
+  }
+  const staff = _dealStaffCache.filter(e => e.active || e.id === selectedId).sort((a, b) => a.name.localeCompare(b.name));
+  const sales = staff.filter(e => /sales/i.test(e.department || ''));
+  const rest = staff.filter(e => !/sales/i.test(e.department || ''));
+  const opt = e => `<option value="${e.id}">${esc(e.name)}</option>`;
+  sel.innerHTML = '<option value="">Not set</option>'
+    + (sales.length ? `<optgroup label="Sales">${sales.map(opt).join('')}</optgroup>` : '')
+    + (rest.length ? `<optgroup label="${sales.length ? 'Everyone else' : 'Staff'}">${rest.map(opt).join('')}</optgroup>` : '');
+  sel.value = selectedId ? String(selectedId) : '';
+}
+function dealSoldByChanged() {
+  const sel = document.getElementById('dealSoldBy');
+  const e = (_dealStaffCache || []).find(x => String(x.id) === sel.value);
+  if (e) document.getElementById('dealInitials').value = e.name.split(/\s+/).filter(Boolean).map(w => w[0]).join('').slice(0, 3).toUpperCase();
+}
+
 async function openDealModal(id, defaultStage) {
   _dealInv1 = null; _dealInv2 = null;
   _dealPeriodTouched = false;
@@ -8262,9 +8328,11 @@ async function openDealModal(id, defaultStage) {
   } catch { _evs = []; }
   _dealEvsCache = Array.isArray(_evs) ? _evs : [];
 
+  dealFillSoldBy(id ? (dealsData.find(x => x.id === id)?.sales_employee_id || null) : null);
   if (id) {
     const d = dealsData.find(x => x.id === id);
     if (!d) return;
+    if (d.office_seen === false) markPortalDealSeen(id).then(() => renderDealsTable());
     document.getElementById('dealTitle').value = d.title || d.company || '';
     document.getElementById('dealCompany').value = d.company || '';
     document.getElementById('dealInitials').value = d.initials || '';
@@ -8785,6 +8853,7 @@ async function saveDeal() {
     invoice_agreement_sent: document.getElementById('dealInvSent').value === 'true',
     signature_received: document.getElementById('dealSigReceived').value === 'true',
     notes: document.getElementById('dealNotes').value.trim(),
+    sales_employee_id: parseInt(document.getElementById('dealSoldBy').value, 10) || null,
     event_ids
   };
   if (_dealPackageMode) {
@@ -9662,10 +9731,11 @@ function openSetPinModal(empId, empName) {
 }
 
 // ─── EVENT KIT ───────────────────────────────────────────────────────────────
-// Each event has a team (producer, delegates, sales) and a kit: six marketing
-// materials the office uploads and the team approves, plus the agendas the
-// producer uploads. The office sees every event; staff see the events they
-// are on. One layout serves both, with the office's controls switched on.
+// Each event has a team (producer, delegates, sales) and a kit, worked in
+// order: the producer uploads the agenda, the office makes a draft of each of
+// six materials, the team approves each draft or asks for changes, and the
+// office uploads the final version. The office sees every event; staff see
+// the events they are on. One layout serves both.
 const EK_MATERIAL_TYPES = [
   { key: 'brochure',     label: 'Brochure',        accept: '.pdf,.png,.jpg,.jpeg' },
   { key: 'banner',       label: 'Banner',          accept: '.pdf,.png,.jpg,.jpeg' },
@@ -9675,10 +9745,11 @@ const EK_MATERIAL_TYPES = [
   { key: 'name_badges',  label: 'Name badges',     accept: '.pdf,.png,.jpg,.jpeg' },
 ];
 const EK_STATUS = {
-  missing: { label: 'Not uploaded',         cls: 'missing' },
+  missing: { label: 'No draft yet',         cls: 'missing' },
   pending: { label: 'Waiting for approval', cls: 'pending' },
-  approved:{ label: 'Approved',             cls: 'ok' },
   changes: { label: 'Changes requested',    cls: 'changes' },
+  approved:{ label: 'Approved · final due', cls: 'approved' },
+  final:   { label: 'Final ready',          cls: 'ok' },
 };
 const EK_TEAM_ROLES = [
   { key: 'producer',  label: 'Producer',  dept: /produc/i },
@@ -9688,21 +9759,38 @@ const EK_TEAM_ROLES = [
 const EK_MAX_FILE = 10 * 1024 * 1024;
 let _ek = { office: false, events: [], staff: [], selected: null, search: '', showPast: false, editing: null };
 
+const ekHasFinal = (kit, type) => !!(kit && (kit[`${type}_final_url`] || kit[`${type}_final_file`]));
+
 function ekItemStatus(kit, type) {
+  if (ekHasFinal(kit, type)) return 'final';
   if (!kit || (!kit[`${type}_url`] && !kit[`${type}_file`])) return 'missing';
   return (kit.item_reviews && kit.item_reviews[type] && kit.item_reviews[type].status) || 'pending';
 }
 
 function ekProgress(kit) {
   const st = EK_MATERIAL_TYPES.map(m => ekItemStatus(kit, m.key));
-  return {
+  const p = {
     total: st.length,
     uploaded: st.filter(x => x !== 'missing').length,
-    approved: st.filter(x => x === 'approved').length,
+    approved: st.filter(x => x === 'approved' || x === 'final').length,
+    finals: st.filter(x => x === 'final').length,
     changes: st.filter(x => x === 'changes').length,
     team: !!(kit && kit.producer_id && kit.delegates_id && kit.sales_id),
     agenda: !!(kit && (kit.agenda_file || kit.agenda_file_2)),
   };
+  p.pct = Math.round(((p.agenda ? 1 : 0) + p.uploaded + p.approved + p.finals) / (1 + 3 * p.total) * 100);
+  return p;
+}
+
+// Where an event is in the process, in a few words for the list.
+function ekStage(kit, p) {
+  if (!kit) return 'Not started';
+  if (p.finals === p.total) return 'Complete';
+  if (p.changes) return `${p.changes} change${p.changes === 1 ? '' : 's'} requested`;
+  if (!p.agenda && !p.uploaded) return 'Waiting for the agenda';
+  if (p.uploaded < p.total) return `Drafts · ${p.uploaded} of ${p.total}`;
+  if (p.approved < p.total) return `Approval · ${p.approved} of ${p.total}`;
+  return `Finals · ${p.finals} of ${p.total}`;
 }
 
 function ekIsPast(ev) {
@@ -9779,12 +9867,12 @@ function ekRenderList() {
     && (_ek.showPast || !_ek.office || !ekIsPast(e) || e.event_id === _ek.selected));
   el.innerHTML = list.map(e => {
     const p = ekProgress(e.kit);
-    const pct = Math.round(p.approved / p.total * 100);
-    const state = !e.kit ? 'No kit yet' : p.changes ? `${p.changes} change${p.changes === 1 ? '' : 's'} requested` : `${p.approved} of ${p.total} approved`;
+    const pct = e.kit ? p.pct : 0;
+    const state = ekStage(e.kit, p);
     return `<button type="button" class="ek-ev${e.event_id === _ek.selected ? ' active' : ''}${ekIsPast(e) ? ' is-past' : ''}" onclick="ekSelect(${e.event_id})">
       <span class="ek-ev-name">${esc(e.event_name)}</span>
       <span class="ek-ev-meta">${(e.event_date || e.programme_year) ? esc(fmtEventDate(e)) : 'Date TBC'}${e.location ? ' · ' + esc(e.location) : ''}</span>
-      <span class="ek-ev-bar"><span style="width:${pct}%"></span></span>
+      <span class="ek-ev-bar${pct === 100 ? ' is-done' : ''}"><span style="width:${pct}%"></span></span>
       <span class="ek-ev-state${p.changes ? ' is-changes' : ''}">${state}</span>
     </button>`;
   }).join('') || '<div class="ek-list-empty">No events match.</div>';
@@ -9827,27 +9915,31 @@ function ekRenderDetail() {
     </header>
 
     <ol class="ek-steps">
-      ${step(1, 'Team', p.team, p.team ? 'Producer, delegates and sales set' : 'Assign the event team')}
-      ${step(2, 'Materials', p.uploaded === p.total, `${p.uploaded} of ${p.total} uploaded`)}
+      ${step(1, 'Agenda', p.agenda, p.agenda ? 'Uploaded by the producer' : 'The producer uploads it')}
+      ${step(2, 'Drafts', p.uploaded === p.total, `${p.uploaded} of ${p.total} made`)}
       ${step(3, 'Approval', p.approved === p.total, p.changes ? `${p.changes} change${p.changes === 1 ? '' : 's'} requested` : `${p.approved} of ${p.total} approved`, p.changes > 0)}
-      ${step(4, 'Agenda', p.agenda, p.agenda ? 'Uploaded' : 'From the producer')}
+      ${step(4, 'Final', p.finals === p.total, `${p.finals} of ${p.total} uploaded`)}
     </ol>
 
     <div class="ek-cols">
-      <section class="ek-card ek-materials">
-        <div class="ek-card-hd"><h3>Materials</h3><span>${_ek.office ? 'Upload a file or add a link; the team approves each one.' : onTeam ? 'Open each item, then approve it or ask for changes.' : 'Shared with you to view.'}</span></div>
-        ${EK_MATERIAL_TYPES.map(m => ekItemHtml(ev, m, onTeam)).join('')}
-      </section>
+      <div class="ek-main-cards">
+        <section class="ek-card">
+          <div class="ek-card-hd"><h3><span class="ek-n">1</span>Agenda</h3><span>${_ek.office ? 'The producer uploads the agenda first; the materials are made from it.' : onTeam ? 'Upload the agenda first. The office makes the materials from it.' : ''}</span></div>
+          ${[1, 2].map(n => ekAgendaHtml(ev, n, _ek.office || ekStaffMaySee(kit))).join('')}
+        </section>
+        <section class="ek-card ek-materials">
+          <div class="ek-card-hd"><h3><span class="ek-n">2</span>Materials</h3><span>${_ek.office
+            ? 'Upload a draft of each. When the team approves it, upload the final version.'
+            : onTeam ? 'Open each draft, then approve it or ask for changes. The office then uploads the final version.' : 'Shared with you to view.'}</span></div>
+          ${EK_MATERIAL_TYPES.map(m => ekItemHtml(ev, m, onTeam)).join('')}
+        </section>
+      </div>
 
       <div class="ek-side-cards">
         <section class="ek-card">
-          <div class="ek-card-hd"><h3>Event team</h3></div>
+          <div class="ek-card-hd"><h3>Event team</h3>${p.team ? '' : `<span>${_ek.office ? 'Pick who works this event. They see the kit in their staff portal.' : ''}</span>`}</div>
           ${EK_TEAM_ROLES.map(r => ekTeamRowHtml(kit, r)).join('')}
           ${_ek.office ? ekSharedHtml(kit) : ''}
-        </section>
-        <section class="ek-card">
-          <div class="ek-card-hd"><h3>Agendas</h3><span>${_ek.office || onTeam ? 'The producer uploads these.' : ''}</span></div>
-          ${[1, 2].map(n => ekAgendaHtml(ev, n, _ek.office || ekStaffMaySee(kit))).join('')}
         </section>
       </div>
     </div>`;
@@ -9859,43 +9951,56 @@ function ekItemHtml(ev, m, onTeam) {
   const kit = ev.kit;
   const status = ekItemStatus(kit, m.key);
   const review = kit && kit.item_reviews && kit.item_reviews[m.key];
+  const fin = kit && kit.item_finals && kit.item_finals[m.key];
   const url = kit && kit[`${m.key}_url`];
   const file = kit && kit[`${m.key}_file`];
+  const furl = kit && kit[`${m.key}_final_url`];
+  const ffile = kit && kit[`${m.key}_final_file`];
   const eid = ev.event_id;
-  const editing = _ek.editing === `link:${m.key}`;
+  const editing = _ek.editing === `link:${m.key}` || _ek.editing === `flink:${m.key}`;
+  const finalLink = _ek.editing === `flink:${m.key}`;
   const asking = _ek.editing === `changes:${m.key}`;
   const s = EK_STATUS[status];
 
-  const files = [
-    url ? `<a class="ek-asset" href="${esc(url)}" target="_blank" rel="noopener">Open link ↗</a>` : '',
-    file ? `<a class="ek-asset" href="/api/event-kits/${eid}/file/${m.key}" target="_blank">${esc(file)}</a>` : '',
-  ].filter(Boolean).join('');
-  const who = review && review.by && (status === 'approved' || status === 'changes')
+  const asset = (href, text, ext) => `<a class="ek-asset" href="${esc(href)}" target="_blank"${ext ? ' rel="noopener"' : ''}>${esc(text)}</a>`;
+  const drafts = [url ? asset(url, 'Open link ↗', true) : '', file ? asset(`/api/event-kits/${eid}/file/${m.key}`, file) : ''].filter(Boolean).join('');
+  const finals = [furl ? asset(furl, 'Open link ↗', true) : '', ffile ? asset(`/api/event-kits/${eid}/file/${m.key}_final`, ffile) : ''].filter(Boolean).join('');
+  const who = review && review.by && (status === 'approved' || status === 'changes' || status === 'final')
     ? `<div class="ek-review ${status === 'changes' ? 'is-changes' : ''}">${status === 'changes' ? `<strong>${esc(review.by)}:</strong> ${esc(review.note)}` : `Approved by ${esc(review.by)}`} · ${fmtDateShort(review.at)}</div>` : '';
 
   let actions = '';
   if (_ek.office) {
-    actions = `<label class="btn btn-ghost btn-sm">${file ? 'Replace file' : 'Upload file'}<input type="file" accept="${m.accept}" hidden onchange="ekUploadItem(${eid},'${m.key}',this)"></label>
-      <button class="btn btn-ghost btn-sm" onclick="ekStartEdit('link:${m.key}')">${url ? 'Edit link' : 'Add link'}</button>
-      ${url || file ? `<button class="btn btn-ghost btn-sm ek-icon" title="Remove" aria-label="Remove ${m.label}" onclick="ekClearItem(${eid},'${m.key}')">✕</button>` : ''}
-      ${status === 'pending' ? `<button class="btn btn-ghost btn-sm" title="Approve on the team's behalf" onclick="ekReview(${eid},'${m.key}','approved')">Mark approved</button>` : ''}`;
-  } else if (onTeam && status !== 'missing') {
-    actions = status === 'approved'
-      ? `<button class="btn btn-ghost btn-sm" onclick="ekStartEdit('changes:${m.key}')">Request changes</button>`
-      : `<button class="btn btn-primary btn-sm" onclick="ekReview(${eid},'${m.key}','approved')">Approve</button>
-         <button class="btn btn-ghost btn-sm" onclick="ekStartEdit('changes:${m.key}')">Request changes</button>`;
+    if (status === 'approved' || status === 'final') {
+      actions = `<label class="btn ${status === 'approved' ? 'btn-primary' : 'btn-ghost'} btn-sm">${ffile ? 'Replace final' : 'Upload final'}<input type="file" accept="${m.accept}" hidden onchange="ekUploadFinal(${eid},'${m.key}',this)"></label>
+        <button class="btn btn-ghost btn-sm" onclick="ekStartEdit('flink:${m.key}')">${furl ? 'Edit final link' : 'Final link'}</button>
+        ${finals ? `<button class="btn btn-ghost btn-sm ek-icon" title="Remove final" aria-label="Remove final ${m.label}" onclick="ekClearFinal(${eid},'${m.key}')">✕</button>` : ''}
+        <span class="ek-act-sep"></span>
+        <label class="btn btn-ghost btn-sm ek-quiet">New draft<input type="file" accept="${m.accept}" hidden onchange="ekUploadItem(${eid},'${m.key}',this)"></label>`;
+    } else {
+      actions = `<label class="btn btn-ghost btn-sm">${file ? 'Replace draft' : 'Upload draft'}<input type="file" accept="${m.accept}" hidden onchange="ekUploadItem(${eid},'${m.key}',this)"></label>
+        <button class="btn btn-ghost btn-sm" onclick="ekStartEdit('link:${m.key}')">${url ? 'Edit link' : 'Add link'}</button>
+        ${url || file ? `<button class="btn btn-ghost btn-sm ek-icon" title="Remove" aria-label="Remove ${m.label}" onclick="ekClearItem(${eid},'${m.key}')">✕</button>` : ''}
+        ${status === 'pending' ? `<button class="btn btn-ghost btn-sm" title="Approve on the team's behalf" onclick="ekReview(${eid},'${m.key}','approved')">Mark approved</button>` : ''}`;
+    }
+  } else if (onTeam && (status === 'pending' || status === 'changes')) {
+    actions = `<button class="btn btn-primary btn-sm" onclick="ekReview(${eid},'${m.key}','approved')">Approve</button>
+       <button class="btn btn-ghost btn-sm" onclick="ekStartEdit('changes:${m.key}')">Request changes</button>`;
+  } else if (onTeam && status === 'approved') {
+    actions = `<button class="btn btn-ghost btn-sm" onclick="ekStartEdit('changes:${m.key}')">Request changes</button>`;
   }
 
-  return `<div class="ek-item">
+  const linkVal = finalLink ? furl : url;
+  return `<div class="ek-item ek-item--${status}">
     <div class="ek-item-top">
       <div class="ek-item-name">${m.label}</div>
       <span class="ek-pill ek-pill--${s.cls}">${s.label}</span>
     </div>
-    ${files ? `<div class="ek-assets">${files}</div>` : ''}
+    ${finals ? `<div class="ek-files"><span class="ek-files-lbl is-final">Final</span><div class="ek-assets">${finals}</div></div>` : ''}
+    ${drafts ? `<div class="ek-files${finals ? ' is-old' : ''}"><span class="ek-files-lbl">Draft</span><div class="ek-assets">${drafts}</div></div>` : ''}
     ${who}
     ${editing ? `<div class="ek-inline">
-        <input type="url" id="ekLinkInput" placeholder="https://www.canva.com/…" value="${esc(url || '')}" onkeydown="if(event.key==='Enter')ekSaveLink(${eid},'${m.key}');if(event.key==='Escape')ekStartEdit(null)">
-        <button class="btn btn-primary btn-sm" onclick="ekSaveLink(${eid},'${m.key}')">Save</button>
+        <input type="url" id="ekLinkInput" placeholder="${finalLink ? 'Final version link' : 'https://www.canva.com/…'}" value="${esc(linkVal || '')}" onkeydown="if(event.key==='Enter')ekSaveLink(${eid},'${m.key}',${finalLink});if(event.key==='Escape')ekStartEdit(null)">
+        <button class="btn btn-primary btn-sm" onclick="ekSaveLink(${eid},'${m.key}',${finalLink})">Save</button>
         <button class="btn btn-ghost btn-sm" onclick="ekStartEdit(null)">Cancel</button>
       </div>` : ''}
     ${asking ? `<div class="ek-inline ek-inline--col">
@@ -9959,7 +10064,7 @@ function ekAgendaHtml(ev, n, canUpload) {
 function ekStartEdit(key) {
   _ek.editing = key;
   ekRenderDetail();
-  const el = document.getElementById(key && key.startsWith('link') ? 'ekLinkInput' : 'ekChangesInput');
+  const el = document.getElementById(key && /link:/.test(key) ? 'ekLinkInput' : 'ekChangesInput');
   if (el) el.focus();
 }
 
@@ -9987,15 +10092,36 @@ async function ekSend(url, method, body, okMsg) {
 
 async function ekUploadItem(eid, type, input) {
   try {
-    const f = await ekReadFile(input);
     const kit = ekCurrent()?.kit;
-    await ekSend(`/api/event-kits/${eid}/items/${type}`, 'PUT', { url: (kit && kit[`${type}_url`]) || '', file: f.name, data: f.data }, 'Uploaded · sent to the team for approval');
+    if (ekItemStatus(kit, type) === 'approved' || ekHasFinal(kit, type)) {
+      if (!await showConfirm('Upload a new draft? It goes back to the team for approval' + (ekHasFinal(kit, type) ? ' and the final version is removed.' : '.'))) { input.value = ''; return; }
+    }
+    const f = await ekReadFile(input);
+    await ekSend(`/api/event-kits/${eid}/items/${type}`, 'PUT', { url: (kit && kit[`${type}_url`]) || '', file: f.name, data: f.data }, 'Draft uploaded · sent to the team for approval');
   } catch (e) { showToast(e.message, 'error'); }
 }
 
-async function ekSaveLink(eid, type) {
+async function ekSaveLink(eid, type, final) {
   const url = (document.getElementById('ekLinkInput')?.value || '').trim();
+  if (final) {
+    await ekSend(`/api/event-kits/${eid}/items/${type}/final`, 'PUT', { url }, url ? 'Final version saved' : 'Final link removed');
+    return;
+  }
   await ekSend(`/api/event-kits/${eid}/items/${type}`, 'PUT', { url }, url ? 'Link saved · sent to the team for approval' : 'Link removed');
+}
+
+async function ekUploadFinal(eid, type, input) {
+  try {
+    const f = await ekReadFile(input);
+    const kit = ekCurrent()?.kit;
+    await ekSend(`/api/event-kits/${eid}/items/${type}/final`, 'PUT', { url: (kit && kit[`${type}_final_url`]) || '', file: f.name, data: f.data }, 'Final version uploaded');
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function ekClearFinal(eid, type) {
+  const m = EK_MATERIAL_TYPES.find(x => x.key === type);
+  if (!await showConfirm(`Remove the final ${m ? m.label.toLowerCase() : 'version'}? The approved draft stays.`)) return;
+  await ekSend(`/api/event-kits/${eid}/items/${type}/final`, 'PUT', { url: '', clear_file: true }, 'Final removed');
 }
 
 async function ekClearItem(eid, type) {
@@ -10070,6 +10196,245 @@ async function ekDeleteKit(eid) {
   if (ev) ev.kit = null;
   ekRenderList();
   ekRenderDetail();
+}
+
+// ─── MY DEALS (staff portal, sales team) ─────────────────────────────────────
+// Sellers add the deals they sign. Each one lands in the main Deal Tracker
+// under their name and the office is notified; the seller can change or
+// withdraw it until the office invoices it, then follows it to paid here.
+const MD_SYM = { GBP: '£', USD: '$', EUR: '€', AED: 'AED ', PHP: '₱' };
+const MD_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+let _md = { deals: [], events: [], currencies: ['GBP'], canAdd: false, year: null, picked: new Set() };
+
+function mdMoney(n, cur) { return (MD_SYM[cur] || cur + ' ') + Number(n || 0).toLocaleString('en-GB', { maximumFractionDigits: 0 }); }
+
+// Where a deal is: with the office, invoiced, part paid, paid, or cancelled.
+function mdStatus(d) {
+  if (d.cancelled) return { key: 'cancelled', label: 'Cancelled', step: 0 };
+  const expected = d.amount + (d.tax_vat || 0);
+  if (d.paid_inc_vat > 0) return d.paid_inc_vat >= expected - 0.5
+    ? { key: 'paid', label: 'Paid', step: 3 } : { key: 'part', label: 'Part paid', step: 2.5 };
+  if (d.invoice_number || d.invoice_date) return { key: 'invoiced', label: 'Invoiced', step: 2 };
+  return { key: 'submitted', label: 'With the office', step: 1 };
+}
+
+function mdYearOf(d) {
+  if (d.fiscal_year) return parseInt(d.fiscal_year, 10);
+  const m = (d.deal_month || '').match(/^(\d{2})/);
+  return m ? 2000 + parseInt(m[1], 10) : new Date(d.created_at).getFullYear();
+}
+
+// Sales staff (or anyone who already has deals) get the My Deals page.
+async function mdCheckAccess() {
+  try {
+    const res = await fetch('/api/my-deals');
+    if (!res.ok) return;
+    const data = await res.json();
+    mdTake(data);
+    if (data.can_add || data.deals.length) document.querySelectorAll('.sales-only').forEach(el => el.classList.remove('hidden'));
+  } catch {}
+}
+
+function mdTake(data) {
+  _md.deals = data.deals || [];
+  _md.events = data.events || [];
+  _md.currencies = data.currencies || ['GBP'];
+  _md.canAdd = !!data.can_add;
+}
+
+async function loadMyDealsPage() {
+  const root = document.getElementById('mdRoot');
+  if (!root) return;
+  if (!_md.deals.length && !_md.events.length) root.innerHTML = '<div class="ek-loading">Loading…</div>';
+  try {
+    const res = await fetch('/api/my-deals');
+    if (!res.ok) throw new Error();
+    mdTake(await res.json());
+    mdRender();
+  } catch { root.innerHTML = '<div class="ek-loading">Could not load your deals.</div>'; }
+}
+
+function mdRender() {
+  const root = document.getElementById('mdRoot');
+  if (!root) return;
+  const years = [...new Set(_md.deals.map(mdYearOf).concat(new Date().getFullYear() + (new Date().getMonth() >= 8 ? 1 : 0)))].sort((a, b) => b - a);
+  if (!_md.year || !years.includes(_md.year)) _md.year = years[0];
+  const list = _md.deals.filter(d => mdYearOf(d) === _md.year);
+  const live = list.filter(d => !d.cancelled);
+
+  // Totals per currency, shown side by side when a seller works in several.
+  const sumBy = (rows, f) => {
+    const m = {};
+    rows.forEach(d => { const v = f(d); if (v) m[d.currency] = (m[d.currency] || 0) + v; });
+    const parts = Object.entries(m).sort((a, b) => b[1] - a[1]).map(([c, v]) => mdMoney(v, c));
+    return parts.length ? parts.join(' · ') : mdMoney(0, live[0]?.currency || 'GBP');
+  };
+  const signed = sumBy(live, d => d.amount);
+  const paid = sumBy(live, d => d.paid_inc_vat || 0);
+  const awaiting = sumBy(live.filter(d => mdStatus(d).key !== 'paid'), d => Math.max(0, d.amount + (d.tax_vat || 0) - (d.paid_inc_vat || 0)));
+  const withOffice = live.filter(d => mdStatus(d).key === 'submitted').length;
+
+  root.innerHTML = `
+    <div class="md-head">
+      <div class="emp-seg" role="group" aria-label="Programme year">
+        ${years.map(y => `<button type="button" class="${y === _md.year ? 'active' : ''}" onclick="_md.year=${y};mdRender()">${y}</button>`).join('')}
+      </div>
+      ${_md.canAdd ? '<button class="btn btn-primary" onclick="mdOpen()">+ Add deal</button>' : ''}
+    </div>
+
+    <div class="md-tiles">
+      <div class="md-tile"><span>Signed</span><strong>${signed}</strong><small>${live.length} deal${live.length === 1 ? '' : 's'}</small></div>
+      <div class="md-tile"><span>Paid</span><strong>${paid}</strong><small>inc VAT</small></div>
+      <div class="md-tile"><span>Still to come in</span><strong>${awaiting}</strong><small>inc VAT where invoiced</small></div>
+      <div class="md-tile"><span>With the office</span><strong>${withOffice}</strong><small>waiting to be invoiced</small></div>
+    </div>
+
+    <div class="md-flow" aria-hidden="true">
+      <span><i>1</i>You add the deal</span><b></b>
+      <span><i>2</i>The office invoices it</span><b></b>
+      <span><i>3</i>The client pays</span>
+    </div>
+
+    <div class="md-card">
+      ${list.length ? `<table class="md-table">
+        <thead><tr><th>Company</th><th>Events</th><th>Signed</th><th class="dt-r">Value</th><th>Status</th><th></th></tr></thead>
+        <tbody>${list.map(mdRowHtml).join('')}</tbody>
+      </table>` : `<div class="md-empty">
+        <strong>No deals for ${_md.year} yet</strong>
+        <span>${_md.canAdd ? 'Add a deal when it is signed. The office sees it in the Deal Tracker straight away.' : 'Deals you sell appear here.'}</span>
+        ${_md.canAdd ? '<button class="btn btn-primary btn-sm" onclick="mdOpen()">+ Add your first deal</button>' : ''}
+      </div>`}
+    </div>`;
+}
+
+function mdRowHtml(d) {
+  const s = mdStatus(d);
+  const evs = d.events || [];
+  const evTxt = evs.length ? esc(evs[0].event_name) + (evs.length > 1 ? ` <span class="md-more">+${evs.length - 1}</span>` : '') : '<span class="md-muted">—</span>';
+  const pkg = evs.find(e => e.package_label)?.package_label;
+  const pm = parseDealMonth(d.deal_month);
+  const month = pm ? `${MD_MONTHS[pm.month - 1]} ${pm.year}` : (d.deal_month || '—');
+  const paidLine = s.key === 'part' ? `<small>${mdMoney(d.paid_inc_vat, d.currency)} of ${mdMoney(d.amount + (d.tax_vat || 0), d.currency)} in</small>` : '';
+  return `<tr class="md-row${d.locked ? ' is-locked' : ''}" ${d.locked ? `title="The office has invoiced this deal. Ask them if something needs changing."` : `onclick="mdOpen(${d.id})" tabindex="0" onkeydown="if(event.key==='Enter')mdOpen(${d.id})"`}>
+    <td><span class="md-co">${esc(d.company)}</span>${d.contact_name ? `<small>${esc(d.contact_name)}</small>` : ''}</td>
+    <td class="md-evs" title="${esc(evs.map(e => e.event_name).join(', '))}">${evTxt}${pkg ? `<small>${esc(pkg)}</small>` : ''}</td>
+    <td class="md-when">${esc(month)}</td>
+    <td class="dt-r md-val">${mdMoney(d.amount, d.currency)}${paidLine}</td>
+    <td><span class="md-pill md-pill--${s.key}">${s.label}</span>${d.invoice_number ? `<small class="md-inv">${esc(d.invoice_number)}</small>` : ''}</td>
+    <td class="md-act">${d.locked ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Locked"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>' : '<span class="md-edit">Edit</span>'}</td>
+  </tr>`;
+}
+
+function mdOpen(id) {
+  const d = id ? _md.deals.find(x => x.id === id) : null;
+  if (id && (!d || d.locked)) return;
+  document.getElementById('mdEditId').value = d ? d.id : '';
+  document.getElementById('mdModalTitle').textContent = d ? 'Edit deal' : 'Add a deal';
+  document.getElementById('mdSaveBtn').textContent = d ? 'Save changes' : 'Add deal';
+  document.getElementById('mdDeleteBtn').classList.toggle('hidden', !d);
+  document.getElementById('mdCompany').value = d ? d.company : '';
+  document.getElementById('mdContact').value = d ? d.contact_name : '';
+  document.getElementById('mdAmount').value = d ? d.amount : '';
+  document.getElementById('mdNotes').value = d ? d.notes : '';
+  document.getElementById('mdPackage').value = d ? ((d.events || []).find(e => e.package_label)?.package_label || '') : '';
+  document.getElementById('mdCurrency').innerHTML = _md.currencies.map(c => `<option value="${c}">${(MD_SYM[c] || '').trim() && MD_SYM[c].trim() !== c ? MD_SYM[c] + ' ' : ''}${c}</option>`).join('');
+  document.getElementById('mdCurrency').value = d ? d.currency : 'GBP';
+
+  // Month signed: the last 18 months and the next 3, newest first.
+  const now = new Date();
+  const opts = [];
+  for (let i = 3; i >= -18; i--) {
+    const dt = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    opts.push({ v: dealMonthText(dt.getMonth() + 1, dt.getFullYear()), t: `${MD_MONTHS[dt.getMonth()]} ${dt.getFullYear()}` });
+  }
+  const cur = d ? d.deal_month : dealMonthText(now.getMonth() + 1, now.getFullYear());
+  if (cur && !opts.some(o => o.v === cur)) opts.push({ v: cur, t: cur });
+  const sel = document.getElementById('mdMonth');
+  sel.innerHTML = opts.map(o => `<option value="${esc(o.v)}">${esc(o.t)}</option>`).join('');
+  sel.value = cur;
+
+  _md.picked = new Set(d ? (d.events || []).map(e => e.event_id) : []);
+  document.getElementById('mdEvSearch').value = '';
+  mdRenderEventPicker();
+  openModal('myDealModal');
+  setTimeout(() => document.getElementById('mdCompany').focus(), 50);
+}
+
+function mdRenderEventPicker() {
+  const q = (document.getElementById('mdEvSearch').value || '').trim().toLowerCase();
+  const nowIso = today();
+  const evs = _md.events.filter(e => {
+    const past = e.event_date && e.date_tbc !== 'date' && String(e.event_date).slice(0, 10) < nowIso;
+    return (_md.picked.has(e.id) || !past) && (!q || e.name.toLowerCase().includes(q) || (e.location || '').toLowerCase().includes(q));
+  });
+  document.getElementById('mdEvList').innerHTML = evs.map(e => `
+    <label class="md-ev${_md.picked.has(e.id) ? ' on' : ''}">
+      <input type="checkbox" ${_md.picked.has(e.id) ? 'checked' : ''} onchange="mdToggleEvent(${e.id}, this.checked)">
+      <span class="md-ev-name">${esc(e.name)}</span>
+      <span class="md-ev-meta">${(e.event_date || e.programme_year) ? esc(fmtEventDate(e)) : 'Date TBC'}${e.location ? ' · ' + esc(e.location) : ''}</span>
+    </label>`).join('') || '<div class="md-muted md-ev-none">No upcoming events match.</div>';
+  mdUpdateSplit();
+}
+
+function mdToggleEvent(id, on) {
+  if (on) _md.picked.add(id); else _md.picked.delete(id);
+  mdRenderEventPicker();
+}
+
+function mdUpdateSplit() {
+  const el = document.getElementById('mdSplit');
+  if (!el) return;
+  const n = _md.picked.size;
+  const amt = parseFloat(document.getElementById('mdAmount').value);
+  const cur = document.getElementById('mdCurrency').value || 'GBP';
+  el.textContent = !n ? 'Pick the events it covers'
+    : n === 1 ? '1 event'
+    : `${n} events${amt > 0 ? ` · ${mdMoney(amt / n, cur)} each` : ''}`;
+}
+
+async function mdSave() {
+  const id = document.getElementById('mdEditId').value;
+  const body = {
+    company: document.getElementById('mdCompany').value.trim(),
+    contact_name: document.getElementById('mdContact').value.trim(),
+    amount: parseFloat(document.getElementById('mdAmount').value),
+    currency: document.getElementById('mdCurrency').value,
+    deal_month: document.getElementById('mdMonth').value,
+    package_label: document.getElementById('mdPackage').value.trim(),
+    notes: document.getElementById('mdNotes').value.trim(),
+    event_ids: [..._md.picked],
+  };
+  if (!body.company) { showToast('Add the company', 'error'); return; }
+  if (!(body.amount > 0)) { showToast('Add the deal value', 'error'); return; }
+  if (!body.event_ids.length) { showToast('Pick at least one event', 'error'); return; }
+  const btn = document.getElementById('mdSaveBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch(id ? `/api/my-deals/${id}` : '/api/my-deals', {
+      method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { showToast(data.error || 'Could not save the deal', 'error'); return; }
+    const i = _md.deals.findIndex(x => x.id === data.id);
+    if (i >= 0) _md.deals[i] = data; else _md.deals.unshift(data);
+    _md.year = mdYearOf(data);
+    closeModal('myDealModal');
+    showToast(id ? 'Deal updated · the office has been told' : 'Deal added · it is in the Deal Tracker', 'success');
+    mdRender();
+  } finally { btn.disabled = false; }
+}
+
+async function mdDelete() {
+  const id = parseInt(document.getElementById('mdEditId').value, 10);
+  const d = _md.deals.find(x => x.id === id);
+  if (!d || !await showConfirm(`Withdraw the ${d.company} deal? It is removed from the Deal Tracker.`)) return;
+  const res = await fetch(`/api/my-deals/${id}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { showToast(data.error || 'Could not withdraw the deal', 'error'); return; }
+  _md.deals = _md.deals.filter(x => x.id !== id);
+  closeModal('myDealModal');
+  showToast('Deal withdrawn', 'success');
+  mdRender();
 }
 
 // ── Invoice Generator ──────────────────────────────────────────────────────────

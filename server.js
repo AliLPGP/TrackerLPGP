@@ -184,6 +184,19 @@ async function runLateMigrations() {
     `ALTER TABLE event_kits ADD COLUMN IF NOT EXISTS delegates_id INT REFERENCES employees(id) ON DELETE SET NULL`,
     `ALTER TABLE event_kits ADD COLUMN IF NOT EXISTS sales_id INT REFERENCES employees(id) ON DELETE SET NULL`,
     `ALTER TABLE event_kits ADD COLUMN IF NOT EXISTS item_reviews TEXT NOT NULL DEFAULT '{}'`,
+    // Event kit final versions: once the team approves a draft, the office
+    // uploads the final file or link. item_finals: {"<type>": {by, at}}.
+    ...['brochure', 'banner', 'roundtable', 'presentation', 'backdrop', 'name_badges'].flatMap(t => [
+      `ALTER TABLE event_kits ADD COLUMN IF NOT EXISTS ${t}_final_url TEXT`,
+      `ALTER TABLE event_kits ADD COLUMN IF NOT EXISTS ${t}_final_file TEXT`,
+      `ALTER TABLE event_kits ADD COLUMN IF NOT EXISTS ${t}_final_data TEXT`,
+    ]),
+    `ALTER TABLE event_kits ADD COLUMN IF NOT EXISTS item_finals TEXT NOT NULL DEFAULT '{}'`,
+    // Who sold a deal, and deals the sales team add from the staff portal:
+    // office_seen stays false until someone in the office opens or dismisses it.
+    `ALTER TABLE deals ADD COLUMN IF NOT EXISTS sales_employee_id INT REFERENCES employees(id) ON DELETE SET NULL`,
+    `ALTER TABLE deals ADD COLUMN IF NOT EXISTS from_portal BOOLEAN NOT NULL DEFAULT FALSE`,
+    `ALTER TABLE deals ADD COLUMN IF NOT EXISTS office_seen BOOLEAN NOT NULL DEFAULT TRUE`,
   ];
   for (const step of steps) {
     try { await sql(step); } catch(e) { console.warn('Migration step skipped:', e.message); }
@@ -2094,13 +2107,14 @@ app.get('/api/employees/:id/portfolio-roles', requireAuth, requireAdminOrManager
 app.get('/api/deals', requireAuth, requireAdminOrManager, async (req, res) => {
   try {
     const { rows: deals } = await q(`
-      SELECT d.*,
+      SELECT d.*, se.name AS sales_name,
         COALESCE(json_agg(json_build_object('event_id',de.event_id,'event_name',pe.name,'allocated_amount',de.allocated_amount,'package_label',de.package_label))
           FILTER (WHERE de.event_id IS NOT NULL), '[]') AS events
       FROM deals d
+      LEFT JOIN employees se ON se.id = d.sales_employee_id
       LEFT JOIN deal_events de ON de.deal_id = d.id
       LEFT JOIN portfolio_events pe ON pe.id = de.event_id
-      GROUP BY d.id ORDER BY d.created_at DESC`);
+      GROUP BY d.id, se.name ORDER BY d.created_at DESC`);
     // Strip base64 file blobs from the list payload — files are streamed
     // on demand via /api/deals/:id/invoice/:n (names are enough for the UI)
     deals.forEach(d => { delete d.invoice1_data; delete d.invoice2_data; });
@@ -2205,6 +2219,13 @@ async function programmeYearForEvents(eventIds) {
   return distinct.length === 1 ? distinct[0] : null;
 }
 
+// Links a deal to the employee who sold it (null clears it). Unknown ids are ignored.
+async function setDealSalesPerson(dealId, empId) {
+  const id = parseInt(empId, 10);
+  if (!Number.isInteger(id)) { await q('UPDATE deals SET sales_employee_id=NULL WHERE id=?', [dealId]); return; }
+  await q('UPDATE deals SET sales_employee_id=(SELECT id FROM employees WHERE id=?) WHERE id=?', [id, dealId]);
+}
+
 app.post('/api/deals', requireAuth, requireAdminOrManager, async (req, res) => {
   try {
     const { title, company, contact_name, amount, currency, stage, event_ids, event_packages, notes,
@@ -2235,6 +2256,7 @@ app.post('/api/deals', requireAuth, requireAdminOrManager, async (req, res) => {
     );
     const deal = rows[0];
     await insertDealEvents(deal.id, amount, event_ids, event_packages);
+    if ('sales_employee_id' in req.body) await setDealSalesPerson(deal.id, req.body.sales_employee_id);
     res.json(deal);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2270,6 +2292,7 @@ app.put('/api/deals/:id', requireAuth, requireAdminOrManager, async (req, res) =
       await q('DELETE FROM deal_events WHERE deal_id=?', [req.params.id]);
       await insertDealEvents(req.params.id, amount, event_ids, event_packages);
     }
+    if ('sales_employee_id' in req.body) await setDealSalesPerson(req.params.id, req.body.sales_employee_id);
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2429,6 +2452,170 @@ app.patch('/api/deals/:id/uncancel', requireAuth, requireAdminOrManager, async (
       [req.params.id]
     );
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ─── SALES PORTAL DEALS ───────────────────────────────────────────────────────
+// The sales team adds the deals they sign from the staff portal. Each one goes
+// straight into the main Deal Tracker under their name, and the office gets a
+// notification. A seller can change or withdraw a deal until the office has
+// invoiced it; after that it is the office's record.
+
+// Office: portal deals nobody in the office has looked at yet.
+app.get('/api/deals/portal-new', requireAuth, requireAdminOrManager, async (_req, res) => {
+  try {
+    const { rows } = await q(`
+      SELECT d.id, COALESCE(NULLIF(d.company,''), d.title) AS company, d.amount, d.currency, d.created_at,
+             d.sales_employee_id, e.name AS sales_name
+        FROM deals d LEFT JOIN employees e ON e.id = d.sales_employee_id
+       WHERE NOT d.office_seen ORDER BY d.created_at DESC`);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.patch('/api/deals/:id/seen', requireAuth, requireAdminOrManager, async (req, res) => {
+  try {
+    await q('UPDATE deals SET office_seen=TRUE WHERE id=?', [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+const MY_DEAL_CURRENCIES = ['GBP', 'USD', 'EUR', 'AED', 'PHP'];
+
+function myDealEmployeeId(req) {
+  return req.admin && req.admin.role === 'employee' ? parseInt(req.admin.employee_id, 10) : null;
+}
+
+// Sales department, or named as sales on a portfolio or an event team.
+async function isSalesStaff(empId) {
+  const { rows } = await q(`
+    SELECT 1 FROM employees WHERE id=? AND active=1 AND (department ILIKE '%sales%'
+      OR EXISTS (SELECT 1 FROM portfolio_teams WHERE sales_id=?)
+      OR EXISTS (SELECT 1 FROM event_kits WHERE sales_id=?))`, [empId, empId, empId]);
+  return rows.length > 0;
+}
+
+// A deal the office has invoiced, been paid for or cancelled is locked.
+function myDealLocked(d) {
+  return !!((d.invoice_number && String(d.invoice_number).trim()) || d.invoice_date
+    || parseFloat(d.paid_inc_vat) > 0 || d.stage_cancelled);
+}
+
+function myDealShape(d) {
+  return {
+    id: d.id, company: d.company || d.title || '', contact_name: d.contact_name || '',
+    amount: parseFloat(d.amount) || 0, currency: d.currency || 'GBP',
+    deal_month: d.deal_month || '', fiscal_year: d.fiscal_year, notes: d.notes || '',
+    invoice_number: d.invoice_number || '', invoice_date: d.invoice_date, paid_date: d.paid_date,
+    paid_inc_vat: d.paid_inc_vat == null ? null : parseFloat(d.paid_inc_vat),
+    tax_vat: d.tax_vat == null ? null : parseFloat(d.tax_vat),
+    cancelled: !!d.stage_cancelled, from_portal: !!d.from_portal, created_at: d.created_at,
+    events: d.events || [], locked: myDealLocked(d),
+  };
+}
+
+async function myDealsFor(empId, dealId) {
+  const { rows } = await q(`
+    SELECT d.*,
+      COALESCE(json_agg(json_build_object('event_id',de.event_id,'event_name',pe.name,'allocated_amount',de.allocated_amount,'package_label',de.package_label))
+        FILTER (WHERE de.event_id IS NOT NULL), '[]') AS events
+    FROM deals d
+    LEFT JOIN deal_events de ON de.deal_id = d.id
+    LEFT JOIN portfolio_events pe ON pe.id = de.event_id
+    WHERE d.sales_employee_id = ? ${dealId ? 'AND d.id = ?' : ''}
+    GROUP BY d.id ORDER BY d.created_at DESC`, dealId ? [empId, dealId] : [empId]);
+  return rows.map(myDealShape);
+}
+
+// Validates a seller's deal and turns it into the columns and event split.
+async function myDealInput(body) {
+  const company = String(body.company || '').trim().slice(0, 160);
+  if (!company) return { error: 'Company is required' };
+  const amount = parseFloat(body.amount);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1e9) return { error: 'Enter the deal value' };
+  const currency = MY_DEAL_CURRENCIES.includes(body.currency) ? body.currency : 'GBP';
+  const deal_month = String(body.deal_month || '').trim();
+  if (!/^\d{2} - (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/.test(deal_month)) return { error: 'Pick the month it was signed' };
+  const ids = [...new Set((Array.isArray(body.event_ids) ? body.event_ids : []).map(Number).filter(n => Number.isInteger(n) && n > 0))];
+  if (!ids.length) return { error: 'Pick at least one event' };
+  const { rows: found } = await q(`SELECT id FROM portfolio_events WHERE id IN (${ids.map(() => '?').join(',')})`, ids);
+  if (found.length !== ids.length) return { error: 'One of those events no longer exists' };
+  // Even split in pence; the first events absorb the remainder so it adds up.
+  const pence = Math.round(amount * 100), base = Math.floor(pence / ids.length);
+  const label = String(body.package_label || '').trim().slice(0, 80);
+  const event_packages = ids.map((id, i) => ({ event_id: id, amount: (base + (i < pence - base * ids.length ? 1 : 0)) / 100, package_label: label }));
+  return {
+    company, amount, currency, deal_month, event_packages,
+    contact_name: String(body.contact_name || '').trim().slice(0, 120),
+    notes: String(body.notes || '').trim().slice(0, 2000),
+    fiscal_year: await programmeYearForEvents(ids),
+  };
+}
+
+// Staff: my deals, plus what the form needs.
+app.get('/api/my-deals', requireAuth, async (req, res) => {
+  try {
+    const empId = myDealEmployeeId(req);
+    if (!empId) return res.status(403).json({ error: 'Staff portal only' });
+    const [deals, canAdd, ev] = await Promise.all([
+      myDealsFor(empId),
+      isSalesStaff(empId),
+      q(`SELECT id, name, event_date, date_tbc, programme_year, location FROM portfolio_events
+          ORDER BY event_date NULLS LAST, name`),
+    ]);
+    res.json({ can_add: canAdd, deals, events: ev.rows, currencies: MY_DEAL_CURRENCIES });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/my-deals', requireAuth, async (req, res) => {
+  try {
+    const empId = myDealEmployeeId(req);
+    if (!empId || !(await isSalesStaff(empId))) return res.status(403).json({ error: 'Only the sales team can add deals' });
+    const v = await myDealInput(req.body);
+    if (v.error) return res.status(400).json({ error: v.error });
+    const { rows: me } = await q('SELECT name FROM employees WHERE id=?', [empId]);
+    const initials = (me[0]?.name || '').split(/\s+/).filter(Boolean).map(w => w[0]).join('').slice(0, 3).toUpperCase();
+    const { rows } = await q(
+      `INSERT INTO deals (title, company, contact_name, amount, currency, stage, notes, initials, deal_month, fiscal_year,
+         sales_employee_id, from_portal, office_seen)
+       VALUES (?,?,?,?,?,'Prospect',?,?,?,?,?,TRUE,FALSE) RETURNING id`,
+      [v.company, v.company, v.contact_name, v.amount, v.currency, v.notes, initials, v.deal_month,
+       Number.isInteger(v.fiscal_year) ? v.fiscal_year : null, empId]
+    );
+    await insertDealEvents(rows[0].id, v.amount, null, v.event_packages);
+    res.json((await myDealsFor(empId, rows[0].id))[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/my-deals/:id', requireAuth, async (req, res) => {
+  try {
+    const empId = myDealEmployeeId(req);
+    if (!empId) return res.status(403).json({ error: 'Staff portal only' });
+    const [cur] = await myDealsFor(empId, parseInt(req.params.id, 10) || 0);
+    if (!cur) return res.status(404).json({ error: 'Not found' });
+    if (cur.locked) return res.status(409).json({ error: 'The office has invoiced this deal. Ask them to change it.' });
+    const v = await myDealInput(req.body);
+    if (v.error) return res.status(400).json({ error: v.error });
+    await q(
+      `UPDATE deals SET title=?, company=?, contact_name=?, amount=?, currency=?, notes=?, deal_month=?,
+         fiscal_year=COALESCE(?, fiscal_year), office_seen=FALSE WHERE id=? AND sales_employee_id=?`,
+      [v.company, v.company, v.contact_name, v.amount, v.currency, v.notes, v.deal_month,
+       Number.isInteger(v.fiscal_year) ? v.fiscal_year : null, cur.id, empId]
+    );
+    await q('DELETE FROM deal_events WHERE deal_id=?', [cur.id]);
+    await insertDealEvents(cur.id, v.amount, null, v.event_packages);
+    res.json((await myDealsFor(empId, cur.id))[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/my-deals/:id', requireAuth, async (req, res) => {
+  try {
+    const empId = myDealEmployeeId(req);
+    if (!empId) return res.status(403).json({ error: 'Staff portal only' });
+    const [cur] = await myDealsFor(empId, parseInt(req.params.id, 10) || 0);
+    if (!cur) return res.status(404).json({ error: 'Not found' });
+    if (cur.locked) return res.status(409).json({ error: 'The office has invoiced this deal. Ask them to cancel it.' });
+    await q('DELETE FROM deals WHERE id=? AND sales_employee_id=?', [cur.id, empId]);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2910,21 +3097,25 @@ app.post('/api/generate-invoice', requireAuth, requireAdminOrManager, async (req
 });
 
 // ─── EVENT KITS ─────────────────────────────────────────────────────────────
-// One kit per event: the marketing materials the office prepares, the
-// agendas the producer uploads, and the event team (producer, delegates,
-// sales) who see the kit in their staff portal and approve each material.
-// A material is missing, pending (uploaded, waiting for the team), approved,
-// or changes (the team asked for changes, with a note).
+// One kit per event, worked in this order: the producer uploads the agenda,
+// the office builds a draft of each material from it, the event team
+// (producer, delegates, sales) approves each draft or asks for changes in
+// their staff portal, and the office uploads the final version.
+// A material's review is missing, pending, changes (with a note) or approved;
+// a final version can only go on an approved draft.
 const EK_MATERIALS = ['brochure', 'banner', 'roundtable', 'presentation', 'backdrop', 'name_badges'];
 const EK_FILE_TYPES = { agenda: ['agenda_file', 'agenda_data'], agenda2: ['agenda_file_2', 'agenda_data_2'] };
-EK_MATERIALS.forEach(t => { EK_FILE_TYPES[t] = [`${t}_file`, `${t}_data`]; });
+EK_MATERIALS.forEach(t => {
+  EK_FILE_TYPES[t] = [`${t}_file`, `${t}_data`];
+  EK_FILE_TYPES[`${t}_final`] = [`${t}_final_file`, `${t}_final_data`];
+});
 const EK_TEAM = ['producer', 'delegates', 'sales'];
 
 // Every column except the base64 file bodies, plus the event and team names.
 const EK_SELECT = `
   SELECT ek.id, ek.event_id, ek.agenda_file, ek.agenda_file_2, ek.agenda_uploader_name, ek.agenda_uploader_name_2,
-    ${EK_MATERIALS.map(t => `ek.${t}_url, ek.${t}_file`).join(', ')},
-    ek.access_emails, ek.notes, ek.item_reviews, ek.updated_at,
+    ${EK_MATERIALS.map(t => `ek.${t}_url, ek.${t}_file, ek.${t}_final_url, ek.${t}_final_file`).join(', ')},
+    ek.access_emails, ek.notes, ek.item_reviews, ek.item_finals, ek.updated_at,
     ${EK_TEAM.map(r => `ek.${r}_id, e_${r}.name AS ${r}_name`).join(', ')},
     pe.name AS event_name, pe.event_date, pe.date_tbc, pe.programme_year, pe.location, pe.producer AS producer_team
   FROM event_kits ek
@@ -2932,7 +3123,8 @@ const EK_SELECT = `
   ${EK_TEAM.map(r => `LEFT JOIN employees e_${r} ON e_${r}.id = ek.${r}_id`).join('\n  ')}`;
 
 function ekShape(row) {
-  return { ...row, access_emails: safeJsonParse(row.access_emails, []), item_reviews: safeJsonParse(row.item_reviews, {}) };
+  return { ...row, access_emails: safeJsonParse(row.access_emails, []), item_reviews: safeJsonParse(row.item_reviews, {}),
+    item_finals: safeJsonParse(row.item_finals, {}) };
 }
 
 // Staff see a kit when they are on its team or their email is on its list.
@@ -3018,8 +3210,9 @@ app.patch('/api/event-kits/:eventId/team', requireAuth, requireAdminOrManager, a
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// One material: a link, a file, both, or cleared. New content goes back to
-// the team for approval.
+// One material's draft: a link, a file, both, or cleared. A new draft goes
+// back to the team for approval and drops any final version made from the
+// old one.
 app.put('/api/event-kits/:eventId/items/:type', requireAuth, requireAdminOrManager, async (req, res) => {
   try {
     const type = req.params.type;
@@ -3028,15 +3221,47 @@ app.put('/api/event-kits/:eventId/items/:type', requireAuth, requireAdminOrManag
     if (!(await ekEnsure(eventId, req.admin.id))) return res.status(404).json({ error: 'No such event' });
     const url = String(req.body.url ?? '').trim().slice(0, 1000);
     if (url && !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Links must start with http:// or https://' });
+    const before = await ekLoad(eventId);
+    const changed = !!req.body.data || !!req.body.clear_file || url !== (before[`${type}_url`] || '');
+    if (!changed) return res.json(before);
     const sets = [`${type}_url=?`], vals = [url];
     if (req.body.clear_file) { sets.push(`${type}_file=?`, `${type}_data=?`); vals.push('', ''); }
     else if (req.body.data) { sets.push(`${type}_file=?`, `${type}_data=?`); vals.push(String(req.body.file || 'file').slice(0, 200), String(req.body.data)); }
+    sets.push(`${type}_final_url=?`, `${type}_final_file=?`, `${type}_final_data=?`); vals.push('', '', '');
     await q(`UPDATE event_kits SET ${sets.join(', ')}, updated_at=NOW() WHERE event_id=?`, [...vals, eventId]);
     const kit = await ekLoad(eventId);
     const reviews = kit.item_reviews || {};
+    const finals = kit.item_finals || {};
     if (kit[`${type}_url`] || kit[`${type}_file`]) reviews[type] = { status: 'pending', at: new Date().toISOString() };
     else delete reviews[type];
-    await q('UPDATE event_kits SET item_reviews=? WHERE event_id=?', [JSON.stringify(reviews), eventId]);
+    delete finals[type];
+    await q('UPDATE event_kits SET item_reviews=?, item_finals=? WHERE event_id=?', [JSON.stringify(reviews), JSON.stringify(finals), eventId]);
+    res.json(await ekLoad(eventId));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// One material's final version, uploaded by the office once the draft is
+// approved: a link, a file, both, or cleared.
+app.put('/api/event-kits/:eventId/items/:type/final', requireAuth, requireAdminOrManager, async (req, res) => {
+  try {
+    const type = req.params.type;
+    if (!EK_MATERIALS.includes(type)) return res.status(400).json({ error: 'Unknown material' });
+    const eventId = parseInt(req.params.eventId, 10);
+    const kit = await ekLoad(eventId);
+    if (!kit) return res.status(404).json({ error: 'No kit for this event' });
+    const url = String(req.body.url ?? '').trim().slice(0, 1000);
+    if (url && !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Links must start with http:// or https://' });
+    const adding = !!url || !!req.body.data;
+    if (adding && (kit.item_reviews?.[type]?.status) !== 'approved') return res.status(400).json({ error: 'The team has to approve the draft first' });
+    const sets = [`${type}_final_url=?`], vals = [url];
+    if (req.body.clear_file) { sets.push(`${type}_final_file=?`, `${type}_final_data=?`); vals.push('', ''); }
+    else if (req.body.data) { sets.push(`${type}_final_file=?`, `${type}_final_data=?`); vals.push(String(req.body.file || 'file').slice(0, 200), String(req.body.data)); }
+    await q(`UPDATE event_kits SET ${sets.join(', ')}, updated_at=NOW() WHERE event_id=?`, [...vals, eventId]);
+    const after = await ekLoad(eventId);
+    const finals = after.item_finals || {};
+    if (after[`${type}_final_url`] || after[`${type}_final_file`]) finals[type] = { by: req.admin.name || req.admin.username || '', at: new Date().toISOString() };
+    else delete finals[type];
+    await q('UPDATE event_kits SET item_finals=? WHERE event_id=?', [JSON.stringify(finals), eventId]);
     res.json(await ekLoad(eventId));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -3051,6 +3276,7 @@ app.post('/api/event-kits/:eventId/items/:type/review', requireAuth, async (req,
     if (!kit) return res.status(404).json({ error: 'No kit for this event' });
     if (!ekIsOffice(req.admin) && !ekIsTeam(kit, req.admin)) return res.status(403).json({ error: 'Only the event team can review materials' });
     if (!kit[`${type}_url`] && !kit[`${type}_file`]) return res.status(400).json({ error: 'Nothing uploaded to review yet' });
+    if (!ekIsOffice(req.admin) && (kit[`${type}_final_url`] || kit[`${type}_final_file`])) return res.status(409).json({ error: 'The final version is in. Ask the office if it needs changing.' });
     const decision = req.body.decision;
     if (!['approved', 'changes', 'pending'].includes(decision)) return res.status(400).json({ error: 'Unknown decision' });
     const note = String(req.body.note || '').trim().slice(0, 1000);
