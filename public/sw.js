@@ -1,12 +1,12 @@
-const CACHE = 'lpgp-v74';
+const CACHE = 'lpgp-v76';
 const STATIC = [
   '/',
   '/style.css',
   '/app.js',
   '/login.html',
   '/manifest.json',
-  '/icon-192.png',
-  '/icon-512.png',
+  '/lpgp-icon-192.png',
+  '/lpgp-icon-512.png',
   'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap'
 ];
 

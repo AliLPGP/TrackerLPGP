@@ -10231,9 +10231,12 @@ async function ekDeleteKit(eid) {
 // withdraw it until the office invoices it, then follows it to paid here.
 const MD_SYM = { GBP: '£', USD: '$', EUR: '€', AED: 'AED ', PHP: '₱' };
 const MD_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-let _md = { deals: [], events: [], currencies: ['GBP'], canAdd: false, year: null, picked: new Set() };
+let _md = { deals: [], events: [], currencies: ['GBP'], canAdd: false, year: null, picked: new Set(), custom: false, pkgs: {} };
 
-function mdMoney(n, cur) { return (MD_SYM[cur] || cur + ' ') + Number(n || 0).toLocaleString('en-GB', { maximumFractionDigits: 0 }); }
+function mdMoney(n, cur) {
+  const v = Number(n || 0);
+  return (MD_SYM[cur] || cur + ' ') + v.toLocaleString('en-GB', { minimumFractionDigits: v % 1 ? 2 : 0, maximumFractionDigits: 2 });
+}
 
 // Where a deal is: with the office, invoiced, part paid, paid, or cancelled.
 function mdStatus(d) {
@@ -10362,8 +10365,17 @@ function mdOpen(id) {
   document.getElementById('mdCompany').value = d ? d.company : '';
   document.getElementById('mdContact').value = d ? d.contact_name : '';
   document.getElementById('mdAmount').value = d ? d.amount : '';
+  document.getElementById('mdVat').value = d && d.tax_vat != null ? d.tax_vat : '';
   document.getElementById('mdNotes').value = d ? d.notes : '';
-  document.getElementById('mdPackage').value = d ? ((d.events || []).find(e => e.package_label)?.package_label || '') : '';
+  // A saved deal with different amounts or packages per event reopens in
+  // custom split; one package on an even split fills the Package field.
+  const evs = d ? (d.events || []) : [];
+  const share = evs.length ? d.amount / evs.length : 0;
+  const label0 = evs[0] ? (evs[0].package_label || '') : '';
+  _md.custom = evs.length > 1 && !evs.every(e => (e.package_label || '') === label0 && Math.abs((parseFloat(e.allocated_amount) || 0) - share) <= 0.011);
+  _md.pkgs = {};
+  evs.forEach(e => { _md.pkgs[e.event_id] = { amount: parseFloat(e.allocated_amount) || 0, label: e.package_label || '' }; });
+  document.getElementById('mdPackage').value = _md.custom ? '' : label0;
   document.getElementById('mdCurrency').innerHTML = _md.currencies.map(c => `<option value="${c}">${(MD_SYM[c] || '').trim() && MD_SYM[c].trim() !== c ? MD_SYM[c] + ' ' : ''}${c}</option>`).join('');
   document.getElementById('mdCurrency').value = d ? d.currency : 'GBP';
 
@@ -10405,18 +10417,83 @@ function mdRenderEventPicker() {
 
 function mdToggleEvent(id, on) {
   if (on) _md.picked.add(id); else _md.picked.delete(id);
+  if (_md.picked.size < 2) _md.custom = false;
   mdRenderEventPicker();
 }
 
+function mdSetSplitMode(custom) {
+  _md.custom = custom;
+  if (custom) {
+    // Start from the even split, keeping anything already typed.
+    const amt = parseFloat(document.getElementById('mdAmount').value) || 0;
+    const ids = [..._md.picked];
+    const label = document.getElementById('mdPackage').value.trim();
+    ids.forEach(id => {
+      const p = _md.pkgs[id] || (_md.pkgs[id] = { amount: 0, label: '' });
+      if (!p.amount) p.amount = Math.round(amt / ids.length * 100) / 100;
+      if (!p.label) p.label = label;
+    });
+  }
+  mdUpdateSplit();
+}
+
+function mdPkgInput(id, field, value) {
+  const p = _md.pkgs[id] || (_md.pkgs[id] = { amount: 0, label: '' });
+  if (field === 'amount') p.amount = parseFloat(value) || 0; else p.label = value;
+  mdUpdateSplitLeft();
+}
+
+// Money line, split switch and (in custom mode) one row per picked event.
 function mdUpdateSplit() {
   const el = document.getElementById('mdSplit');
   if (!el) return;
   const n = _md.picked.size;
-  const amt = parseFloat(document.getElementById('mdAmount').value);
+  const amt = parseFloat(document.getElementById('mdAmount').value) || 0;
+  const vat = parseFloat(document.getElementById('mdVat').value) || 0;
   const cur = document.getElementById('mdCurrency').value || 'GBP';
   el.textContent = !n ? 'Pick the events it covers'
     : n === 1 ? '1 event'
+    : _md.custom ? `${n} events · custom split`
     : `${n} events${amt > 0 ? ` · ${mdMoney(amt / n, cur)} each` : ''}`;
+
+  document.getElementById('mdTotal').innerHTML = amt > 0
+    ? `Invoice total <strong>${mdMoney(amt + vat, cur)}</strong>${vat ? ` <span class="md-muted">(${mdMoney(amt, cur)} + ${mdMoney(vat, cur)} VAT)</span>` : ''}` : '';
+
+  const multi = n > 1;
+  document.getElementById('mdSplitMode').classList.toggle('hidden', !multi);
+  document.querySelectorAll('#mdSplitMode button').forEach(b => b.classList.toggle('active', (b.dataset.v === 'custom') === _md.custom));
+  document.getElementById('mdPackageWrap').classList.toggle('md-off', _md.custom && multi);
+  const box = document.getElementById('mdPkgs');
+  const custom = multi && _md.custom;
+  box.classList.toggle('hidden', !custom);
+  if (custom) {
+    const sym = (MD_SYM[cur] || cur + ' ').trim();
+    box.innerHTML = [..._md.picked].map(id => {
+      const e = _md.events.find(x => x.id === id);
+      const p = _md.pkgs[id] || { amount: 0, label: '' };
+      return `<div class="md-pkg">
+        <div class="md-pkg-name">${esc(e ? e.name : 'Event')}</div>
+        <div class="md-pkg-fields">
+          <label class="md-pkg-amt"><span>${esc(sym)}</span><input type="number" min="0" step="0.01" value="${p.amount || ''}" placeholder="0.00" aria-label="Amount for ${esc(e ? e.name : 'event')}" oninput="mdPkgInput(${id},'amount',this.value)"></label>
+          <input type="text" maxlength="80" value="${esc(p.label || '')}" placeholder="Package" aria-label="Package for ${esc(e ? e.name : 'event')}" oninput="mdPkgInput(${id},'label',this.value)">
+        </div>
+      </div>`;
+    }).join('');
+  }
+  mdUpdateSplitLeft();
+}
+
+// How much of the deal value is still to allocate in a custom split.
+function mdUpdateSplitLeft() {
+  const el = document.getElementById('mdSplitLeft');
+  if (!el) return;
+  if (!_md.custom || _md.picked.size < 2) { el.textContent = ''; el.className = 'md-split-left'; return; }
+  const amt = parseFloat(document.getElementById('mdAmount').value) || 0;
+  const cur = document.getElementById('mdCurrency').value || 'GBP';
+  const sum = [..._md.picked].reduce((t, id) => t + ((_md.pkgs[id] && _md.pkgs[id].amount) || 0), 0);
+  const left = Math.round((amt - sum) * 100) / 100;
+  el.className = 'md-split-left ' + (Math.abs(left) < 0.01 ? 'is-ok' : 'is-off');
+  el.textContent = Math.abs(left) < 0.01 ? 'Adds up' : left > 0 ? `${mdMoney(left, cur)} left to allocate` : `${mdMoney(-left, cur)} over`;
 }
 
 async function mdSave() {
@@ -10427,10 +10504,17 @@ async function mdSave() {
     amount: parseFloat(document.getElementById('mdAmount').value),
     currency: document.getElementById('mdCurrency').value,
     deal_month: document.getElementById('mdMonth').value,
+    tax_vat: document.getElementById('mdVat').value === '' ? null : parseFloat(document.getElementById('mdVat').value),
     package_label: document.getElementById('mdPackage').value.trim(),
     notes: document.getElementById('mdNotes').value.trim(),
     event_ids: [..._md.picked],
   };
+  if (_md.custom && body.event_ids.length > 1) {
+    body.packages = body.event_ids.map(id => ({ event_id: id, amount: (_md.pkgs[id] && _md.pkgs[id].amount) || 0, package_label: ((_md.pkgs[id] && _md.pkgs[id].label) || '').trim() }));
+    const sum = body.packages.reduce((t, p) => t + p.amount, 0);
+    if (Math.abs(sum - body.amount) > 0.01) { showToast('The split has to add up to the deal value', 'error'); return; }
+  }
+  if (body.tax_vat !== null && !(body.tax_vat >= 0)) { showToast('VAT must be a positive number', 'error'); return; }
   if (!body.company) { showToast('Add the company', 'error'); return; }
   if (!(body.amount > 0)) { showToast('Add the deal value', 'error'); return; }
   if (!body.event_ids.length) { showToast('Pick at least one event', 'error'); return; }

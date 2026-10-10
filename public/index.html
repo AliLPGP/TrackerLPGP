@@ -10,11 +10,11 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="application-name" content="LPGP Tracker">
   <link rel="manifest" href="/manifest.json">
-  <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="apple-touch-icon" sizes="192x192" href="/icon-192.png">
-  <link rel="apple-touch-icon" sizes="512x512" href="/icon-512.png">
-  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
-  <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+  <link rel="apple-touch-icon" href="/lpgp-icon-192.png">
+  <link rel="apple-touch-icon" sizes="192x192" href="/lpgp-icon-192.png">
+  <link rel="apple-touch-icon" sizes="512x512" href="/lpgp-icon-512.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/lpgp-favicon-32.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="/lpgp-icon-192.png">
   <title>LPGP Tracker</title>
   <link rel="stylesheet" href="style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1914,13 +1914,20 @@
             <input type="number" id="mdAmount" min="0" step="0.01" placeholder="0.00" oninput="mdUpdateSplit()">
           </div>
           <div class="dm-field">
+            <label for="mdVat">VAT <span class="dm-opt">optional</span></label>
+            <input type="number" id="mdVat" min="0" step="0.01" placeholder="0.00" oninput="mdUpdateSplit()">
+          </div>
+        </div>
+        <div class="dm-summary" id="mdTotal"></div>
+        <div class="dm-row dm-row--2">
+          <div class="dm-field">
             <label for="mdMonth">Month signed</label>
             <select id="mdMonth"></select>
           </div>
-        </div>
-        <div class="dm-field">
-          <label for="mdPackage">Package <span class="dm-opt">optional</span></label>
-          <input type="text" id="mdPackage" placeholder="e.g. Gold sponsor, Roundtable host" maxlength="80">
+          <div class="dm-field" id="mdPackageWrap">
+            <label for="mdPackage">Package <span class="dm-opt">optional</span></label>
+            <input type="text" id="mdPackage" placeholder="e.g. Gold sponsor" maxlength="80">
+          </div>
         </div>
       </section>
       <section class="dm-sec">
@@ -1932,6 +1939,14 @@
           <input type="search" id="mdEvSearch" placeholder="Search events" oninput="mdRenderEventPicker()">
         </div>
         <div class="md-ev-list" id="mdEvList"></div>
+        <div class="md-split-mode hidden" id="mdSplitMode">
+          <div class="emp-seg" role="group" aria-label="How the value is split">
+            <button type="button" data-v="even" class="active" onclick="mdSetSplitMode(false)">Even split</button>
+            <button type="button" data-v="custom" onclick="mdSetSplitMode(true)">Custom split</button>
+          </div>
+          <span class="md-split-left" id="mdSplitLeft"></span>
+        </div>
+        <div class="md-pkgs hidden" id="mdPkgs"></div>
       </section>
       <section class="dm-sec">
         <h3 class="dm-sec-title">Notes <span class="dm-opt">optional</span></h3>
