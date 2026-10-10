@@ -83,6 +83,10 @@
         <span class="icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
         <span class="nav-label">Event Kit</span>
       </div>
+      <div class="nav-item sales-only hidden" data-page="mydeals">
+        <span class="icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span>
+        <span class="nav-label">My Deals</span>
+      </div>
       <div class="nav-item" data-page="hotels">
         <span class="icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 22V12a9 9 0 0 1 18 0v10"/><path d="M3 22h18"/><path d="M9 22v-4h6v4"/></svg></span>
         <span class="nav-label">Hotel Expenses</span>
@@ -715,6 +719,11 @@
   <div id="ekRoot" class="ek"></div>
 </div>
 
+<!-- ══ MY DEALS (staff portal, sales team) ══ -->
+<div class="page" id="page-mydeals">
+  <div id="mdRoot" class="md"></div>
+</div>
+
 <!-- ══ MY PROFILE (staff portal) ══ -->
 <div class="page" id="page-profile">
   <div id="profileContent"></div>
@@ -931,7 +940,7 @@
     </div>
     <!-- Portfolio work, from the Portfolio page's teams (edit only) -->
     <div id="empPortfolioWrap" class="hidden">
-      <div class="modal-section-label" style="margin-top:12px">Portfolio roles</div>
+      <div class="modal-section-label" style="margin-top:12px">Producer teams</div>
       <div id="empPortfolioRoles" class="epr-list"></div>
     </div>
     <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px">
@@ -1500,6 +1509,7 @@
   <div class="bottom-nav-item admin-only hidden" data-page="salary" style="position:relative"><span class="bottom-nav-icon">💰</span><span class="bottom-nav-label">Salary</span><span id="salaryBottomBadge" class="nav-badge nav-badge-bottom hidden"></span></div>
   <div class="bottom-nav-item admin-only hidden" data-page="employees"><span class="bottom-nav-icon">👥</span><span class="bottom-nav-label">Staff</span></div>
   <div class="bottom-nav-item" data-page="eventkit"><span class="bottom-nav-icon">📦</span><span class="bottom-nav-label">Event Kit</span></div>
+  <div class="bottom-nav-item sales-only hidden" data-page="mydeals"><span class="bottom-nav-icon">💷</span><span class="bottom-nav-label">Deals</span></div>
   <div class="bottom-nav-item employee-only hidden" data-page="profile"><span class="bottom-nav-icon">👤</span><span class="bottom-nav-label">Profile</span></div>
   <div class="bottom-nav-item employee-only hidden" data-page="directory"><span class="bottom-nav-icon">👥</span><span class="bottom-nav-label">Team</span></div>
 </nav>
@@ -1637,29 +1647,34 @@
     </div>
     <input type="hidden" id="portTeamSeries">
     <div class="pt-body">
+      <div class="form-group pt-name">
+        <label for="portTeamName">Group name</label>
+        <input type="text" id="portTeamName" maxlength="60" placeholder="e.g. GIO &amp; KARAM" oninput="this.dataset.touched='1'">
+        <p class="pt-name-hint" id="portTeamNameHint"></p>
+      </div>
       <div class="pt-grid">
         <div class="form-group">
-          <label for="portTeam_sales_sel">Sales</label>
-          <select id="portTeam_sales_sel" onchange="portTeamPick('sales')"></select>
-          <input type="text" id="portTeam_sales" class="pt-other hidden" maxlength="80" placeholder="Their name">
-        </div>
-        <div class="form-group">
-          <label for="portTeam_delegates_sel">Delegates</label>
-          <select id="portTeam_delegates_sel" onchange="portTeamPick('delegates')"></select>
-          <input type="text" id="portTeam_delegates" class="pt-other hidden" maxlength="80" placeholder="Their name">
-        </div>
-        <div class="form-group">
-          <label for="portTeam_production_sel">Production</label>
-          <select id="portTeam_production_sel" onchange="portTeamPick('production')"></select>
-          <input type="text" id="portTeam_production" class="pt-other hidden" maxlength="80" placeholder="Their name">
+          <label for="portTeam_producer_sel">Producer</label>
+          <select id="portTeam_producer_sel" onchange="portTeamPick('producer')"></select>
+          <input type="text" id="portTeam_producer" class="pt-other hidden" maxlength="80" placeholder="Their name" oninput="portTeamAutoName()">
         </div>
         <div class="form-group">
           <label for="portTeam_co_producer_sel">Co-producer</label>
           <select id="portTeam_co_producer_sel" onchange="portTeamPick('co_producer')"></select>
-          <input type="text" id="portTeam_co_producer" class="pt-other hidden" maxlength="80" placeholder="Their name">
+          <input type="text" id="portTeam_co_producer" class="pt-other hidden" maxlength="80" placeholder="Their name" oninput="portTeamAutoName()">
+        </div>
+        <div class="form-group">
+          <label for="portTeam_sales_sel">Sales</label>
+          <select id="portTeam_sales_sel" onchange="portTeamPick('sales')"></select>
+          <input type="text" id="portTeam_sales" class="pt-other hidden" maxlength="80" placeholder="Their name" oninput="portTeamAutoName()">
+        </div>
+        <div class="form-group">
+          <label for="portTeam_delegates_sel">Delegates</label>
+          <select id="portTeam_delegates_sel" onchange="portTeamPick('delegates')"></select>
+          <input type="text" id="portTeam_delegates" class="pt-other hidden" maxlength="80" placeholder="Their name" oninput="portTeamAutoName()">
         </div>
       </div>
-      <p class="pt-hint">Each role lists that department's staff first, so the work shows on their employee record. Pick "Someone outside the company" to type a name instead.</p>
+      <p class="pt-hint">This team works every event in the group, and sees those events' kits in their staff portal. Each role lists that department's staff first. Pick "Someone outside the company" to type a name instead.</p>
     </div>
     <div class="pt-foot">
       <button class="btn btn-ghost" onclick="closeModal('portTeamModal')">Cancel</button>
@@ -1690,11 +1705,6 @@
       <div class="form-group"><label>Producer</label>
         <select id="portProducer">
           <option value="">No producer</option>
-          <option value="Gio &amp; Karam">Gio &amp; Karam</option>
-          <option value="Tara &amp; Maryam">Tara &amp; Maryam</option>
-          <option value="Fidak">Fidak</option>
-          <option value="Santos">Santos</option>
-          <option value="Arj &amp; Leena">Arj &amp; Leena</option>
         </select>
       </div>
       <div class="form-group"><label>Programme year</label><input type="number" id="portYear" min="2000" max="2100" step="1" placeholder="2027"></div>
@@ -1738,6 +1748,10 @@
           <div class="dm-field">
             <label for="dealCompany">Company</label>
             <input type="text" id="dealCompany" placeholder="Company name">
+          </div>
+          <div class="dm-field">
+            <label for="dealSoldBy">Sold by</label>
+            <select id="dealSoldBy" onchange="dealSoldByChanged()"><option value="">Not set</option></select>
           </div>
           <div class="dm-field">
             <label for="dealInitials">Rep</label>
@@ -1859,6 +1873,76 @@
     <div class="dm-foot">
       <button class="btn btn-ghost" onclick="closeModal('dealModal')">Cancel</button>
       <button class="btn btn-primary" onclick="saveDeal()">Save deal</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MODAL: Add / edit a deal from the staff portal ══ -->
+<div class="modal-overlay" id="myDealModal">
+  <div class="modal dm md-modal">
+    <div class="modal-header dm-head">
+      <div>
+        <h2 id="mdModalTitle">Add a deal</h2>
+        <p class="dm-sub">It goes straight into the Deal Tracker under your name.</p>
+      </div>
+      <button class="modal-close" onclick="closeModal('myDealModal')" aria-label="Close">✕</button>
+    </div>
+    <input type="hidden" id="mdEditId">
+    <div class="dm-body">
+      <section class="dm-sec">
+        <h3 class="dm-sec-title">Client</h3>
+        <div class="dm-row dm-row--2">
+          <div class="dm-field">
+            <label for="mdCompany">Company</label>
+            <input type="text" id="mdCompany" placeholder="Company name" maxlength="160">
+          </div>
+          <div class="dm-field">
+            <label for="mdContact">Contact <span class="dm-opt">optional</span></label>
+            <input type="text" id="mdContact" placeholder="Who signed" maxlength="120">
+          </div>
+        </div>
+      </section>
+      <section class="dm-sec">
+        <h3 class="dm-sec-title">Deal</h3>
+        <div class="dm-row md-row-money">
+          <div class="dm-field">
+            <label for="mdCurrency">Currency</label>
+            <select id="mdCurrency" onchange="mdUpdateSplit()"></select>
+          </div>
+          <div class="dm-field">
+            <label for="mdAmount">Deal value <span class="dm-opt">ex VAT</span></label>
+            <input type="number" id="mdAmount" min="0" step="0.01" placeholder="0.00" oninput="mdUpdateSplit()">
+          </div>
+          <div class="dm-field">
+            <label for="mdMonth">Month signed</label>
+            <select id="mdMonth"></select>
+          </div>
+        </div>
+        <div class="dm-field">
+          <label for="mdPackage">Package <span class="dm-opt">optional</span></label>
+          <input type="text" id="mdPackage" placeholder="e.g. Gold sponsor, Roundtable host" maxlength="80">
+        </div>
+      </section>
+      <section class="dm-sec">
+        <div class="dm-sec-hd">
+          <h3 class="dm-sec-title">Events</h3>
+          <span class="md-split" id="mdSplit"></span>
+        </div>
+        <div class="md-ev-search">
+          <input type="search" id="mdEvSearch" placeholder="Search events" oninput="mdRenderEventPicker()">
+        </div>
+        <div class="md-ev-list" id="mdEvList"></div>
+      </section>
+      <section class="dm-sec">
+        <h3 class="dm-sec-title">Notes <span class="dm-opt">optional</span></h3>
+        <textarea id="mdNotes" rows="3" placeholder="Anything the office needs for the invoice" maxlength="2000"></textarea>
+      </section>
+    </div>
+    <div class="dm-foot">
+      <button class="btn btn-ghost md-del hidden" id="mdDeleteBtn" onclick="mdDelete()">Withdraw deal</button>
+      <span class="md-foot-gap"></span>
+      <button class="btn btn-ghost" onclick="closeModal('myDealModal')">Cancel</button>
+      <button class="btn btn-primary" id="mdSaveBtn" onclick="mdSave()">Add deal</button>
     </div>
   </div>
 </div>

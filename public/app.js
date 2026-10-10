@@ -981,7 +981,7 @@ function empLink(id, name, cls = '') {
 
 // ─── EMPLOYEE PROFILE (slide-in panel) ───────────────────────────────────────
 // Everything about one person in one place: who they are, how to reach them,
-// this year's pay and days off, their portfolio roles and events. Opens over
+// this year's pay and days off, their producer teams and events. Opens over
 // any page, so a name can link to it wherever it appears.
 let _profileEmpId = null;
 
@@ -1074,7 +1074,7 @@ async function openEmployeeProfile(empId) {
       <div id="epEvents" class="ep-list"><div class="ep-loading">Loading…</div></div>
     </section>
     <section class="ep-sec">
-      <h3>Portfolio roles</h3>
+      <h3>Producer teams</h3>
       <div id="epPortfolio" class="epr-list"></div>
     </section>` : ''}`;
   drawer.classList.add('open');
@@ -4075,13 +4075,15 @@ async function htDeleteInvoice(id) {
 
 async function refreshNotifBadge() {
   try {
-    const [hrRes, agRes] = await Promise.all([
+    const [hrRes, agRes, pdRes] = await Promise.all([
       fetch('/api/holiday-requests/count'),
-      fetch('/api/agenda-notifications')
+      fetch('/api/agenda-notifications'),
+      fetch('/api/deals/portal-new')
     ]);
     const { count: hrCount } = hrRes.ok ? await hrRes.json() : { count: 0 };
     const agItems = agRes.ok ? await agRes.json() : [];
-    const total = hrCount + agItems.length;
+    const pdItems = pdRes.ok ? await pdRes.json() : [];
+    const total = hrCount + agItems.length + pdItems.length;
     const badge = document.getElementById('notifBadge');
     badge.textContent = total;
     badge.classList.toggle('hidden', total === 0);
@@ -4106,13 +4108,26 @@ async function loadNotifPanel() {
   const list = document.getElementById('notifList');
   list.innerHTML = '<div class="notif-empty">Loading…</div>';
   try {
-    const [hrRes, agRes] = await Promise.all([
+    const [hrRes, agRes, pdRes] = await Promise.all([
       fetch('/api/holiday-requests?status=pending'),
-      fetch('/api/agenda-notifications')
+      fetch('/api/agenda-notifications'),
+      fetch('/api/deals/portal-new')
     ]);
     const hrItems = hrRes.ok ? await hrRes.json() : [];
     const agItems = agRes.ok ? await agRes.json() : [];
-    if (!hrItems.length && !agItems.length) { list.innerHTML = '<div class="notif-empty">No pending notifications</div>'; return; }
+    const pdItems = pdRes.ok ? await pdRes.json() : [];
+    if (!hrItems.length && !agItems.length && !pdItems.length) { list.innerHTML = '<div class="notif-empty">No pending notifications</div>'; return; }
+    const dealHtml = pdItems.map(d => {
+      const since = new Date(d.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+      return `<div class="notif-item" id="pd-notif-${d.id}">
+        <div class="notif-item-name">Deal from ${esc(d.sales_name || 'the sales team')}</div>
+        <div class="notif-item-meta">${esc(d.company)} · ${mdMoney(d.amount, d.currency)} · ${since}</div>
+        <div class="notif-item-actions">
+          <button class="notif-approve-btn" onclick="openPortalDeal(${d.id})">Open</button>
+          <button class="notif-deny-btn" onclick="dismissPortalDeal(${d.id})">Dismiss</button>
+        </div>
+      </div>`;
+    }).join('');
     const agendaHtml = agItems.map(a => {
       const since = new Date(a.uploaded_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
       return `<div class="notif-item" id="ag-notif-${a.id}">
@@ -4142,8 +4157,33 @@ async function loadNotifPanel() {
         </div>
       </div>`;
     }).join('');
-    list.innerHTML = agendaHtml + hrHtml;
+    list.innerHTML = dealHtml + agendaHtml + hrHtml;
   } catch { list.innerHTML = '<div class="notif-empty">Failed to load</div>'; }
+}
+
+// A deal the sales team added from the staff portal: open it in the tracker,
+// or just mark it seen.
+async function markPortalDealSeen(id) {
+  await fetch(`/api/deals/${id}/seen`, { method: 'PATCH' }).catch(() => {});
+  const d = typeof dealsData !== 'undefined' && dealsData.find(x => x.id === id);
+  if (d) d.office_seen = true;
+  document.getElementById(`pd-notif-${id}`)?.remove();
+  if (!document.querySelectorAll('#notifList .notif-item').length) {
+    const l = document.getElementById('notifList');
+    if (l) l.innerHTML = '<div class="notif-empty">No pending notifications</div>';
+  }
+  refreshNotifBadge();
+}
+async function dismissPortalDeal(id) {
+  await markPortalDealSeen(id);
+  if (document.getElementById('page-deals')?.classList.contains('active')) renderDealsTable();
+}
+async function openPortalDeal(id) {
+  document.getElementById('notifPanel')?.classList.add('hidden');
+  navigate('deals');
+  for (let i = 0; i < 40 && !(dealsData || []).some(x => x.id === id); i++) await new Promise(r => setTimeout(r, 100));
+  if ((dealsData || []).some(x => x.id === id)) openDealModal(id);
+  else markPortalDealSeen(id);
 }
 
 async function dismissAgendaNotif(id) {
@@ -4672,7 +4712,7 @@ async function deleteSub(id) {
 // portfolio_events (total_pipeline = allocated, total_won = paid).
 
 let portfolioData = [];
-let _portTeams = [];   // [{ series, programme_year, sales, delegates, production, co_producer }]
+let _portTeams = [];   // [{ key, name, producer, co_producer, sales, delegates, <role>_id }]
 let _portYearFilter = String(new Date().getFullYear() + 1); // default to next year (2027)
 let _portExtraYears = new Set();
 let _portSearch = '';
@@ -4779,7 +4819,7 @@ function addPortYear() {
 
 async function loadPortfolio() {
   try {
-    const teamsRes = await fetch('/api/portfolio-teams').catch(() => null);
+    const teamsRes = await fetch('/api/producer-teams').catch(() => null);
     _portTeams = teamsRes && teamsRes.ok ? await teamsRes.json() : [];
   } catch { _portTeams = []; }
   try {
@@ -4981,7 +5021,7 @@ function renderPortfolioGrid() {
     if (!byProducer.has(k)) byProducer.set(k, []);
     byProducer.get(k).push(e);
   });
-  const producerRank = (p) => { const i = PORT_PRODUCERS.indexOf(p); return i === -1 ? PORT_PRODUCERS.length : i; };
+  const producerRank = (p) => { const i = PORT_PRODUCERS.map(portGroupKey).indexOf(portGroupKey(p)); return i === -1 ? PORT_PRODUCERS.length : i; };
   const producers = [...byProducer.keys()].sort((a, b) => {
     if (!a) return 1; if (!b) return -1;
     return producerRank(a) - producerRank(b) || a.localeCompare(b);
@@ -5013,12 +5053,13 @@ function renderPortfolioGrid() {
             <span class="pf-group-n">${evs.length} event${evs.length === 1 ? '' : 's'}</span>
             <span class="pf-group-total">${fmtGBP(pAlloc)} <small>· ${fmtGBP(pPaid)} paid</small></span>
           </div>
+          ${p ? renderGroupTeam(p) : ''}
           ${evs.map(e => renderPortfolioEventCard(e, rowScale)).join('')}
         </div>`;
       }).join('')}
     </section>`;
 
-  grid.innerHTML = toolbarHtml + heroHtml + kpiHtml + seriesHtml + renderPortfolioTeams() + programmeHtml + listHtml;
+  grid.innerHTML = toolbarHtml + heroHtml + kpiHtml + seriesHtml + programmeHtml + listHtml;
 
   // Bars grow in after paint.
   requestAnimationFrame(() => setTimeout(() => {
@@ -5028,58 +5069,52 @@ function renderPortfolioGrid() {
   if (_portSearch) portFilterCards(_portSearch);
 }
 
-// ── Portfolio teams ──
-// Each portfolio (programme series) has four people per programme year. On
-// All Years the panel shows the default programme year's teams.
-// `dept` picks the department whose staff are offered first for the role.
+// ── Producer teams ──
+// Each producer group (the producer label on events, e.g. "GIO & KARAM") has
+// a producer, co-producer, sales and delegates person. Their team shows on the
+// group's header in the event list; the Event Kit uses it for every event in
+// the group. `dept` picks the department whose staff are offered first.
 const PORT_TEAM_ROLES = [
+  { key: 'producer',    label: 'Producer',    dept: /produc/i },
+  { key: 'co_producer', label: 'Co-producer', dept: /produc/i },
   { key: 'sales',       label: 'Sales',       dept: /sales/i },
   { key: 'delegates',   label: 'Delegates',   dept: /delegat/i },
-  { key: 'production',  label: 'Production',  dept: /produc/i },
-  { key: 'co_producer', label: 'Co-producer', dept: /produc/i },
 ];
 const PORT_TEAM_OUTSIDE = 'outside';
+const portGroupKey = name => String(name || '').trim().replace(/\s+/g, ' ').toUpperCase();
 
-function portTeamYear() {
-  return _portYearFilter !== 'all' ? parseInt(_portYearFilter, 10) : new Date().getFullYear() + 1;
+function portTeamFor(groupName) {
+  const k = portGroupKey(groupName);
+  return k ? _portTeams.find(t => t.key === k) || null : null;
 }
 
-function portTeamFor(series, year) {
-  return _portTeams.find(t => t.series === series && Number(t.programme_year) === year) || null;
+// The team line on a producer group's header.
+function renderGroupTeam(groupName) {
+  const t = portTeamFor(groupName);
+  const people = PORT_TEAM_ROLES.map(r => {
+    const name = t && t[r.key];
+    if (!name) return '';
+    const id = t[`${r.key}_id`];
+    const nameHtml = id
+      ? `<button type="button" class="pf-gt-name emp-link" onclick="openEmployeeProfile(${Number(id)})">${esc(name)}</button>`
+      : `<span class="pf-gt-name">${esc(name)}</span>`;
+    return `<span class="pf-gt-person"><span class="pf-gt-role">${r.label}</span>${nameHtml}${id && t[`${r.key}_active`] === false ? '<span class="pf-team-tag">left</span>' : ''}</span>`;
+  }).filter(Boolean);
+  const btn = `<button type="button" class="btn btn-ghost btn-sm pf-gt-edit" onclick="openPortTeamModal(${esc(JSON.stringify(groupName))})">${t ? 'Edit team' : 'Set team'}</button>`;
+  return `<div class="pf-gt">${people.length ? people.join('') : '<span class="pf-gt-none">No team set</span>'}${btn}</div>`;
 }
 
-function renderPortfolioTeams() {
-  const year = portTeamYear();
-  const rows = PORT_SERIES.map(s => {
-    const t = portTeamFor(s.id, year);
-    const cells = PORT_TEAM_ROLES.map(r => {
-      const name = t && t[r.key] ? esc(t[r.key]) : '';
-      if (!name) return `<td data-label="${r.label}"><span class="pf-team-empty">—</span></td>`;
-      const id = t[`${r.key}_id`];
-      const tag = !id ? '<span class="pf-team-tag">outside</span>' : t[`${r.key}_active`] === false ? '<span class="pf-team-tag">left</span>' : '';
-      const nameHtml = id
-        ? `<button type="button" class="pf-team-name pf-team-link" onclick="goToEmployee(${Number(id)})" title="Open ${name}'s record">${name}</button>`
-        : `<span class="pf-team-name">${name}</span>`;
-      return `<td data-label="${r.label}">${nameHtml}${tag}</td>`;
-    }).join('');
-    return `<tr>
-      <td><span class="pf-team-series"><span class="pf-chip" style="background:var(--chart-${s.chart})"></span>${esc(s.short)}</span></td>
-      ${cells}
-      <td class="pf-team-act"><button type="button" class="btn btn-ghost btn-sm" onclick="openPortTeamModal('${s.id}')">${t ? 'Edit' : 'Add team'}</button></td>
-    </tr>`;
-  }).join('');
-  return `<section class="pf-panel pf-teams">
-    <div class="pf-panel-hd">
-      <div>
-        <h2 class="pf-panel-title">Portfolio teams</h2>
-        <p class="pf-panel-desc">Who runs each portfolio in ${year}.</p>
-      </div>
-    </div>
-    <div class="table-wrap"><table class="pf-teams-table">
-      <thead><tr><th>Portfolio</th>${PORT_TEAM_ROLES.map(r => `<th>${r.label}</th>`).join('')}<th></th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table></div>
-  </section>`;
+// Producer groups the event form offers: every group on an event or with a
+// team (the usual ones only when there are none yet, so a renamed group does
+// not come back), one entry per group whatever the casing.
+function portProducerOptions(current) {
+  const seen = new Map();
+  const add = n => { const k = portGroupKey(n); if (k && !seen.has(k)) seen.set(k, String(n).trim()); };
+  portfolioData.forEach(e => add(e.producer));
+  _portTeams.forEach(t => add(t.name));
+  if (!seen.size) PORT_PRODUCERS.forEach(add);
+  if (current) add(current);
+  return [...seen.values()].sort((a, b) => a.localeCompare(b));
 }
 
 let _portTeamStaff = [];
@@ -5114,16 +5149,19 @@ function portTeamPick(roleKey) {
   const outside = sel.value === PORT_TEAM_OUTSIDE;
   other.classList.toggle('hidden', !outside);
   if (outside) other.focus();
+  portTeamAutoName();
 }
 
-async function openPortTeamModal(series) {
-  const s = PORT_SERIES_MAP[series];
-  if (!s) return;
-  const year = portTeamYear();
-  const t = portTeamFor(series, year) || {};
-  document.getElementById('portTeamSeries').value = series;
-  document.getElementById('portTeamTitle').textContent = `${s.short} team`;
-  document.getElementById('portTeamSub').textContent = `${s.name} · ${year}`;
+async function openPortTeamModal(groupName) {
+  const t = portTeamFor(groupName) || {};
+  const n = portfolioData.filter(e => portGroupKey(e.producer) === portGroupKey(groupName)).length;
+  document.getElementById('portTeamSeries').value = groupName;
+  document.getElementById('portTeamTitle').textContent = `${groupName} team`;
+  document.getElementById('portTeamSub').textContent = `${n} event${n === 1 ? '' : 's'} in this group`;
+  const nameEl = document.getElementById('portTeamName');
+  nameEl.value = groupName;
+  delete nameEl.dataset.touched;
+  document.getElementById('portTeamNameHint').textContent = '';
   try {
     const res = await fetch('/api/employees/all');
     _portTeamStaff = res.ok ? await res.json() : [];
@@ -5131,12 +5169,39 @@ async function openPortTeamModal(series) {
   _portTeamStaff.sort((a, b) => String(a.name).localeCompare(String(b.name)));
   PORT_TEAM_ROLES.forEach(r => portTeamFillPicker(r, t));
   openModal('portTeamModal');
-  document.getElementById('portTeam_sales_sel').focus();
+  document.getElementById('portTeam_producer_sel').focus();
+}
+
+// The person's short name for the group label: first name, upper-cased.
+function portTeamShort(roleKey) {
+  const sel = document.getElementById(`portTeam_${roleKey}_sel`);
+  if (!sel || !sel.value) return '';
+  const full = sel.value === PORT_TEAM_OUTSIDE
+    ? document.getElementById(`portTeam_${roleKey}`).value
+    : (_portTeamStaff.find(e => String(e.id) === sel.value) || {}).name;
+  return String(full || '').trim().split(/\s+/)[0].toUpperCase();
+}
+
+// Changing the producer or co-producer suggests a new group name (unless the
+// name was typed by hand), and says what a rename does.
+function portTeamAutoName() {
+  const nameEl = document.getElementById('portTeamName');
+  const old = document.getElementById('portTeamSeries').value;
+  if (!nameEl.dataset.touched) {
+    const parts = [portTeamShort('producer'), portTeamShort('co_producer')].filter(Boolean);
+    if (parts.length) nameEl.value = parts.join(' & ');
+  }
+  const hint = document.getElementById('portTeamNameHint');
+  const n = portfolioData.filter(e => portGroupKey(e.producer) === portGroupKey(old)).length;
+  hint.textContent = portGroupKey(nameEl.value) && portGroupKey(nameEl.value) !== portGroupKey(old)
+    ? `Renames ${old} to ${nameEl.value.trim()} on ${n} event${n === 1 ? '' : 's'}.` : '';
 }
 
 async function savePortTeam() {
-  const series = document.getElementById('portTeamSeries').value;
-  const body = { year: portTeamYear() };
+  const oldName = document.getElementById('portTeamSeries').value;
+  const name = document.getElementById('portTeamName').value.trim();
+  if (!name) { showToast('Give the group a name', 'error'); return; }
+  const body = { old_name: oldName, name };
   for (const r of PORT_TEAM_ROLES) {
     const v = document.getElementById(`portTeam_${r.key}_sel`).value;
     if (v === PORT_TEAM_OUTSIDE) {
@@ -5147,66 +5212,60 @@ async function savePortTeam() {
       body[`${r.key}_id`] = parseInt(v, 10);
     }
   }
-  const res = await fetch(`/api/portfolio-teams/${encodeURIComponent(series)}`, {
+  const res = await fetch('/api/producer-teams', {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
   if (!res.ok) { const e = await res.json().catch(() => ({})); showToast(e.error || 'Could not save the team', 'error'); return; }
   const saved = await res.json();
-  _portTeams = _portTeams.filter(t => !(t.series === saved.series && Number(t.programme_year) === Number(saved.programme_year))).concat(saved);
+  _portTeams = _portTeams.filter(t => t.key !== saved.key && t.key !== portGroupKey(oldName)).concat(saved);
   closeModal('portTeamModal');
-  showToast('Team saved', 'success');
+  if (saved.renamed_from) {
+    portfolioData.forEach(e => { if (portGroupKey(e.producer) === portGroupKey(oldName)) e.producer = saved.name; });
+    showToast(`Team saved · events moved to ${saved.name}`, 'success');
+  } else showToast('Team saved', 'success');
   renderPortfolioGrid();
 }
 
-// ── An employee's portfolio work, for their record ──
-// Each role they have held, with how that portfolio did that year: events,
-// money allocated against them and paid. Portfolio figures come from the
-// same events and programme data the Portfolio page uses.
+// ── An employee's producer teams, for their record ──
+// Each group they are on and their role, with how the group's events did:
+// events, money allocated against them and paid.
 async function loadEmpPortfolioRoles(empId, boxId = 'empPortfolioRoles') {
   const box = document.getElementById(boxId);
   if (!box) return;
   box.innerHTML = '<div class="epr-empty">Loading…</div>';
   try {
     const [rolesRes, evRes] = await Promise.all([
-      fetch(`/api/employees/${empId}/portfolio-roles`),
+      fetch(`/api/employees/${empId}/producer-teams`),
       portfolioData.length ? null : fetch('/api/portfolio-events'),
     ]);
     if (!rolesRes.ok) { box.innerHTML = ''; return; }
     const roles = await rolesRes.json();
     if (evRes && evRes.ok) { const d = await evRes.json(); if (Array.isArray(d)) portfolioData = d; }
-    if (!_programme2027.data && _programme2027.status !== 'loading') await loadProgramme2027Quiet();
-    if (!roles.length) { box.innerHTML = '<div class="epr-empty">Not on any portfolio team yet. Teams are set on the Portfolio page.</div>'; return; }
+    if (!roles.length) { box.innerHTML = '<div class="epr-empty">Not on a producer team yet. Teams are set on the Portfolio page.</div>'; return; }
 
     const roleLabel = k => (PORT_TEAM_ROLES.find(r => r.key === k) || {}).label || k;
-    const stats = (series, year) => portfolioData
-      .filter(e => portRowYear(e) === Number(year) && portSeriesFor(e) === series)
-      .reduce((t, e) => { t.events++; t.allocated += parseFloat(e.total_pipeline) || 0; t.paid += parseFloat(e.total_won) || 0; t.deals += parseInt(e.deal_count) || 0; return t; },
-              { events: 0, allocated: 0, paid: 0, deals: 0 });
-    // One line per portfolio and year; several roles in it are joined.
     const grouped = new Map();
     roles.forEach(r => {
-      const k = `${r.programme_year}|${r.series}`;
-      if (!grouped.has(k)) grouped.set(k, { ...r, roles: [] });
-      grouped.get(k).roles.push(roleLabel(r.role));
+      if (!grouped.has(r.key)) grouped.set(r.key, { ...r, roles: [] });
+      grouped.get(r.key).roles.push(roleLabel(r.role));
     });
     const total = { allocated: 0, paid: 0 };
     const rows = [...grouped.values()].map(g => {
-      const s = PORT_SERIES_MAP[g.series];
-      const st = stats(g.series, g.programme_year);
+      const st = portfolioData.filter(e => portGroupKey(e.producer) === g.key)
+        .reduce((t, e) => { t.events++; t.allocated += parseFloat(e.total_pipeline) || 0; t.paid += parseFloat(e.total_won) || 0; return t; },
+                { events: 0, allocated: 0, paid: 0 });
       total.allocated += st.allocated; total.paid += st.paid;
       return `<div class="epr-row">
         <div class="epr-main">
-          <span class="pf-chip" style="background:${s ? `var(--chart-${s.chart})` : 'var(--dim)'}"></span>
-          <span class="epr-series">${esc(s ? s.short : g.series)}</span>
-          <span class="epr-year">${g.programme_year}</span>
+          <span class="epr-series">${esc(g.name)}</span>
           <span class="epr-roles">${g.roles.map(esc).join(' · ')}</span>
         </div>
         <div class="epr-stats">${st.events} event${st.events === 1 ? '' : 's'} · ${fmtGBP(st.allocated)} allocated · ${fmtGBP(st.paid)} paid</div>
       </div>`;
     }).join('');
-    box.innerHTML = rows + `<div class="epr-total">Across these portfolios: ${fmtGBP(total.allocated)} allocated, ${fmtGBP(total.paid)} paid</div>`;
+    box.innerHTML = rows + (grouped.size > 1 ? `<div class="epr-total">Across these groups: ${fmtGBP(total.allocated)} allocated, ${fmtGBP(total.paid)} paid</div>` : '');
   } catch {
-    box.innerHTML = '<div class="epr-empty">Could not load portfolio roles.</div>';
+    box.innerHTML = '<div class="epr-empty">Could not load producer teams.</div>';
   }
 }
 
@@ -5615,14 +5674,14 @@ function openPortfolioModal(id) {
   const producerSel = document.getElementById('portProducer');
   const ev = id ? portfolioData.find(x => x.id === id) : null;
   if (id && !ev) return;
-  // A producer the select does not know (an older row) is still shown, not silently dropped.
-  if (ev && ev.producer && ![...producerSel.options].some(o => o.value === ev.producer)) {
-    producerSel.add(new Option(ev.producer, ev.producer));
-  }
+  producerSel.innerHTML = '<option value="">No producer</option>'
+    + portProducerOptions(ev && ev.producer).map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+  // Match the event's group whatever its casing.
+  const evKey = ev && portGroupKey(ev.producer);
   document.getElementById('portName').value     = ev ? ev.name : '';
   document.getElementById('portDate').value     = ev && ev.event_date ? String(ev.event_date).slice(0, 10) : '';
   document.getElementById('portDateTbc').value  = ev ? (ev.date_tbc || '') : '';
-  producerSel.value                             = ev ? (ev.producer || '') : '';
+  producerSel.value = evKey ? ([...producerSel.options].find(o => portGroupKey(o.value) === evKey)?.value || '') : '';
   document.getElementById('portYear').value     = ev ? (ev.programme_year || '') : (_portYearFilter !== 'all' ? _portYearFilter : '');
   document.getElementById('portLocation').value = ev ? (ev.location || '') : '';
   document.getElementById('portNotes').value    = ev ? (ev.notes || '') : '';
@@ -5980,7 +6039,7 @@ function renderDealsTable() {
         <button type="button" class="deal-flag${isFlagged ? ' is-on' : ''}" onclick="event.stopPropagation();dealToggleFlag(${d.id})" title="${isFlagged ? 'Flagged — click to clear' : 'Flag this row'}">${FLAG_SVG}</button>
       </td>
       ${ec('deal_month', 'period', d.deal_month || '', dealPeriodDisplayHtml(d), 'deal-td-month')}
-      <td class="deal-cell-company${coHl ? ' deal-cell-orange' : ''}" data-id="${d.id}" data-hlkey="${coHlKey}" onclick="dealCompanyClick(event,${d.id},this)" title="Open the deal · Shift+click to highlight"><span class="deal-co-link">${esc(d.company || d.title)}</span></td>
+      <td class="deal-cell-company${coHl ? ' deal-cell-orange' : ''}" data-id="${d.id}" data-hlkey="${coHlKey}" onclick="dealCompanyClick(event,${d.id},this)" title="Open the deal · Shift+click to highlight"><span class="deal-co-link">${esc(d.company || d.title)}</span>${d.office_seen === false ? `<span class="deal-new" title="Added by ${esc(d.sales_name || 'the sales team')} from the staff portal">New</span>` : ''}</td>
       ${ec('amount', 'number', d.amount || 0, `<span class="deal-figure">${sym}${fmt(dealAmt)}</span>`, 'deal-num dt-r')}
       ${ec('paid_inc_vat', 'number', d.paid_inc_vat ?? '', paidDisplay, `deal-num dt-r${paidOff ? ' deal-cell-check' : ''}`, `oncontextmenu="dealCellContextMenu(event,this)"${paidTitle}`)}
       ${ec('tax_vat', 'number', d.tax_vat ?? '', d.tax_vat ? `${sym}${fmt(parseFloat(d.tax_vat))}` : dash, 'deal-num dt-r')}
@@ -5990,7 +6049,7 @@ function renderDealsTable() {
       ${ec('invoice_number', 'text', d.invoice_number || '', d.invoice_number ? `<span class="deal-inv-num">${esc(d.invoice_number)}</span>` : dash)}
       <td class="deal-td-files" onclick="openDealInvoicePanel(${d.id})" title="${esc(st.title)} · click to view or upload"><span class="deal-files${filesCls}">${filesGlyph}</span></td>
       <td class="deal-cell-toggle deal-td-signed" onclick="dealToggleBool(${d.id},'signature_received',${!!d.signature_received})" title="${d.signature_received ? 'Signed copy received — click to clear' : 'Click when the signed copy arrives'}">${d.signature_received ? `<span class="deal-tick">${TICK_SVG}</span>` : dash}</td>
-      ${ec('initials', 'text', d.initials || '', d.initials ? `<span class="deal-by">${esc(d.initials)}</span>` : dash, 'dt-c')}
+      ${ec('initials', 'text', d.initials || '', d.initials ? `<span class="deal-by"${d.sales_name ? ` title="${esc(d.sales_name)}"` : ''}>${esc(d.initials)}</span>` : dash, 'dt-c')}
       ${ec('notes', 'textarea', d.notes || '', notesDisplay, 'deal-td-notes')}
       <td class="deal-act-cell">
         <button class="deal-act-invoice" onclick="event.stopPropagation();openInvoiceGenModal(${d.id})" title="Generate the invoice document">${DOC_SVG}</button>
@@ -6475,7 +6534,7 @@ async function initEmployeePortal(user) {
   document.querySelectorAll('.employee-only').forEach(el => el.classList.remove('hidden'));
 
   // Hide non-allowed nav items
-  const EMP_PAGES = ['dashboard', 'calendar', 'portfolio', 'eventkit', 'profile', 'directory'];
+  const EMP_PAGES = ['dashboard', 'calendar', 'portfolio', 'eventkit', 'mydeals', 'profile', 'directory'];
   document.querySelectorAll('.nav-item').forEach(el => {
     if (!EMP_PAGES.includes(el.dataset.page)) el.style.display = 'none';
   });
@@ -6486,6 +6545,7 @@ async function initEmployeePortal(user) {
   if (addEmpBtn) addEmpBtn.style.display = 'none';
 
   document.title = 'LPGP – My Portal';
+  mdCheckAccess();
 
   // Override navigate
   window.navigate = function(page) {
@@ -6495,13 +6555,14 @@ async function initEmployeePortal(user) {
     const pageEl = document.getElementById('page-' + page);
     if (pageEl) pageEl.classList.add('active');
     document.querySelectorAll('[data-page="' + page + '"]').forEach(n => n.classList.add('active'));
-    const empTitles = { dashboard: 'Dashboard', calendar: 'Calendar', portfolio: 'Portfolio', eventkit: 'Event Kit', profile: 'My Profile', directory: 'Team' };
+    const empTitles = { dashboard: 'Dashboard', calendar: 'Calendar', portfolio: 'Portfolio', eventkit: 'Event Kit', mydeals: 'My Deals', profile: 'My Profile', directory: 'Team' };
     const titleEl = document.getElementById('pageTitle');
     if (titleEl) titleEl.textContent = empTitles[page] || page;
     if (page === 'dashboard')  loadEmployeeDashboard(user);
     if (page === 'calendar')   loadEmployeeCalendar();
     if (page === 'portfolio')  loadEmployeePortfolio();
     if (page === 'eventkit')   loadEmployeeKitPage();
+    if (page === 'mydeals')    loadMyDealsPage();
     if (page === 'profile')    loadEmployeeProfile();
     if (page === 'directory')  loadEmployeeDirectory();
   };
@@ -8233,6 +8294,30 @@ async function cycleDealStatus(id, newStatus) {
   renderDealsTable();
 }
 
+// "Sold by" links the deal to a staff record; picking someone fills the Rep
+// initials. Sales staff are listed first.
+let _dealStaffCache = null;
+async function dealFillSoldBy(selectedId) {
+  const sel = document.getElementById('dealSoldBy');
+  if (!sel) return;
+  if (!_dealStaffCache) {
+    try { const r = await fetch('/api/employees/all'); _dealStaffCache = r.ok ? await r.json() : []; } catch { _dealStaffCache = []; }
+  }
+  const staff = _dealStaffCache.filter(e => e.active || e.id === selectedId).sort((a, b) => a.name.localeCompare(b.name));
+  const sales = staff.filter(e => /sales/i.test(e.department || ''));
+  const rest = staff.filter(e => !/sales/i.test(e.department || ''));
+  const opt = e => `<option value="${e.id}">${esc(e.name)}</option>`;
+  sel.innerHTML = '<option value="">Not set</option>'
+    + (sales.length ? `<optgroup label="Sales">${sales.map(opt).join('')}</optgroup>` : '')
+    + (rest.length ? `<optgroup label="${sales.length ? 'Everyone else' : 'Staff'}">${rest.map(opt).join('')}</optgroup>` : '');
+  sel.value = selectedId ? String(selectedId) : '';
+}
+function dealSoldByChanged() {
+  const sel = document.getElementById('dealSoldBy');
+  const e = (_dealStaffCache || []).find(x => String(x.id) === sel.value);
+  if (e) document.getElementById('dealInitials').value = e.name.split(/\s+/).filter(Boolean).map(w => w[0]).join('').slice(0, 3).toUpperCase();
+}
+
 async function openDealModal(id, defaultStage) {
   _dealInv1 = null; _dealInv2 = null;
   _dealPeriodTouched = false;
@@ -8262,9 +8347,11 @@ async function openDealModal(id, defaultStage) {
   } catch { _evs = []; }
   _dealEvsCache = Array.isArray(_evs) ? _evs : [];
 
+  dealFillSoldBy(id ? (dealsData.find(x => x.id === id)?.sales_employee_id || null) : null);
   if (id) {
     const d = dealsData.find(x => x.id === id);
     if (!d) return;
+    if (d.office_seen === false) markPortalDealSeen(id).then(() => renderDealsTable());
     document.getElementById('dealTitle').value = d.title || d.company || '';
     document.getElementById('dealCompany').value = d.company || '';
     document.getElementById('dealInitials').value = d.initials || '';
@@ -8785,6 +8872,7 @@ async function saveDeal() {
     invoice_agreement_sent: document.getElementById('dealInvSent').value === 'true',
     signature_received: document.getElementById('dealSigReceived').value === 'true',
     notes: document.getElementById('dealNotes').value.trim(),
+    sales_employee_id: parseInt(document.getElementById('dealSoldBy').value, 10) || null,
     event_ids
   };
   if (_dealPackageMode) {
@@ -9662,10 +9750,11 @@ function openSetPinModal(empId, empName) {
 }
 
 // ─── EVENT KIT ───────────────────────────────────────────────────────────────
-// Each event has a team (producer, delegates, sales) and a kit: six marketing
-// materials the office uploads and the team approves, plus the agendas the
-// producer uploads. The office sees every event; staff see the events they
-// are on. One layout serves both, with the office's controls switched on.
+// Each event has a team (producer, delegates, sales) and a kit, worked in
+// order: the producer uploads the agenda, the office makes a draft of each of
+// six materials, the team approves each draft or asks for changes, and the
+// office uploads the final version. The office sees every event; staff see
+// the events they are on. One layout serves both.
 const EK_MATERIAL_TYPES = [
   { key: 'brochure',     label: 'Brochure',        accept: '.pdf,.png,.jpg,.jpeg' },
   { key: 'banner',       label: 'Banner',          accept: '.pdf,.png,.jpg,.jpeg' },
@@ -9675,10 +9764,11 @@ const EK_MATERIAL_TYPES = [
   { key: 'name_badges',  label: 'Name badges',     accept: '.pdf,.png,.jpg,.jpeg' },
 ];
 const EK_STATUS = {
-  missing: { label: 'Not uploaded',         cls: 'missing' },
+  missing: { label: 'No draft yet',         cls: 'missing' },
   pending: { label: 'Waiting for approval', cls: 'pending' },
-  approved:{ label: 'Approved',             cls: 'ok' },
   changes: { label: 'Changes requested',    cls: 'changes' },
+  approved:{ label: 'Approved · final due', cls: 'approved' },
+  final:   { label: 'Final ready',          cls: 'ok' },
 };
 const EK_TEAM_ROLES = [
   { key: 'producer',  label: 'Producer',  dept: /produc/i },
@@ -9688,21 +9778,39 @@ const EK_TEAM_ROLES = [
 const EK_MAX_FILE = 10 * 1024 * 1024;
 let _ek = { office: false, events: [], staff: [], selected: null, search: '', showPast: false, editing: null };
 
+const ekHasFinal = (kit, type) => !!(kit && (kit[`${type}_final_url`] || kit[`${type}_final_file`]));
+
 function ekItemStatus(kit, type) {
+  if (ekHasFinal(kit, type)) return 'final';
   if (!kit || (!kit[`${type}_url`] && !kit[`${type}_file`])) return 'missing';
   return (kit.item_reviews && kit.item_reviews[type] && kit.item_reviews[type].status) || 'pending';
 }
 
 function ekProgress(kit) {
   const st = EK_MATERIAL_TYPES.map(m => ekItemStatus(kit, m.key));
-  return {
+  const p = {
     total: st.length,
     uploaded: st.filter(x => x !== 'missing').length,
-    approved: st.filter(x => x === 'approved').length,
+    approved: st.filter(x => x === 'approved' || x === 'final').length,
+    finals: st.filter(x => x === 'final').length,
     changes: st.filter(x => x === 'changes').length,
     team: !!(kit && kit.producer_id && kit.delegates_id && kit.sales_id),
     agenda: !!(kit && (kit.agenda_file || kit.agenda_file_2)),
   };
+  p.pct = Math.round(((p.agenda ? 1 : 0) + p.uploaded + p.approved + p.finals) / (1 + 3 * p.total) * 100);
+  return p;
+}
+
+// Where an event is in the process, in a few words for the list.
+function ekStage(kit, p) {
+  if (!kit) return 'Not started';
+  if (p.finals === p.total) return 'Complete';
+  if (!kit.id && !p.team) return 'No team yet';
+  if (p.changes) return `${p.changes} change${p.changes === 1 ? '' : 's'} requested`;
+  if (!p.agenda && !p.uploaded) return 'Waiting for the agenda';
+  if (p.uploaded < p.total) return `Drafts · ${p.uploaded} of ${p.total}`;
+  if (p.approved < p.total) return `Approval · ${p.approved} of ${p.total}`;
+  return `Finals · ${p.finals} of ${p.total}`;
 }
 
 function ekIsPast(ev) {
@@ -9711,7 +9819,7 @@ function ekIsPast(ev) {
 
 function ekMeOnTeam(kit) {
   const me = currentUser && currentUser.employee_id;
-  return !!me && EK_TEAM_ROLES.some(r => kit && kit[`${r.key}_id`] === me);
+  return !!me && !!kit && (EK_TEAM_ROLES.some(r => kit[`${r.key}_id`] === me) || kit.co_producer_id === me);
 }
 
 async function loadEventKitPage() {
@@ -9726,6 +9834,7 @@ async function loadEventKitPage() {
       const [evRes, staffRes] = await Promise.all([fetch('/api/portfolio-events'), fetch('/api/employees/all')]);
       const evs = evRes.ok ? await evRes.json() : [];
       _ek.staff = staffRes.ok ? (await staffRes.json()).sort((a, b) => a.name.localeCompare(b.name)) : [];
+      // Every event comes back with its team; id is null until a kit exists.
       const byEvent = new Map(kits.map(k => [k.event_id, k]));
       _ek.events = (Array.isArray(evs) ? evs : []).map(e => ({
         event_id: e.id, event_name: e.name, event_date: e.event_date, date_tbc: e.date_tbc,
@@ -9779,12 +9888,12 @@ function ekRenderList() {
     && (_ek.showPast || !_ek.office || !ekIsPast(e) || e.event_id === _ek.selected));
   el.innerHTML = list.map(e => {
     const p = ekProgress(e.kit);
-    const pct = Math.round(p.approved / p.total * 100);
-    const state = !e.kit ? 'No kit yet' : p.changes ? `${p.changes} change${p.changes === 1 ? '' : 's'} requested` : `${p.approved} of ${p.total} approved`;
+    const pct = e.kit ? p.pct : 0;
+    const state = ekStage(e.kit, p);
     return `<button type="button" class="ek-ev${e.event_id === _ek.selected ? ' active' : ''}${ekIsPast(e) ? ' is-past' : ''}" onclick="ekSelect(${e.event_id})">
       <span class="ek-ev-name">${esc(e.event_name)}</span>
       <span class="ek-ev-meta">${(e.event_date || e.programme_year) ? esc(fmtEventDate(e)) : 'Date TBC'}${e.location ? ' · ' + esc(e.location) : ''}</span>
-      <span class="ek-ev-bar"><span style="width:${pct}%"></span></span>
+      <span class="ek-ev-bar${pct === 100 ? ' is-done' : ''}"><span style="width:${pct}%"></span></span>
       <span class="ek-ev-state${p.changes ? ' is-changes' : ''}">${state}</span>
     </button>`;
   }).join('') || '<div class="ek-list-empty">No events match.</div>';
@@ -9823,31 +9932,38 @@ function ekRenderDetail() {
         <p class="ek-eyebrow">${(ev.event_date || ev.programme_year) ? esc(fmtEventDate(ev, { long: true })) : 'Date TBC'}${ev.location ? ' · ' + esc(ev.location) : ''}${ev.producer_team ? ' · ' + esc(ev.producer_team) : ''}</p>
         <h2>${esc(ev.event_name)}</h2>
       </div>
-      ${_ek.office && kit ? `<button class="btn btn-ghost btn-sm ek-danger" onclick="ekDeleteKit(${ev.event_id})">Delete kit</button>` : ''}
+      ${_ek.office && kit && kit.id ? `<button class="btn btn-ghost btn-sm ek-danger" onclick="ekDeleteKit(${ev.event_id})">Delete kit</button>` : ''}
     </header>
 
     <ol class="ek-steps">
-      ${step(1, 'Team', p.team, p.team ? 'Producer, delegates and sales set' : 'Assign the event team')}
-      ${step(2, 'Materials', p.uploaded === p.total, `${p.uploaded} of ${p.total} uploaded`)}
+      ${step(1, 'Agenda', p.agenda, p.agenda ? 'Uploaded by the producer' : 'The producer uploads it')}
+      ${step(2, 'Drafts', p.uploaded === p.total, `${p.uploaded} of ${p.total} made`)}
       ${step(3, 'Approval', p.approved === p.total, p.changes ? `${p.changes} change${p.changes === 1 ? '' : 's'} requested` : `${p.approved} of ${p.total} approved`, p.changes > 0)}
-      ${step(4, 'Agenda', p.agenda, p.agenda ? 'Uploaded' : 'From the producer')}
+      ${step(4, 'Final', p.finals === p.total, `${p.finals} of ${p.total} uploaded`)}
     </ol>
 
     <div class="ek-cols">
-      <section class="ek-card ek-materials">
-        <div class="ek-card-hd"><h3>Materials</h3><span>${_ek.office ? 'Upload a file or add a link; the team approves each one.' : onTeam ? 'Open each item, then approve it or ask for changes.' : 'Shared with you to view.'}</span></div>
-        ${EK_MATERIAL_TYPES.map(m => ekItemHtml(ev, m, onTeam)).join('')}
-      </section>
+      <div class="ek-main-cards">
+        <section class="ek-card">
+          <div class="ek-card-hd"><h3><span class="ek-n">1</span>Agenda</h3><span>${_ek.office ? 'The producer uploads the agenda first; the materials are made from it.' : onTeam ? 'Upload the agenda first. The office makes the materials from it.' : ''}</span></div>
+          ${[1, 2].map(n => ekAgendaHtml(ev, n, _ek.office || ekStaffMaySee(kit))).join('')}
+        </section>
+        <section class="ek-card ek-materials">
+          <div class="ek-card-hd"><h3><span class="ek-n">2</span>Materials</h3><span>${_ek.office
+            ? 'Upload a draft of each. When the team approves it, upload the final version.'
+            : onTeam ? 'Open each draft, then approve it or ask for changes. The office then uploads the final version.' : 'Shared with you to view.'}</span></div>
+          ${EK_MATERIAL_TYPES.map(m => ekItemHtml(ev, m, onTeam)).join('')}
+        </section>
+      </div>
 
       <div class="ek-side-cards">
         <section class="ek-card">
-          <div class="ek-card-hd"><h3>Event team</h3></div>
+          <div class="ek-card-hd"><h3>Event team</h3><span>${_ek.office
+            ? (kit && kit.group_name ? `From the ${esc(kit.group_name)} team. Change a role here for this event only.` : 'Set the producer group\'s team on the Portfolio page, or pick people for this event.')
+            : ''}</span></div>
           ${EK_TEAM_ROLES.map(r => ekTeamRowHtml(kit, r)).join('')}
+          ${kit && kit.co_producer_name ? `<div class="ek-team-row"><span>Co-producer</span><strong>${kit.co_producer_id ? `<button type="button" class="emp-link" onclick="openEmployeeProfile(${kit.co_producer_id})">${esc(kit.co_producer_name)}</button>` : esc(kit.co_producer_name)}${kit.co_producer_id && kit.co_producer_id === (currentUser && currentUser.employee_id) ? ' <small>(you)</small>' : ''}</strong></div>` : ''}
           ${_ek.office ? ekSharedHtml(kit) : ''}
-        </section>
-        <section class="ek-card">
-          <div class="ek-card-hd"><h3>Agendas</h3><span>${_ek.office || onTeam ? 'The producer uploads these.' : ''}</span></div>
-          ${[1, 2].map(n => ekAgendaHtml(ev, n, _ek.office || ekStaffMaySee(kit))).join('')}
         </section>
       </div>
     </div>`;
@@ -9859,43 +9975,56 @@ function ekItemHtml(ev, m, onTeam) {
   const kit = ev.kit;
   const status = ekItemStatus(kit, m.key);
   const review = kit && kit.item_reviews && kit.item_reviews[m.key];
+  const fin = kit && kit.item_finals && kit.item_finals[m.key];
   const url = kit && kit[`${m.key}_url`];
   const file = kit && kit[`${m.key}_file`];
+  const furl = kit && kit[`${m.key}_final_url`];
+  const ffile = kit && kit[`${m.key}_final_file`];
   const eid = ev.event_id;
-  const editing = _ek.editing === `link:${m.key}`;
+  const editing = _ek.editing === `link:${m.key}` || _ek.editing === `flink:${m.key}`;
+  const finalLink = _ek.editing === `flink:${m.key}`;
   const asking = _ek.editing === `changes:${m.key}`;
   const s = EK_STATUS[status];
 
-  const files = [
-    url ? `<a class="ek-asset" href="${esc(url)}" target="_blank" rel="noopener">Open link ↗</a>` : '',
-    file ? `<a class="ek-asset" href="/api/event-kits/${eid}/file/${m.key}" target="_blank">${esc(file)}</a>` : '',
-  ].filter(Boolean).join('');
-  const who = review && review.by && (status === 'approved' || status === 'changes')
+  const asset = (href, text, ext) => `<a class="ek-asset" href="${esc(href)}" target="_blank"${ext ? ' rel="noopener"' : ''}>${esc(text)}</a>`;
+  const drafts = [url ? asset(url, 'Open link ↗', true) : '', file ? asset(`/api/event-kits/${eid}/file/${m.key}`, file) : ''].filter(Boolean).join('');
+  const finals = [furl ? asset(furl, 'Open link ↗', true) : '', ffile ? asset(`/api/event-kits/${eid}/file/${m.key}_final`, ffile) : ''].filter(Boolean).join('');
+  const who = review && review.by && (status === 'approved' || status === 'changes' || status === 'final')
     ? `<div class="ek-review ${status === 'changes' ? 'is-changes' : ''}">${status === 'changes' ? `<strong>${esc(review.by)}:</strong> ${esc(review.note)}` : `Approved by ${esc(review.by)}`} · ${fmtDateShort(review.at)}</div>` : '';
 
   let actions = '';
   if (_ek.office) {
-    actions = `<label class="btn btn-ghost btn-sm">${file ? 'Replace file' : 'Upload file'}<input type="file" accept="${m.accept}" hidden onchange="ekUploadItem(${eid},'${m.key}',this)"></label>
-      <button class="btn btn-ghost btn-sm" onclick="ekStartEdit('link:${m.key}')">${url ? 'Edit link' : 'Add link'}</button>
-      ${url || file ? `<button class="btn btn-ghost btn-sm ek-icon" title="Remove" aria-label="Remove ${m.label}" onclick="ekClearItem(${eid},'${m.key}')">✕</button>` : ''}
-      ${status === 'pending' ? `<button class="btn btn-ghost btn-sm" title="Approve on the team's behalf" onclick="ekReview(${eid},'${m.key}','approved')">Mark approved</button>` : ''}`;
-  } else if (onTeam && status !== 'missing') {
-    actions = status === 'approved'
-      ? `<button class="btn btn-ghost btn-sm" onclick="ekStartEdit('changes:${m.key}')">Request changes</button>`
-      : `<button class="btn btn-primary btn-sm" onclick="ekReview(${eid},'${m.key}','approved')">Approve</button>
-         <button class="btn btn-ghost btn-sm" onclick="ekStartEdit('changes:${m.key}')">Request changes</button>`;
+    if (status === 'approved' || status === 'final') {
+      actions = `<label class="btn ${status === 'approved' ? 'btn-primary' : 'btn-ghost'} btn-sm">${ffile ? 'Replace final' : 'Upload final'}<input type="file" accept="${m.accept}" hidden onchange="ekUploadFinal(${eid},'${m.key}',this)"></label>
+        <button class="btn btn-ghost btn-sm" onclick="ekStartEdit('flink:${m.key}')">${furl ? 'Edit final link' : 'Final link'}</button>
+        ${finals ? `<button class="btn btn-ghost btn-sm ek-icon" title="Remove final" aria-label="Remove final ${m.label}" onclick="ekClearFinal(${eid},'${m.key}')">✕</button>` : ''}
+        <span class="ek-act-sep"></span>
+        <label class="btn btn-ghost btn-sm ek-quiet">New draft<input type="file" accept="${m.accept}" hidden onchange="ekUploadItem(${eid},'${m.key}',this)"></label>`;
+    } else {
+      actions = `<label class="btn btn-ghost btn-sm">${file ? 'Replace draft' : 'Upload draft'}<input type="file" accept="${m.accept}" hidden onchange="ekUploadItem(${eid},'${m.key}',this)"></label>
+        <button class="btn btn-ghost btn-sm" onclick="ekStartEdit('link:${m.key}')">${url ? 'Edit link' : 'Add link'}</button>
+        ${url || file ? `<button class="btn btn-ghost btn-sm ek-icon" title="Remove" aria-label="Remove ${m.label}" onclick="ekClearItem(${eid},'${m.key}')">✕</button>` : ''}
+        ${status === 'pending' ? `<button class="btn btn-ghost btn-sm" title="Approve on the team's behalf" onclick="ekReview(${eid},'${m.key}','approved')">Mark approved</button>` : ''}`;
+    }
+  } else if (onTeam && (status === 'pending' || status === 'changes')) {
+    actions = `<button class="btn btn-primary btn-sm" onclick="ekReview(${eid},'${m.key}','approved')">Approve</button>
+       <button class="btn btn-ghost btn-sm" onclick="ekStartEdit('changes:${m.key}')">Request changes</button>`;
+  } else if (onTeam && status === 'approved') {
+    actions = `<button class="btn btn-ghost btn-sm" onclick="ekStartEdit('changes:${m.key}')">Request changes</button>`;
   }
 
-  return `<div class="ek-item">
+  const linkVal = finalLink ? furl : url;
+  return `<div class="ek-item ek-item--${status}">
     <div class="ek-item-top">
       <div class="ek-item-name">${m.label}</div>
       <span class="ek-pill ek-pill--${s.cls}">${s.label}</span>
     </div>
-    ${files ? `<div class="ek-assets">${files}</div>` : ''}
+    ${finals ? `<div class="ek-files"><span class="ek-files-lbl is-final">Final</span><div class="ek-assets">${finals}</div></div>` : ''}
+    ${drafts ? `<div class="ek-files${finals ? ' is-old' : ''}"><span class="ek-files-lbl">Draft</span><div class="ek-assets">${drafts}</div></div>` : ''}
     ${who}
     ${editing ? `<div class="ek-inline">
-        <input type="url" id="ekLinkInput" placeholder="https://www.canva.com/…" value="${esc(url || '')}" onkeydown="if(event.key==='Enter')ekSaveLink(${eid},'${m.key}');if(event.key==='Escape')ekStartEdit(null)">
-        <button class="btn btn-primary btn-sm" onclick="ekSaveLink(${eid},'${m.key}')">Save</button>
+        <input type="url" id="ekLinkInput" placeholder="${finalLink ? 'Final version link' : 'https://www.canva.com/…'}" value="${esc(linkVal || '')}" onkeydown="if(event.key==='Enter')ekSaveLink(${eid},'${m.key}',${finalLink});if(event.key==='Escape')ekStartEdit(null)">
+        <button class="btn btn-primary btn-sm" onclick="ekSaveLink(${eid},'${m.key}',${finalLink})">Save</button>
         <button class="btn btn-ghost btn-sm" onclick="ekStartEdit(null)">Cancel</button>
       </div>` : ''}
     ${asking ? `<div class="ek-inline ek-inline--col">
@@ -9909,18 +10038,21 @@ function ekItemHtml(ev, m, onTeam) {
 
 function ekTeamRowHtml(kit, role) {
   const id = kit && kit[`${role.key}_id`];
+  const own = kit && kit[`own_${role.key}_id`];
   const name = kit && kit[`${role.key}_name`];
+  const groupName = kit && kit[`group_${role.key}_name`];
   if (!_ek.office) {
     return `<div class="ek-team-row"><span>${role.label}</span><strong>${name ? esc(name) : '<em>Not set</em>'}${id && id === (currentUser && currentUser.employee_id) ? ' <small>(you)</small>' : ''}</strong></div>`;
   }
-  const inDept = _ek.staff.filter(e => (e.active || e.id === id) && role.dept.test(e.department || ''));
-  const rest = _ek.staff.filter(e => (e.active || e.id === id) && !role.dept.test(e.department || ''));
-  const opt = e => `<option value="${e.id}"${e.id === id ? ' selected' : ''}>${esc(e.name)}${e.active ? '' : ' (left)'}</option>`;
+  // "" means the producer group's person; picking someone sets this event only.
+  const inDept = _ek.staff.filter(e => (e.active || e.id === own) && role.dept.test(e.department || ''));
+  const rest = _ek.staff.filter(e => (e.active || e.id === own) && !role.dept.test(e.department || ''));
+  const opt = e => `<option value="${e.id}"${e.id === own ? ' selected' : ''}>${esc(e.name)}${e.active ? '' : ' (left)'}</option>`;
   return `<div class="ek-team-row ek-team-row--edit">
-    <label for="ekTeam_${role.key}">${role.label}</label>
+    <label for="ekTeam_${role.key}">${role.label}${own && groupName ? '<small class="ek-team-from">this event only</small>' : ''}</label>
     <div class="ek-team-pick">
       <select id="ekTeam_${role.key}" onchange="ekSaveTeam()">
-        <option value="">Not set</option>
+        <option value="">${groupName ? `${esc(groupName)} (team)` : 'Not set'}</option>
         ${inDept.length ? `<optgroup label="${esc([...new Set(inDept.map(e => e.department))].join(' / '))}">${inDept.map(opt).join('')}</optgroup>` : ''}
         ${rest.length ? `<optgroup label="${inDept.length ? 'Everyone else' : 'Staff'}">${rest.map(opt).join('')}</optgroup>` : ''}
       </select>
@@ -9959,7 +10091,7 @@ function ekAgendaHtml(ev, n, canUpload) {
 function ekStartEdit(key) {
   _ek.editing = key;
   ekRenderDetail();
-  const el = document.getElementById(key && key.startsWith('link') ? 'ekLinkInput' : 'ekChangesInput');
+  const el = document.getElementById(key && /link:/.test(key) ? 'ekLinkInput' : 'ekChangesInput');
   if (el) el.focus();
 }
 
@@ -9987,15 +10119,36 @@ async function ekSend(url, method, body, okMsg) {
 
 async function ekUploadItem(eid, type, input) {
   try {
-    const f = await ekReadFile(input);
     const kit = ekCurrent()?.kit;
-    await ekSend(`/api/event-kits/${eid}/items/${type}`, 'PUT', { url: (kit && kit[`${type}_url`]) || '', file: f.name, data: f.data }, 'Uploaded · sent to the team for approval');
+    if (ekItemStatus(kit, type) === 'approved' || ekHasFinal(kit, type)) {
+      if (!await showConfirm('Upload a new draft? It goes back to the team for approval' + (ekHasFinal(kit, type) ? ' and the final version is removed.' : '.'))) { input.value = ''; return; }
+    }
+    const f = await ekReadFile(input);
+    await ekSend(`/api/event-kits/${eid}/items/${type}`, 'PUT', { url: (kit && kit[`${type}_url`]) || '', file: f.name, data: f.data }, 'Draft uploaded · sent to the team for approval');
   } catch (e) { showToast(e.message, 'error'); }
 }
 
-async function ekSaveLink(eid, type) {
+async function ekSaveLink(eid, type, final) {
   const url = (document.getElementById('ekLinkInput')?.value || '').trim();
+  if (final) {
+    await ekSend(`/api/event-kits/${eid}/items/${type}/final`, 'PUT', { url }, url ? 'Final version saved' : 'Final link removed');
+    return;
+  }
   await ekSend(`/api/event-kits/${eid}/items/${type}`, 'PUT', { url }, url ? 'Link saved · sent to the team for approval' : 'Link removed');
+}
+
+async function ekUploadFinal(eid, type, input) {
+  try {
+    const f = await ekReadFile(input);
+    const kit = ekCurrent()?.kit;
+    await ekSend(`/api/event-kits/${eid}/items/${type}/final`, 'PUT', { url: (kit && kit[`${type}_final_url`]) || '', file: f.name, data: f.data }, 'Final version uploaded');
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function ekClearFinal(eid, type) {
+  const m = EK_MATERIAL_TYPES.find(x => x.key === type);
+  if (!await showConfirm(`Remove the final ${m ? m.label.toLowerCase() : 'version'}? The approved draft stays.`)) return;
+  await ekSend(`/api/event-kits/${eid}/items/${type}/final`, 'PUT', { url: '', clear_file: true }, 'Final removed');
 }
 
 async function ekClearItem(eid, type) {
@@ -10018,7 +10171,7 @@ function ekTeamBody(kit, emails) {
   const body = {};
   EK_TEAM_ROLES.forEach(r => {
     const sel = document.getElementById(`ekTeam_${r.key}`);
-    const v = sel ? sel.value : (kit && kit[`${r.key}_id`]);
+    const v = sel ? sel.value : (kit && kit[`own_${r.key}_id`]);
     if (v) body[`${r.key}_id`] = parseInt(v, 10);
   });
   body.access_emails = emails;
@@ -10070,6 +10223,245 @@ async function ekDeleteKit(eid) {
   if (ev) ev.kit = null;
   ekRenderList();
   ekRenderDetail();
+}
+
+// ─── MY DEALS (staff portal, sales team) ─────────────────────────────────────
+// Sellers add the deals they sign. Each one lands in the main Deal Tracker
+// under their name and the office is notified; the seller can change or
+// withdraw it until the office invoices it, then follows it to paid here.
+const MD_SYM = { GBP: '£', USD: '$', EUR: '€', AED: 'AED ', PHP: '₱' };
+const MD_MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+let _md = { deals: [], events: [], currencies: ['GBP'], canAdd: false, year: null, picked: new Set() };
+
+function mdMoney(n, cur) { return (MD_SYM[cur] || cur + ' ') + Number(n || 0).toLocaleString('en-GB', { maximumFractionDigits: 0 }); }
+
+// Where a deal is: with the office, invoiced, part paid, paid, or cancelled.
+function mdStatus(d) {
+  if (d.cancelled) return { key: 'cancelled', label: 'Cancelled', step: 0 };
+  const expected = d.amount + (d.tax_vat || 0);
+  if (d.paid_inc_vat > 0) return d.paid_inc_vat >= expected - 0.5
+    ? { key: 'paid', label: 'Paid', step: 3 } : { key: 'part', label: 'Part paid', step: 2.5 };
+  if (d.invoice_number || d.invoice_date) return { key: 'invoiced', label: 'Invoiced', step: 2 };
+  return { key: 'submitted', label: 'With the office', step: 1 };
+}
+
+function mdYearOf(d) {
+  if (d.fiscal_year) return parseInt(d.fiscal_year, 10);
+  const m = (d.deal_month || '').match(/^(\d{2})/);
+  return m ? 2000 + parseInt(m[1], 10) : new Date(d.created_at).getFullYear();
+}
+
+// Sales staff (or anyone who already has deals) get the My Deals page.
+async function mdCheckAccess() {
+  try {
+    const res = await fetch('/api/my-deals');
+    if (!res.ok) return;
+    const data = await res.json();
+    mdTake(data);
+    if (data.can_add || data.deals.length) document.querySelectorAll('.sales-only').forEach(el => el.classList.remove('hidden'));
+  } catch {}
+}
+
+function mdTake(data) {
+  _md.deals = data.deals || [];
+  _md.events = data.events || [];
+  _md.currencies = data.currencies || ['GBP'];
+  _md.canAdd = !!data.can_add;
+}
+
+async function loadMyDealsPage() {
+  const root = document.getElementById('mdRoot');
+  if (!root) return;
+  if (!_md.deals.length && !_md.events.length) root.innerHTML = '<div class="ek-loading">Loading…</div>';
+  try {
+    const res = await fetch('/api/my-deals');
+    if (!res.ok) throw new Error();
+    mdTake(await res.json());
+    mdRender();
+  } catch { root.innerHTML = '<div class="ek-loading">Could not load your deals.</div>'; }
+}
+
+function mdRender() {
+  const root = document.getElementById('mdRoot');
+  if (!root) return;
+  const years = [...new Set(_md.deals.map(mdYearOf).concat(new Date().getFullYear() + (new Date().getMonth() >= 8 ? 1 : 0)))].sort((a, b) => b - a);
+  if (!_md.year || !years.includes(_md.year)) _md.year = years[0];
+  const list = _md.deals.filter(d => mdYearOf(d) === _md.year);
+  const live = list.filter(d => !d.cancelled);
+
+  // Totals per currency, shown side by side when a seller works in several.
+  const sumBy = (rows, f) => {
+    const m = {};
+    rows.forEach(d => { const v = f(d); if (v) m[d.currency] = (m[d.currency] || 0) + v; });
+    const parts = Object.entries(m).sort((a, b) => b[1] - a[1]).map(([c, v]) => mdMoney(v, c));
+    return parts.length ? parts.join(' · ') : mdMoney(0, live[0]?.currency || 'GBP');
+  };
+  const signed = sumBy(live, d => d.amount);
+  const paid = sumBy(live, d => d.paid_inc_vat || 0);
+  const awaiting = sumBy(live.filter(d => mdStatus(d).key !== 'paid'), d => Math.max(0, d.amount + (d.tax_vat || 0) - (d.paid_inc_vat || 0)));
+  const withOffice = live.filter(d => mdStatus(d).key === 'submitted').length;
+
+  root.innerHTML = `
+    <div class="md-head">
+      <div class="emp-seg" role="group" aria-label="Programme year">
+        ${years.map(y => `<button type="button" class="${y === _md.year ? 'active' : ''}" onclick="_md.year=${y};mdRender()">${y}</button>`).join('')}
+      </div>
+      ${_md.canAdd ? '<button class="btn btn-primary" onclick="mdOpen()">+ Add deal</button>' : ''}
+    </div>
+
+    <div class="md-tiles">
+      <div class="md-tile"><span>Signed</span><strong>${signed}</strong><small>${live.length} deal${live.length === 1 ? '' : 's'}</small></div>
+      <div class="md-tile"><span>Paid</span><strong>${paid}</strong><small>inc VAT</small></div>
+      <div class="md-tile"><span>Still to come in</span><strong>${awaiting}</strong><small>inc VAT where invoiced</small></div>
+      <div class="md-tile"><span>With the office</span><strong>${withOffice}</strong><small>waiting to be invoiced</small></div>
+    </div>
+
+    <div class="md-flow" aria-hidden="true">
+      <span><i>1</i>You add the deal</span><b></b>
+      <span><i>2</i>The office invoices it</span><b></b>
+      <span><i>3</i>The client pays</span>
+    </div>
+
+    <div class="md-card">
+      ${list.length ? `<table class="md-table">
+        <thead><tr><th>Company</th><th>Events</th><th>Signed</th><th class="dt-r">Value</th><th>Status</th><th></th></tr></thead>
+        <tbody>${list.map(mdRowHtml).join('')}</tbody>
+      </table>` : `<div class="md-empty">
+        <strong>No deals for ${_md.year} yet</strong>
+        <span>${_md.canAdd ? 'Add a deal when it is signed. The office sees it in the Deal Tracker straight away.' : 'Deals you sell appear here.'}</span>
+        ${_md.canAdd ? '<button class="btn btn-primary btn-sm" onclick="mdOpen()">+ Add your first deal</button>' : ''}
+      </div>`}
+    </div>`;
+}
+
+function mdRowHtml(d) {
+  const s = mdStatus(d);
+  const evs = d.events || [];
+  const evTxt = evs.length ? esc(evs[0].event_name) + (evs.length > 1 ? ` <span class="md-more">+${evs.length - 1}</span>` : '') : '<span class="md-muted">—</span>';
+  const pkg = evs.find(e => e.package_label)?.package_label;
+  const pm = parseDealMonth(d.deal_month);
+  const month = pm ? `${MD_MONTHS[pm.month - 1]} ${pm.year}` : (d.deal_month || '—');
+  const paidLine = s.key === 'part' ? `<small>${mdMoney(d.paid_inc_vat, d.currency)} of ${mdMoney(d.amount + (d.tax_vat || 0), d.currency)} in</small>` : '';
+  return `<tr class="md-row${d.locked ? ' is-locked' : ''}" ${d.locked ? `title="The office has invoiced this deal. Ask them if something needs changing."` : `onclick="mdOpen(${d.id})" tabindex="0" onkeydown="if(event.key==='Enter')mdOpen(${d.id})"`}>
+    <td><span class="md-co">${esc(d.company)}</span>${d.contact_name ? `<small>${esc(d.contact_name)}</small>` : ''}</td>
+    <td class="md-evs" title="${esc(evs.map(e => e.event_name).join(', '))}">${evTxt}${pkg ? `<small>${esc(pkg)}</small>` : ''}</td>
+    <td class="md-when">${esc(month)}</td>
+    <td class="dt-r md-val">${mdMoney(d.amount, d.currency)}${paidLine}</td>
+    <td><span class="md-pill md-pill--${s.key}">${s.label}</span>${d.invoice_number ? `<small class="md-inv">${esc(d.invoice_number)}</small>` : ''}</td>
+    <td class="md-act">${d.locked ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Locked"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>' : '<span class="md-edit">Edit</span>'}</td>
+  </tr>`;
+}
+
+function mdOpen(id) {
+  const d = id ? _md.deals.find(x => x.id === id) : null;
+  if (id && (!d || d.locked)) return;
+  document.getElementById('mdEditId').value = d ? d.id : '';
+  document.getElementById('mdModalTitle').textContent = d ? 'Edit deal' : 'Add a deal';
+  document.getElementById('mdSaveBtn').textContent = d ? 'Save changes' : 'Add deal';
+  document.getElementById('mdDeleteBtn').classList.toggle('hidden', !d);
+  document.getElementById('mdCompany').value = d ? d.company : '';
+  document.getElementById('mdContact').value = d ? d.contact_name : '';
+  document.getElementById('mdAmount').value = d ? d.amount : '';
+  document.getElementById('mdNotes').value = d ? d.notes : '';
+  document.getElementById('mdPackage').value = d ? ((d.events || []).find(e => e.package_label)?.package_label || '') : '';
+  document.getElementById('mdCurrency').innerHTML = _md.currencies.map(c => `<option value="${c}">${(MD_SYM[c] || '').trim() && MD_SYM[c].trim() !== c ? MD_SYM[c] + ' ' : ''}${c}</option>`).join('');
+  document.getElementById('mdCurrency').value = d ? d.currency : 'GBP';
+
+  // Month signed: the last 18 months and the next 3, newest first.
+  const now = new Date();
+  const opts = [];
+  for (let i = 3; i >= -18; i--) {
+    const dt = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    opts.push({ v: dealMonthText(dt.getMonth() + 1, dt.getFullYear()), t: `${MD_MONTHS[dt.getMonth()]} ${dt.getFullYear()}` });
+  }
+  const cur = d ? d.deal_month : dealMonthText(now.getMonth() + 1, now.getFullYear());
+  if (cur && !opts.some(o => o.v === cur)) opts.push({ v: cur, t: cur });
+  const sel = document.getElementById('mdMonth');
+  sel.innerHTML = opts.map(o => `<option value="${esc(o.v)}">${esc(o.t)}</option>`).join('');
+  sel.value = cur;
+
+  _md.picked = new Set(d ? (d.events || []).map(e => e.event_id) : []);
+  document.getElementById('mdEvSearch').value = '';
+  mdRenderEventPicker();
+  openModal('myDealModal');
+  setTimeout(() => document.getElementById('mdCompany').focus(), 50);
+}
+
+function mdRenderEventPicker() {
+  const q = (document.getElementById('mdEvSearch').value || '').trim().toLowerCase();
+  const nowIso = today();
+  const evs = _md.events.filter(e => {
+    const past = e.event_date && e.date_tbc !== 'date' && String(e.event_date).slice(0, 10) < nowIso;
+    return (_md.picked.has(e.id) || !past) && (!q || e.name.toLowerCase().includes(q) || (e.location || '').toLowerCase().includes(q));
+  });
+  document.getElementById('mdEvList').innerHTML = evs.map(e => `
+    <label class="md-ev${_md.picked.has(e.id) ? ' on' : ''}">
+      <input type="checkbox" ${_md.picked.has(e.id) ? 'checked' : ''} onchange="mdToggleEvent(${e.id}, this.checked)">
+      <span class="md-ev-name">${esc(e.name)}</span>
+      <span class="md-ev-meta">${(e.event_date || e.programme_year) ? esc(fmtEventDate(e)) : 'Date TBC'}${e.location ? ' · ' + esc(e.location) : ''}</span>
+    </label>`).join('') || '<div class="md-muted md-ev-none">No upcoming events match.</div>';
+  mdUpdateSplit();
+}
+
+function mdToggleEvent(id, on) {
+  if (on) _md.picked.add(id); else _md.picked.delete(id);
+  mdRenderEventPicker();
+}
+
+function mdUpdateSplit() {
+  const el = document.getElementById('mdSplit');
+  if (!el) return;
+  const n = _md.picked.size;
+  const amt = parseFloat(document.getElementById('mdAmount').value);
+  const cur = document.getElementById('mdCurrency').value || 'GBP';
+  el.textContent = !n ? 'Pick the events it covers'
+    : n === 1 ? '1 event'
+    : `${n} events${amt > 0 ? ` · ${mdMoney(amt / n, cur)} each` : ''}`;
+}
+
+async function mdSave() {
+  const id = document.getElementById('mdEditId').value;
+  const body = {
+    company: document.getElementById('mdCompany').value.trim(),
+    contact_name: document.getElementById('mdContact').value.trim(),
+    amount: parseFloat(document.getElementById('mdAmount').value),
+    currency: document.getElementById('mdCurrency').value,
+    deal_month: document.getElementById('mdMonth').value,
+    package_label: document.getElementById('mdPackage').value.trim(),
+    notes: document.getElementById('mdNotes').value.trim(),
+    event_ids: [..._md.picked],
+  };
+  if (!body.company) { showToast('Add the company', 'error'); return; }
+  if (!(body.amount > 0)) { showToast('Add the deal value', 'error'); return; }
+  if (!body.event_ids.length) { showToast('Pick at least one event', 'error'); return; }
+  const btn = document.getElementById('mdSaveBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch(id ? `/api/my-deals/${id}` : '/api/my-deals', {
+      method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { showToast(data.error || 'Could not save the deal', 'error'); return; }
+    const i = _md.deals.findIndex(x => x.id === data.id);
+    if (i >= 0) _md.deals[i] = data; else _md.deals.unshift(data);
+    _md.year = mdYearOf(data);
+    closeModal('myDealModal');
+    showToast(id ? 'Deal updated · the office has been told' : 'Deal added · it is in the Deal Tracker', 'success');
+    mdRender();
+  } finally { btn.disabled = false; }
+}
+
+async function mdDelete() {
+  const id = parseInt(document.getElementById('mdEditId').value, 10);
+  const d = _md.deals.find(x => x.id === id);
+  if (!d || !await showConfirm(`Withdraw the ${d.company} deal? It is removed from the Deal Tracker.`)) return;
+  const res = await fetch(`/api/my-deals/${id}`, { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { showToast(data.error || 'Could not withdraw the deal', 'error'); return; }
+  _md.deals = _md.deals.filter(x => x.id !== id);
+  closeModal('myDealModal');
+  showToast('Deal withdrawn', 'success');
+  mdRender();
 }
 
 // ── Invoice Generator ──────────────────────────────────────────────────────────
