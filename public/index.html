@@ -118,6 +118,10 @@
       </div>
     </div>
     <div class="sidebar-footer">
+      <button class="theme-toggle-btn hidden" id="installAppBtn" onclick="installApp()" title="Install LPGP Tracker as an app on this computer">
+        <span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4M12 7v6M9 10l3 3 3-3"/></svg></span>
+        <span>Install app</span>
+      </button>
       <button class="theme-toggle-btn" id="themeToggleBtn" onclick="toggleTheme()">
         <span id="themeToggleIcon">🌙</span>
         <span id="themeToggleLabel">Dark Mode</span>
@@ -2114,6 +2118,25 @@
 <script>
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+  // Chrome and Edge offer to install the tracker as a desktop app; the sidebar
+  // shows an Install app button while that offer stands (never inside the app).
+  let _installPrompt = null;
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    _installPrompt = e;
+    if (!matchMedia('(display-mode: standalone)').matches) document.getElementById('installAppBtn')?.classList.remove('hidden');
+  });
+  window.addEventListener('appinstalled', () => {
+    _installPrompt = null;
+    document.getElementById('installAppBtn')?.classList.add('hidden');
+  });
+  async function installApp() {
+    if (!_installPrompt) return;
+    _installPrompt.prompt();
+    await _installPrompt.userChoice.catch(() => null);
+    _installPrompt = null;
+    document.getElementById('installAppBtn')?.classList.add('hidden');
   }
 </script>
 </body>
