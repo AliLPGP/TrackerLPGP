@@ -3117,6 +3117,25 @@ function dropInvoiceRow(zip, label) {
   zip.file(file, xml.slice(0, start) + xml.slice(end + '</w:tr>'.length));
 }
 
+const xmlText = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// Turns the rendered invoice into its paid copy: PAID in bold red beside the
+// INVOICE title, TOTAL DUE reads TOTAL PAID, and the payment terms become a
+// paid-in-full line. Each piece is a single run in the template.
+function markInvoicePaid(zip, paidDate, method) {
+  const file = 'word/document.xml';
+  let xml = zip.file(file).asText();
+  xml = xml.replace('<w:t>INVOICE</w:t></w:r>',
+    '<w:t>INVOICE</w:t></w:r><w:r><w:t xml:space="preserve">   </w:t></w:r>'
+    + '<w:r><w:rPr><w:b/><w:bCs/><w:color w:val="FF0000"/></w:rPr><w:t>PAID</w:t></w:r>');
+  xml = xml.replace('<w:t>TOTAL DUE</w:t>', '<w:t>TOTAL PAID</w:t>');
+  const line = `Paid in full${paidDate ? ` on ${paidDate}` : ''}${method ? ` by ${method}` : ''}. Thank you.`;
+  xml = xml.replace('<w:t>Payment is due within 7 days from invoice date</w:t>', `<w:t>${xmlText(line)}</w:t>`);
+  xml = xml.replace('<w:t>Immediate payment is due if booking has been made 30 days prior to the start of the conference date.</w:t>',
+    '<w:t>This invoice is your receipt.</w:t>');
+  zip.file(file, xml);
+}
+
 app.post('/api/generate-invoice', requireAuth, requireAdminOrManager, async (req, res) => {
   try {
     const templatePath = path.join(__dirname, 'public', 'invoice_template.docx');
@@ -3144,8 +3163,12 @@ app.post('/api/generate-invoice', requireAuth, requireAdminOrManager, async (req
       notes_block: notesText ? [notesText] : [] });
     // No VAT: leave the VAT row out of the totals entirely.
     if (!(parseFloat(String(vat_amount).replace(/[^0-9.]/g, '')) > 0)) dropInvoiceRow(doc.getZip(), 'VAT 20%');
+    // Paid copy: the same invoice marked PAID, for clients who need a receipt
+    // (Stripe bookings get none from us otherwise).
+    const paid = req.body.paid === true;
+    if (paid) markInvoicePaid(doc.getZip(), String(req.body.paid_date || '').trim(), String(req.body.paid_method || '').trim());
     const buf = doc.getZip().generate({ type: 'nodebuffer', compression: 'DEFLATE' });
-    const filename = `LPGPCONNECTCOMLTD${invoice_number || 'DRAFT'}.docx`;
+    const filename = `LPGPCONNECTCOMLTD${invoice_number || 'DRAFT'}${paid ? '-PAID' : ''}.docx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(buf);

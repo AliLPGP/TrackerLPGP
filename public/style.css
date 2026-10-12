@@ -7272,3 +7272,16 @@ body.login-body { background: var(--bg); position: relative; min-height: 100vh; 
 :root .md-modal .md-pkg input { min-height: 36px; padding-top: 7px; padding-bottom: 7px; font-size: 13.5px; }
 .md-off { opacity: .45; pointer-events: none; }
 @media (max-width: 520px) { .md-pkg-fields { grid-template-columns: 1fr; } }
+
+/* Invoice generator: paid copy */
+.ig-paid { margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; }
+.ig-paid.is-on { border-color: rgba(220,38,38,0.45); background: rgba(220,38,38,0.05); }
+.ig-paid-toggle { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.ig-paid-toggle input { margin-top: 3px; width: 16px; height: 16px; accent-color: #dc2626; }
+.ig-paid-toggle strong { display: block; font: 600 13.5px/1.3 var(--font-sans); color: var(--text); }
+.ig-paid-toggle small { display: block; margin-top: 2px; font: 400 12.5px/1.4 var(--font-sans); color: var(--muted); }
+.ig-paid-word { color: #dc2626; font-weight: 700; }
+.ig-paid-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+.ig-paid-fields .form-group { margin: 0; }
+.ig-paid-stamp { margin-left: 18px; color: #ff0000; }
+@media (max-width: 520px) { .ig-paid-fields { grid-template-columns: 1fr; } }
