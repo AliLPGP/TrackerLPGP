@@ -10756,8 +10756,8 @@ function previewInvoice() {
   const page1 = `<div class="ig-page">
     ${head}
     <div class="ig-body">
-      <div class="ig-inv-title">INVOICE${p.paid ? '<span class="ig-paid-stamp">PAID</span>' : ''}</div>
-      <div class="ig-from">
+      <div class="ig-inv-title">INVOICE</div>
+      <div class="ig-from">${p.paid ? '<div class="ig-paid-stamp">PAID</div>' : ''}
         <div>LPGPCONNECT.COM LTD</div>
         <div>1 Oakcroft Road</div><div>Trident Court</div><div>Studio 111</div><div>KT9 1BD</div>
         <div class="ig-date"><strong>Date</strong>: ${esc(p.date || '—')}</div>

@@ -7283,5 +7283,9 @@ body.login-body { background: var(--bg); position: relative; min-height: 100vh; 
 .ig-paid-word { color: #dc2626; font-weight: 700; }
 .ig-paid-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
 .ig-paid-fields .form-group { margin: 0; }
-.ig-paid-stamp { margin-left: 18px; color: #ff0000; }
+.ig-from { position: relative; }
+.ig-paid-stamp {
+  position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+  font: 700 40px/1 Calibri, Carlito, var(--font-sans); color: #ff0000; letter-spacing: .01em;
+}
 @media (max-width: 520px) { .ig-paid-fields { grid-template-columns: 1fr; } }
