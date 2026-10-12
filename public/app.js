@@ -1345,8 +1345,8 @@ function updatePreview() {
   if (dayOff > 0) {
     const label = dayOff === 1 ? 'Full day off' : 'Half day off';
     const typeNote = emp.employment_type === 'self_employed'
-      ? ' (check year allowance — self-employed: 5 days free)'
-      : ' (check year allowance — payroll: 20 days free)';
+      ? ' (check year allowance — self-employed: 5 days a year, pro-rated in the year they start or leave)'
+      : ' (check year allowance — payroll: 20 days a year, pro-rated in the year they start or leave)';
     const noDeduct = document.getElementById('recNoDeduction')?.checked;
     html = `<h3>Day Off Note</h3>
       <div class="deduction-row"><span>${label}${typeNote}</span></div>
@@ -6786,11 +6786,11 @@ async function loadEmployeeDashboard(user) {
     const sal       = salaryRes.ok    ? await salaryRes.json()    : null;
 
     const daysUsed      = parseFloat(profile.days_used) || 0;
-    const allowance     = profile.allowance_days || 20;
+    const allowance     = profile.allowance_days ?? 20;
     const excessDays    = parseFloat(profile.excess_days) || 0;
     const excessDeduct  = parseFloat(profile.excess_deduction) || 0;
     const remaining     = Math.max(0, allowance - daysUsed);
-    const pct           = Math.min(100, Math.round((daysUsed / allowance) * 100));
+    const pct           = allowance > 0 ? Math.min(100, Math.round((daysUsed / allowance) * 100)) : (daysUsed > 0 ? 100 : 0);
     const initials      = (profile.name || '?').split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
     const barColor      = pct > 80 ? 'var(--negative)' : pct > 60 ? 'var(--warning)' : 'var(--positive)';
     const MONS = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
