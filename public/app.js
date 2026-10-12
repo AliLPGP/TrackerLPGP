@@ -304,7 +304,11 @@ function renderEmpTable() {
   document.querySelectorAll('#empStatusSeg button').forEach(b => b.classList.toggle('active', b.dataset.v === _empFilter.status));
 
   const list = base.filter(e => !_empFilter.dept || (e.department || 'No department') === _empFilter.dept)
-    .sort((a, b) => (a.department || '~').localeCompare(b.department || '~') || a.name.localeCompare(b.name));
+    // Within each department, highest salary first, compared in GBP so ₱ and
+    // AED salaries rank fairly against £ ones.
+    .sort((a, b) => (a.department || '~').localeCompare(b.department || '~')
+      || salFxToGBP(parseFloat(b.annual_salary) || 0, b.currency) - salFxToGBP(parseFloat(a.annual_salary) || 0, a.currency)
+      || a.name.localeCompare(b.name));
   const tbody = document.getElementById('empTable');
   if (!list.length) {
     tbody.innerHTML = `<tr><td colspan="7"><div class="emp-empty">${search || _empFilter.dept || _empFilter.type ? 'Nobody matches these filters.' : 'No employees yet.'}</div></td></tr>`;
