@@ -10684,6 +10684,12 @@ function openInvoiceGenModal(dealId) {
   document.getElementById('igTotalDue').value = totalDue;
   document.getElementById('igClientName').value = deal.company || deal.title || '';
   document.getElementById('igAdditionalNotes').value = '';
+  // A deal with money in starts as a paid copy, dated and sourced from the deal.
+  const paidIn = parseFloat(deal.paid_inc_vat) > 0;
+  document.getElementById('igPaid').checked = paidIn;
+  document.getElementById('igPaidDate').value = deal.paid_date ? String(deal.paid_date).slice(0, 10) : (paidIn ? today() : '');
+  document.getElementById('igPaidMethod').value = /stripe/i.test(deal.bank || '') ? 'Stripe' : deal.bank ? 'bank transfer' : 'Stripe';
+  igPaidChanged();
   igRecalcTotals(false);
   document.getElementById('invoiceGenModal').classList.add('open');
 }
@@ -10723,6 +10729,9 @@ function igCollectPayload() {
     client_name:    document.getElementById('igClientName').value.trim(),
     benefits,
     additional_notes: document.getElementById('igAdditionalNotes').value.trim(),
+    paid:           document.getElementById('igPaid').checked,
+    paid_date:      igUkDate(document.getElementById('igPaidDate').value),
+    paid_method:    document.getElementById('igPaidMethod').value,
   };
 }
 
@@ -10747,7 +10756,7 @@ function previewInvoice() {
   const page1 = `<div class="ig-page">
     ${head}
     <div class="ig-body">
-      <div class="ig-inv-title">INVOICE</div>
+      <div class="ig-inv-title">INVOICE${p.paid ? '<span class="ig-paid-stamp">PAID</span>' : ''}</div>
       <div class="ig-from">
         <div>LPGPCONNECT.COM LTD</div>
         <div>1 Oakcroft Road</div><div>Trident Court</div><div>Studio 111</div><div>KT9 1BD</div>
@@ -10767,7 +10776,7 @@ function previewInvoice() {
           </tr>
           <tr class="ig-sum ig-sum--first"><td class="ig-gap"></td><td class="ig-sum-lbl">SUBTOTAL</td><td>£ ${amt}</td></tr>
           ${igParseMoney(p.vat_amount) > 0 ? `<tr class="ig-sum"><td class="ig-gap"></td><td class="ig-sum-lbl">VAT 20%</td><td>£${esc(p.vat_amount)}</td></tr>` : ''}
-          <tr class="ig-sum"><td class="ig-gap"></td><td class="ig-sum-lbl">TOTAL DUE</td><td>£${esc(p.total_due || '—')}</td></tr>
+          <tr class="ig-sum"><td class="ig-gap"></td><td class="ig-sum-lbl">${p.paid ? 'TOTAL PAID' : 'TOTAL DUE'}</td><td>£${esc(p.total_due || '—')}</td></tr>
         </tbody>
       </table>
       <div class="ig-paybox">
@@ -10782,8 +10791,10 @@ function previewInvoice() {
           <div>VAT Number: 371409111</div>
         </div>
         <div class="ig-paybox-terms">
-          <div><strong>Payment is due within 7 days from invoice date</strong></div>
-          <div>Immediate payment is due if booking has been made 30 days prior to the start of the conference date.</div>
+          ${p.paid
+            ? `<div><strong>Paid in full${p.paid_date ? ` on ${esc(p.paid_date)}` : ''}${p.paid_method ? ` by ${esc(p.paid_method)}` : ''}. Thank you.</strong></div><div>This invoice is your receipt.</div>`
+            : `<div><strong>Payment is due within 7 days from invoice date</strong></div>
+          <div>Immediate payment is due if booking has been made 30 days prior to the start of the conference date.</div>`}
         </div>
       </div>
     </div>
@@ -10834,6 +10845,21 @@ function previewInvoice() {
   openModal('invoicePreviewModal');
 }
 
+function igPaidChanged() {
+  const on = document.getElementById('igPaid').checked;
+  document.getElementById('igPaidFields').classList.toggle('hidden', !on);
+  document.getElementById('igPaidBox').classList.toggle('is-on', on);
+  if (on && !document.getElementById('igPaidDate').value) document.getElementById('igPaidDate').value = today();
+  const btn = document.getElementById('igGenerateBtn');
+  if (btn && !btn.disabled) btn.textContent = on ? 'Generate paid copy' : 'Generate & Download';
+}
+
+// "2026-10-12" → "12/10/2026", the date style the invoice uses.
+function igUkDate(iso) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : '';
+}
+
 async function generateInvoice() {
   const btn = document.getElementById('igGenerateBtn');
   btn.disabled = true; btn.textContent = 'Generating…';
@@ -10851,13 +10877,13 @@ async function generateInvoice() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `LPGPCONNECTCOMLTD${payload.invoice_number || 'DRAFT'}.docx`;
+    a.download = `LPGPCONNECTCOMLTD${payload.invoice_number || 'DRAFT'}${payload.paid ? '-PAID' : ''}.docx`;
     a.click();
     URL.revokeObjectURL(url);
-    showToast('Invoice downloaded', 'success');
+    showToast(payload.paid ? 'Paid copy downloaded' : 'Invoice downloaded', 'success');
     closeInvoiceGenModal();
   } catch { showToast('Generation failed', 'error'); }
-  finally { btn.disabled = false; btn.textContent = 'Generate & Download'; }
+  finally { btn.disabled = false; igPaidChanged(); }
 }
 
 // ══════════════════════════════════════════
