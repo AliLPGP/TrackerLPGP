@@ -340,6 +340,9 @@ const SHIFT_HOURS = 8;
 const ALLOWED_BREAK_MINUTES = 40;
 const DAY_OFF_ALLOWANCE = { payroll: 20, self_employed: 5 };
 
+const { allowanceFor: allowanceForYear } = require('./allowance');
+const allowanceFor = (emp, year) => allowanceForYear(emp, year, DAY_OFF_ALLOWANCE);
+
 // Count Mon–Fri days in a given month (no bank holidays — add if needed)
 function workingDaysInMonth(year, month) {
   const daysInMonth = new Date(year, month, 0).getDate();
@@ -744,13 +747,13 @@ app.put('/api/employees/:id/portal-pin', requireAuth, requireAdmin, async (req, 
 app.get('/api/employee/profile', requireAuth, async (req, res) => {
   if (req.user.role !== 'employee') return res.status(403).json({ error: 'Employees only' });
   const empId = req.user.employee_id;
-  const { rows } = await q('SELECT id, name, email, phone, job_title, department, employment_type, annual_salary, currency, start_date, portal_pin FROM employees WHERE id = ?', [empId]);
+  const { rows } = await q('SELECT id, name, email, phone, job_title, department, employment_type, annual_salary, currency, start_date, termination_date, portal_pin FROM employees WHERE id = ?', [empId]);
   if (!rows[0]) return res.status(404).json({ error: 'Not found' });
   const emp = rows[0];
   const has_pin = !!emp.portal_pin;
   delete emp.portal_pin;
   const year = new Date().getFullYear();
-  const allowance = DAY_OFF_ALLOWANCE[emp.employment_type] || 20;
+  const allowance = allowanceFor(emp, year);
   const calc = await calcExcessDeductions(empId, year, parseFloat(emp.annual_salary) || 0, allowance);
   res.json({ ...emp, has_pin, year, days_used: calc.total_days_off, allowance_days: allowance, excess_days: calc.excess_days, exempt_days: calc.exempt_days, excess_deduction: calc.excess_deduction, waived_deduction: calc.waived_deduction });
 });
@@ -921,7 +924,7 @@ app.get('/api/employee/salary', requireAuth, async (req, res) => {
       [empId]
     );
     const totalBonuses = parseFloat(bonusRows.reduce((a, b) => a + parseFloat(b.amount || 0), 0).toFixed(2));
-    const allowance   = DAY_OFF_ALLOWANCE[emp.employment_type] || 20;
+    const allowance   = allowanceFor(emp, year);
     const annualSal   = parseFloat(emp.annual_salary) || 0;
     const dayCalc     = await calcExcessDeductions(empId, year, annualSal, allowance);
     const startDateStr = emp.start_date ? emp.start_date.toISOString().slice(0,10) : null;
@@ -1006,7 +1009,7 @@ app.get('/api/employees/:id/year-stats', requireAuth, async (req, res) => {
   if (!empRows[0]) return res.status(404).json({ error: 'Not found' });
   const emp = empRows[0];
 
-  const allowance = DAY_OFF_ALLOWANCE[emp.employment_type] || 20;
+  const allowance = allowanceFor(emp, year);
   const annualSalary = parseFloat(emp.annual_salary) || 0;
   const calc = await calcExcessDeductions(req.params.id, year, annualSalary, allowance);
 
@@ -1182,7 +1185,7 @@ app.get('/api/salary-overview', requireAuth, requireAdmin, async (req, res) => {
         [emp.id, year]
       );
 
-      const allowance  = DAY_OFF_ALLOWANCE[emp.employment_type] || 20;
+      const allowance  = allowanceFor(emp, year);
       const annualSal  = parseFloat(emp.annual_salary) || 0;
       const dayCalc    = await calcExcessDeductions(emp.id, year, annualSal, allowance);
 
@@ -1345,7 +1348,7 @@ app.get('/api/summary', requireAuth, async (req, res) => {
     const { rows: records } = await q(sql, params);
 
     // Year-level day-off stats (per-month daily rate)
-    const allowance = DAY_OFF_ALLOWANCE[emp.employment_type] || 20;
+    const allowance = allowanceFor(emp, year);
     const annualSal = parseFloat(emp.annual_salary) || 0;
     const dayCalc = await calcExcessDeductions(emp.id, year, annualSal, allowance);
     const totalYearDaysOff = dayCalc.total_days_off;
@@ -3426,7 +3429,7 @@ async function wmFetchSalaryOverview(year) {
       'SELECT * FROM monthly_payments WHERE employee_id = ? AND payment_year = ? ORDER BY payment_month',
       [emp.id, year]
     );
-    const allowance  = DAY_OFF_ALLOWANCE[emp.employment_type] || 20;
+    const allowance  = allowanceFor(emp, year);
     const annualSal  = parseFloat(emp.annual_salary) || 0;
     const dayCalc    = await calcExcessDeductions(emp.id, year, annualSal, allowance);
     const { rows: officeRows } = await q(
@@ -3516,7 +3519,7 @@ async function wmFetchAttendanceSummary(from, to) {
     if (from) { sql += ' AND r.record_date >= ?'; params.push(from); }
     if (to)   { sql += ' AND r.record_date <= ?'; params.push(to); }
     const { rows: records } = await q(sql, params);
-    const allowance  = DAY_OFF_ALLOWANCE[emp.employment_type] || 20;
+    const allowance  = allowanceFor(emp, year);
     const annualSal  = parseFloat(emp.annual_salary) || 0;
     const dayCalc    = await calcExcessDeductions(emp.id, year, annualSal, allowance);
     let periodDaysOff = 0;

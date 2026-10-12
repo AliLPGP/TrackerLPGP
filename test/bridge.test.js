@@ -518,6 +518,18 @@ const server = app.listen(0, async () => {
   check('a 2026 row is never merged into the 2027 programme', guards.results[1].outcome === 'row-wrong-year' && DB.events.some((e) => e.id === 11), JSON.stringify(guards.results[1]));
   check('a linked row is never merged away', guards.results[2].outcome === 'row-already-linked' && DB.events.some((e) => e.id === 12), JSON.stringify(guards.results[2]));
 
+  // ── Day-off allowance, pro-rated to the months employed ──
+  const { allowanceFor } = require('../allowance');
+  const al = (start, end, year, type = 'payroll') => allowanceFor({ employment_type: type, start_date: start, termination_date: end }, year);
+  check('a full year on payroll is 20 days', al('2024-01-10', null, 2026) === 20);
+  check('starting 12 May counts half of May: 7.5 months = 12.5 days', al('2026-05-12', null, 2026) === 12.5, al('2026-05-12', null, 2026));
+  check('starting 1 May is 8 months, rounded to the half day', al('2026-05-01', null, 2026) === 13.5, al('2026-05-01', null, 2026));
+  check('starting late in a month skips that month', al('2026-05-25', null, 2026) === 11.5, al('2026-05-25', null, 2026));
+  check('leaving mid-year pro-rates too', al('2024-01-01', '2026-06-15', 2026) === 9, al('2024-01-01', '2026-06-15', 2026));
+  check('no allowance in a year before they start', al('2027-01-05', null, 2026) === 0);
+  check('a start date given as a Date works', al(new Date('2026-05-12T00:00:00Z'), null, '2026') === 12.5);
+  check('self-employed pro-rate from 5 days', al('2026-07-01', null, 2026, 'self_employed') === 2.5, al('2026-07-01', null, 2026, 'self_employed'));
+
   console.log(`\n${pass} passed, ${fail} failed`);
   server.close();
   process.exit(fail ? 1 : 0);
