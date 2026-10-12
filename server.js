@@ -3119,15 +3119,36 @@ function dropInvoiceRow(zip, label) {
 
 const xmlText = v => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-// Turns the rendered invoice into its paid copy: PAID in bold red beside the
-// INVOICE title, TOTAL DUE reads TOTAL PAID, and the payment terms become a
-// paid-in-full line. Each piece is a single run in the template.
+// Turns the rendered invoice into its paid copy: a large bold red PAID in
+// the empty left half of the green box under the INVOICE title, TOTAL DUE
+// reads TOTAL PAID, and the payment terms become a paid-in-full line. If the
+// template ever loses that empty cell, PAID goes beside the title instead.
+const PAID_RUN = sz => `<w:r><w:rPr><w:b/><w:bCs/><w:color w:val="FF0000"/>${sz ? `<w:sz w:val="${sz}"/><w:szCs w:val="${sz}"/>` : ''}</w:rPr><w:t>PAID</w:t></w:r>`;
 function markInvoicePaid(zip, paidDate, method) {
   const file = 'word/document.xml';
   let xml = zip.file(file).asText();
-  xml = xml.replace('<w:t>INVOICE</w:t></w:r>',
-    '<w:t>INVOICE</w:t></w:r><w:r><w:t xml:space="preserve">   </w:t></w:r>'
-    + '<w:r><w:rPr><w:b/><w:bCs/><w:color w:val="FF0000"/></w:rPr><w:t>PAID</w:t></w:r>');
+
+  let placed = false;
+  const title = xml.indexOf('<w:t>INVOICE</w:t>');
+  const rowStart = title === -1 ? -1 : xml.slice(title).search(/<w:tr[ >]/);
+  if (rowStart !== -1) {
+    const cellStart = xml.indexOf('<w:tc>', title + rowStart);
+    const cellEnd = xml.indexOf('</w:tc>', cellStart);
+    const cell = xml.slice(cellStart, cellEnd);
+    const firstP = cell.search(/<w:p[ >]/);
+    // Only an empty cell: no text of its own.
+    if (cellStart !== -1 && firstP !== -1 && !/<w:t[ >]/.test(cell)) {
+      const tcPr = cell.slice(0, firstP).replace('</w:tcPr>', '<w:vAlign w:val="center"/></w:tcPr>');
+      const para = `<w:p><w:pPr><w:spacing w:before="0" w:after="0"/><w:jc w:val="left"/></w:pPr>${PAID_RUN(80)}</w:p>`;
+      xml = xml.slice(0, cellStart) + tcPr + para + xml.slice(cellEnd);
+      placed = true;
+    }
+  }
+  if (!placed) {
+    xml = xml.replace('<w:t>INVOICE</w:t></w:r>',
+      `<w:t>INVOICE</w:t></w:r><w:r><w:t xml:space="preserve">   </w:t></w:r>${PAID_RUN()}`);
+  }
+
   xml = xml.replace('<w:t>TOTAL DUE</w:t>', '<w:t>TOTAL PAID</w:t>');
   const line = `Paid in full${paidDate ? ` on ${paidDate}` : ''}${method ? ` by ${method}` : ''}. Thank you.`;
   xml = xml.replace('<w:t>Payment is due within 7 days from invoice date</w:t>', `<w:t>${xmlText(line)}</w:t>`);
