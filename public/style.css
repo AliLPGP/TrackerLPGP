@@ -6879,6 +6879,14 @@ body.login-body { background: var(--bg); position: relative; min-height: 100vh; 
 .ep-row:last-child { border-bottom: none; }
 .ep-row small { display: block; margin-top: 2px; font: 400 12px/1.3 var(--font-sans); color: var(--muted); }
 .ep-row strong { font-weight: 600; white-space: nowrap; }
+.ep-sec-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.ep-sec-head h3 { margin: 0; }
+.ep-doc-add { display: flex; align-items: center; gap: 8px; }
+.ep-doc-type { height: 30px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--border-bright); background: var(--surface); color: var(--text); font: 400 12.5px/1 var(--font-sans); }
+.ep-row > span:first-child { min-width: 0; }
+.ep-doc-link { color: var(--text); text-decoration: none; font-weight: 500; overflow-wrap: anywhere; }
+.ep-doc-link:hover { color: var(--accent); }
+.ep-doc-btns { display: flex; gap: 4px; flex-shrink: 0; }
 .ep-loading, .ep-empty { padding: 4px 0; font: 400 13px/1.4 var(--font-sans); color: var(--dim); }
 #epPortfolio { padding: 0; }
 @media (max-width: 520px) {

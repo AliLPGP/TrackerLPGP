@@ -249,6 +249,21 @@ async function runMigrations() {
     )
   `);
 
+  // Signed paperwork kept on an employee's profile: starter forms, contracts
+  // and the like. The PDF itself is stored base64 in file_data.
+  await sql(`
+    CREATE TABLE IF NOT EXISTS employee_documents (
+      id SERIAL PRIMARY KEY,
+      employee_id INT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+      doc_type TEXT NOT NULL DEFAULT 'other',
+      file_name TEXT NOT NULL,
+      file_data TEXT NOT NULL,
+      file_size INT NOT NULL DEFAULT 0,
+      uploaded_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   await sql(`
     CREATE TABLE IF NOT EXISTS hotel_expenses (
       id SERIAL PRIMARY KEY,

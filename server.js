@@ -1614,6 +1614,64 @@ app.delete('/api/employee-notes/:id', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ─── EMPLOYEE DOCUMENTS ──────────────────────────────────────────────────────
+// PDFs on an employee's profile (starter form, contract, ...). Admin only:
+// contracts carry salary terms. Vercel caps a request body at 4.5 MB, so the
+// file itself is held to 3 MB once base64 has added its third.
+
+const EMP_DOC_TYPES = ['starter_form', 'contract', 'id', 'other'];
+const EMP_DOC_MAX_BYTES = 3 * 1024 * 1024;
+
+app.get('/api/employees/:id/documents', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await q(
+      `SELECT id, employee_id, doc_type, file_name, file_size, uploaded_by, created_at
+       FROM employee_documents WHERE employee_id = ? ORDER BY created_at DESC`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/employees/:id/documents', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { file_name, file_data, doc_type } = req.body;
+    if (!file_name || !file_data) return res.status(400).json({ error: 'file_name and file_data required' });
+    const buf = Buffer.from(file_data, 'base64');
+    if (buf.subarray(0, 5).toString('latin1') !== '%PDF-') return res.status(400).json({ error: 'Only PDF files can be uploaded' });
+    if (buf.length > EMP_DOC_MAX_BYTES) return res.status(413).json({ error: 'PDF must be under 3 MB' });
+    const type = EMP_DOC_TYPES.includes(doc_type) ? doc_type : 'other';
+    // Plain ASCII only: the name goes back out in a Content-Disposition header.
+    const name = String(file_name).replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '').slice(0, 200) || 'document.pdf';
+    const { rows } = await q(
+      `INSERT INTO employee_documents (employee_id, doc_type, file_name, file_data, file_size, uploaded_by)
+       SELECT id, ?, ?, ?, ?, ? FROM employees WHERE id = ?
+       RETURNING id, employee_id, doc_type, file_name, file_size, uploaded_by, created_at`,
+      [type, name, file_data, buf.length, req.admin.username || null, req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Employee not found' });
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/employee-documents/:docId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await q(`SELECT file_name, file_data FROM employee_documents WHERE id = ?`, [req.params.docId]);
+    const r = rows[0];
+    if (!r) return res.status(404).json({ error: 'Document not found' });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `${req.query.download ? 'attachment' : 'inline'}; filename="${r.file_name}"`);
+    res.send(Buffer.from(r.file_data, 'base64'));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/employee-documents/:docId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await q('DELETE FROM employee_documents WHERE id = ?', [req.params.docId]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ─── CONTRACTS EXPIRING ───────────────────────────────────────────────────────
 
 app.get('/api/contracts/expiring', requireAuth, async (req, res) => {
