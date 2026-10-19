@@ -1069,6 +1069,19 @@ async function openEmployeeProfile(empId) {
     </section>
 
     ${isAdmin ? `<section class="ep-sec">
+      <div class="ep-sec-head">
+        <h3>Documents</h3>
+        <div class="ep-doc-add">
+          <select id="epDocType" class="ep-doc-type" aria-label="Document type">
+            ${Object.entries(EMP_DOC_TYPES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}
+          </select>
+          <label class="btn btn-sm">Upload PDF<input type="file" accept=".pdf,application/pdf" hidden onchange="epUploadDoc(${emp.id},this)"></label>
+        </div>
+      </div>
+      <div id="epDocs" class="ep-list"><div class="ep-loading">Loading…</div></div>
+    </section>` : ''}
+
+    ${isAdmin ? `<section class="ep-sec">
       <h3>Recent payments</h3>
       <div id="epPayments" class="ep-list"><div class="ep-loading">Loading…</div></div>
     </section>` : ''}
@@ -1103,10 +1116,67 @@ async function openEmployeeProfile(empId) {
   if (payEl) payEl.innerHTML = pays.length
     ? pays.slice(0, 6).map(p => `<div class="ep-row"><span>${MONTHS[Number(p.payment_month)]} ${p.payment_year}${p.notes ? `<small>${esc(p.notes)}</small>` : ''}</span><strong>${fmtMoney(p.amount, p.currency || emp.currency)}</strong></div>`).join('')
     : '<div class="ep-empty">No payments recorded.</div>';
+  if (isAdmin) loadEmpDocs(empId);
   if (canManage) {
     loadEmpPortfolioRoles(empId, 'epPortfolio');
     loadEmpEvents(empId, 'epEvents');
   }
+}
+
+// Starter forms, contracts and other PDFs kept on the profile (admin only).
+const EMP_DOC_TYPES = { starter_form: 'Starter form', contract: 'Contract', id: 'ID / right to work', other: 'Other' };
+
+async function loadEmpDocs(empId) {
+  const box = document.getElementById('epDocs');
+  if (!box) return;
+  try {
+    const res = await fetch(`/api/employees/${empId}/documents`);
+    if (!res.ok) throw new Error();
+    const docs = await res.json();
+    if (_profileEmpId !== empId) return;
+    const kb = b => b < 1048576 ? Math.max(1, Math.round(b / 1024)) + ' KB' : (b / 1048576).toFixed(1) + ' MB';
+    box.innerHTML = docs.length ? docs.map(d => `<div class="ep-row">
+        <span><a class="ep-doc-link" href="/api/employee-documents/${d.id}" target="_blank" rel="noopener">${esc(d.file_name)}</a>
+          <small>${esc(EMP_DOC_TYPES[d.doc_type] || 'Other')} · ${kb(d.file_size)} · ${fmtDateShort(String(d.created_at).slice(0, 10))}${d.uploaded_by ? ' · ' + esc(d.uploaded_by) : ''}</small></span>
+        <span class="ep-doc-btns">
+          <a class="btn btn-ghost btn-sm" href="/api/employee-documents/${d.id}?download=1">Download</a>
+          <button class="btn btn-ghost btn-sm ep-danger" onclick="epDeleteDoc(${empId},${d.id})">Delete</button>
+        </span>
+      </div>`).join('')
+      : '<div class="ep-empty">No documents yet. Upload a starter form or contract as a PDF.</div>';
+  } catch { box.innerHTML = '<div class="ep-empty">Could not load documents.</div>'; }
+}
+
+function epUploadDoc(empId, input) {
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') { showToast('Only PDF files can be uploaded', 'error'); return; }
+  if (file.size > 3 * 1024 * 1024) { showToast('PDF must be under 3 MB', 'error'); return; }
+  const doc_type = document.getElementById('epDocType')?.value || 'other';
+  const reader = new FileReader();
+  reader.onload = async e => {
+    const res = await fetch(`/api/employees/${empId}/documents`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_name: file.name, file_data: e.target.result.split(',')[1], doc_type })
+    }).catch(() => null);
+    if (!res || !res.ok) {
+      const err = res ? await res.json().catch(() => ({})) : {};
+      showToast(err.error || 'Upload failed', 'error');
+      return;
+    }
+    showToast('Document uploaded', 'success');
+    loadEmpDocs(empId);
+  };
+  reader.readAsDataURL(file);
+}
+
+async function epDeleteDoc(empId, docId) {
+  if (!await showConfirm('Delete this document? This cannot be undone.')) return;
+  const res = await fetch(`/api/employee-documents/${docId}`, { method: 'DELETE' }).catch(() => null);
+  if (!res || !res.ok) { showToast('Could not delete document', 'error'); return; }
+  showToast('Document deleted', 'success');
+  loadEmpDocs(empId);
 }
 
 function epEdit(empId) {
