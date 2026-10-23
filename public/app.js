@@ -328,7 +328,7 @@ function renderEmpTable() {
       <td>
         <div class="emp-name-cell">
           <span class="emp-avatar">${esc(empInitials(emp.name))}</span>
-          <span><span class="emp-name">${esc(emp.name)}</span><small>${esc(emp.job_title || emp.email || '')}</small></span>
+          <span><span class="emp-name">${esc(emp.name)}${probationOpen(emp) ? ' <span class="emp-probation" title="On probation">Probation</span>' : ''}</span><small>${esc(emp.job_title || emp.email || '')}</small></span>
         </div>
       </td>
       <td>${esc(emp.department || '—')}</td>
@@ -341,10 +341,38 @@ function renderEmpTable() {
   }).join('');
 }
 
+// ── Probation fields in the edit modal ──
+// Whole months after a date, clamped so 31 Jan + 1 month is 28/29 Feb, not 3 March
+function addMonthsIso(iso, n) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const last = new Date(Date.UTC(y, m - 1 + n + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(y, m - 1 + n, Math.min(d, last))).toISOString().slice(0, 10);
+}
+
+function empProbationChange() {
+  const sel = document.getElementById('empProbation').value;
+  document.getElementById('empProbationEndWrap').style.display = sel ? '' : 'none';
+  const endEl = document.getElementById('empProbationEnd');
+  if (!sel) { endEl.value = ''; return; }
+  const start = document.getElementById('empStartDate').value;
+  if (sel !== 'custom' && start) endEl.value = addMonthsIso(start, Number(sel));
+}
+
+function empProbationInit(emp) {
+  const end = emp && emp.probation_end_date ? String(emp.probation_end_date).slice(0, 10) : '';
+  const start = emp && emp.start_date ? String(emp.start_date).slice(0, 10) : '';
+  let sel = end ? 'custom' : '';
+  if (end && start) for (const n of [1, 2, 3, 6]) if (addMonthsIso(start, n) === end) sel = String(n);
+  document.getElementById('empProbation').value = sel;
+  document.getElementById('empProbationEnd').value = end;
+  document.getElementById('empProbationEndWrap').style.display = sel ? '' : 'none';
+}
+
 function openEmpModal(emp = null) {
   document.getElementById('empId').value = emp ? emp.id : '';
   document.getElementById('empName').value = emp ? emp.name : '';
-  document.getElementById('empStartDate').value = emp ? (emp.start_date || '') : today();
+  // The API sends DATE columns as full timestamps; a date input only accepts YYYY-MM-DD
+  document.getElementById('empStartDate').value = emp ? String(emp.start_date || '').slice(0, 10) : today();
   document.getElementById('empType').value = emp ? (emp.employment_type || 'payroll') : 'payroll';
   document.getElementById('empCurrency').value = emp ? (emp.currency || 'GBP') : 'GBP';
   document.getElementById('empAnnualSalary').value = emp ? emp.annual_salary : 0;
@@ -353,12 +381,14 @@ function openEmpModal(emp = null) {
   document.getElementById('empDepartment').value = emp ? (emp.department || '') : '';
   document.getElementById('empPhone').value = emp ? (emp.phone || '') : '';
   document.getElementById('empEmail').value = emp ? (emp.email || '') : '';
-  document.getElementById('empContractEnd').value = emp ? (emp.contract_end_date || '') : '';
+  document.getElementById('empContractEnd').value = emp ? String(emp.contract_end_date || '').slice(0, 10) : '';
   document.getElementById('empSalaryEffective').value = today();
   document.getElementById('empSalaryReason').value = '';
   // Don't prefill a legacy bcrypt-hashed PIN (starts with $2) — would mangle on save
   document.getElementById('empPin').value = (emp && emp.portal_pin && !String(emp.portal_pin).startsWith('$2')) ? emp.portal_pin : '';
   document.getElementById('salaryChangeFields').classList.add('hidden');
+  empModalDocsInit(emp);
+  empProbationInit(emp);
   document.getElementById('empModalTitle').textContent = emp ? 'Edit Employee' : 'Add Employee';
   const prWrap = document.getElementById('empPortfolioWrap');
   if (prWrap) {
@@ -402,9 +432,13 @@ async function saveEmployee() {
   const contract_end_date = document.getElementById('empContractEnd').value || null;
   const portal_pin = document.getElementById('empPin').value.replace(/\D/g,'').slice(0,6) || null;
   if (!name) return showToast('Name is required', 'error');
+  // Always sent (null clears it), so an edit never leaves a stale probation behind
+  const probationOn = !!document.getElementById('empProbation').value;
+  const probation_end_date = probationOn ? (document.getElementById('empProbationEnd').value || null) : null;
+  if (probationOn && !probation_end_date) return showToast(start_date ? 'Choose the probation end date' : 'Set a start date first so the probation end can be worked out', 'error');
 
   const payload = { name, employment_type, annual_salary, currency, start_date, pension_rate,
-                    job_title, department, phone, email, contract_end_date, portal_pin };
+                    job_title, department, phone, email, contract_end_date, probation_end_date, portal_pin };
   if (id) {
     await fetch(`/api/employees/${id}`, {
       method: 'PUT',
@@ -412,11 +446,19 @@ async function saveEmployee() {
       body: JSON.stringify({ ...payload, active: 1, salary_reason, salary_effective })
     });
   } else {
-    await fetch('/api/employees', {
+    const created = await fetch('/api/employees', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
-    });
+    }).then(r => r.ok ? r.json() : null).catch(() => null);
+    if (created && created.id && _empPendingDocs.length) {
+      let failed = 0;
+      for (const d of _empPendingDocs) {
+        if (!await postEmpDoc(created.id, { file_name: d.file_name, file_data: d.file_data }, d.doc_type)) failed++;
+      }
+      if (failed) showToast(`${failed} document${failed > 1 ? 's' : ''} didn't upload — add them from the employee's profile`, 'error');
+    }
+    _empPendingDocs = [];
   }
   closeModal('empModal');
   await loadEmployees();
@@ -893,10 +935,36 @@ function renderDashOverview(o) {
       }).join('')}
     </ul>` : dashEmpty('Nothing in the next 30 days.'));
 
+  // ── Probation reviews still to hold (admin only), soonest first
+  const onProbation = (currentUser && currentUser.role === 'admin' ? (o.activeEmps || []) : [])
+    .filter(probationOpen)
+    .map(e => ({ e, days: probationDaysLeft(e) }))
+    .sort((a, b) => a.days - b.days);
+  const probationCard = onProbation.length ? dashCard('Probation reviews', { page: 'employees', label: 'Employees' }, `
+    <ul class="db-list">
+      ${onProbation.slice(0, 5).map(({ e, days }) => `<li class="db-row">
+        <span class="db-list-name">${empLink(e.id, e.name)}<small>Ends ${fmtDateShort(e.probation_end_date)}</small></span>
+        <span class="db-tag ${days < 0 ? 'is-alert' : days <= 14 ? 'is-warn' : ''}">${probationLabel(days)}</span>
+      </li>`).join('')}
+    </ul>`) : '';
+  const lastRow = [hotelsCard, soonCard, contractsCard, probationCard].filter(Boolean);
+
   el.innerHTML = `${kpis}
     <div class="db-grid db-grid-3">${chartCard}${collectCard}</div>
     <div class="db-grid db-grid-3">${teamCard}${eventsCard}${owingCard}</div>
-    <div class="db-grid ${contractsCard ? 'db-grid-3' : 'db-grid-2'}">${hotelsCard}${soonCard}${contractsCard}</div>`;
+    <div class="db-grid ${lastRow.length >= 3 ? 'db-grid-3' : 'db-grid-2'}">${lastRow.join('')}</div>`;
+}
+
+// Probation: an end date with no review recorded yet
+function probationOpen(e) { return !!(e && e.active && e.probation_end_date && !e.probation_review_done_at); }
+function probationDaysLeft(e) {
+  const end = Date.parse(String(e.probation_end_date).slice(0, 10) + 'T00:00:00Z');
+  return Math.round((end - Date.parse(new Date().toISOString().slice(0, 10) + 'T00:00:00Z')) / 86400000);
+}
+function probationLabel(days) {
+  if (days < 0) return `${-days} day${days === -1 ? '' : 's'} overdue`;
+  if (days === 0) return 'Review today';
+  return days === 1 ? 'Review tomorrow' : `In ${days} days`;
 }
 
 function fmtDateShort(iso) {
@@ -1060,6 +1128,7 @@ async function openEmployeeProfile(empId) {
         ${detail('Contract ends', emp.contract_end_date ? fmtDateShort(emp.contract_end_date) : (emp.active ? 'Permanent' : ''))}
         ${isAdmin ? detail('Annual salary', emp.annual_salary > 0 ? fmtMoney(emp.annual_salary, emp.currency) : '') : ''}
         ${isAdmin && emp.employment_type === 'payroll' ? detail('Pension', emp.pension_rate ? emp.pension_rate + '%' : 'None') : ''}
+        ${isAdmin && emp.probation_end_date ? detail('Probation', probationDetailHtml(emp)) : ''}
       </div>
     </section>
 
@@ -1073,12 +1142,27 @@ async function openEmployeeProfile(empId) {
         <h3>Documents</h3>
         <div class="ep-doc-add">
           <select id="epDocType" class="ep-doc-type" aria-label="Document type">
-            ${Object.entries(EMP_DOC_TYPES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}
+            ${docTypeOptions()}
           </select>
           <label class="btn btn-sm">Upload PDF<input type="file" accept=".pdf,application/pdf" hidden onchange="epUploadDoc(${emp.id},this)"></label>
         </div>
       </div>
       <div id="epDocs" class="ep-list"><div class="ep-loading">Loading…</div></div>
+    </section>` : ''}
+
+    ${isAdmin ? `<section class="ep-sec">
+      <div class="ep-sec-head"><h3>Onboarding</h3></div>
+      <div id="epOnboarding"><div class="ep-loading">Loading…</div></div>
+    </section>
+    <section class="ep-sec">
+      <div class="ep-sec-head">
+        <h3>Payslips</h3>
+        <div class="ep-doc-add">
+          <input type="month" id="epSlipMonth" class="ep-doc-type" value="${new Date().toISOString().slice(0, 7)}" aria-label="Payslip month">
+          <label class="btn btn-sm">Upload PDF<input type="file" accept=".pdf,application/pdf" hidden onchange="epUploadPayslip(${emp.id},this)"></label>
+        </div>
+      </div>
+      <div id="epPayslips" class="ep-list"><div class="ep-loading">Loading…</div></div>
     </section>` : ''}
 
     ${isAdmin ? `<section class="ep-sec">
@@ -1116,7 +1200,7 @@ async function openEmployeeProfile(empId) {
   if (payEl) payEl.innerHTML = pays.length
     ? pays.slice(0, 6).map(p => `<div class="ep-row"><span>${MONTHS[Number(p.payment_month)]} ${p.payment_year}${p.notes ? `<small>${esc(p.notes)}</small>` : ''}</span><strong>${fmtMoney(p.amount, p.currency || emp.currency)}</strong></div>`).join('')
     : '<div class="ep-empty">No payments recorded.</div>';
-  if (isAdmin) loadEmpDocs(empId);
+  if (isAdmin) { loadEmpDocs(empId); loadEmpOnboarding(empId); loadEmpPayslips(empId); }
   if (canManage) {
     loadEmpPortfolioRoles(empId, 'epPortfolio');
     loadEmpEvents(empId, 'epEvents');
@@ -1126,57 +1210,306 @@ async function openEmployeeProfile(empId) {
 // Starter forms, contracts and other PDFs kept on the profile (admin only).
 const EMP_DOC_TYPES = { starter_form: 'Starter form', contract: 'Contract', id: 'ID / right to work', other: 'Other' };
 
-async function loadEmpDocs(empId) {
-  const box = document.getElementById('epDocs');
+const docTypeOptions = () => Object.entries(EMP_DOC_TYPES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
+const docKb = b => b < 1048576 ? Math.max(1, Math.round(b / 1024)) + ' KB' : (b / 1048576).toFixed(1) + ' MB';
+
+// boxId: the element to fill (profile panel or edit modal). stillOpen: bail if the
+// view was closed or switched to someone else while the request was in flight.
+async function loadEmpDocs(empId, boxId = 'epDocs', stillOpen = () => _profileEmpId === empId) {
+  const box = document.getElementById(boxId);
   if (!box) return;
   try {
     const res = await fetch(`/api/employees/${empId}/documents`);
     if (!res.ok) throw new Error();
     const docs = await res.json();
-    if (_profileEmpId !== empId) return;
-    const kb = b => b < 1048576 ? Math.max(1, Math.round(b / 1024)) + ' KB' : (b / 1048576).toFixed(1) + ' MB';
+    if (!stillOpen()) return;
     box.innerHTML = docs.length ? docs.map(d => `<div class="ep-row">
         <span><a class="ep-doc-link" href="/api/employee-documents/${d.id}" target="_blank" rel="noopener">${esc(d.file_name)}</a>
-          <small>${esc(EMP_DOC_TYPES[d.doc_type] || 'Other')} · ${kb(d.file_size)} · ${fmtDateShort(String(d.created_at).slice(0, 10))}${d.uploaded_by ? ' · ' + esc(d.uploaded_by) : ''}</small></span>
+          <small>${esc(EMP_DOC_TYPES[d.doc_type] || 'Other')} · ${docKb(d.file_size)} · ${fmtDateShort(String(d.created_at).slice(0, 10))}${d.uploaded_by ? ' · ' + esc(d.uploaded_by) : ''}</small></span>
         <span class="ep-doc-btns">
           <a class="btn btn-ghost btn-sm" href="/api/employee-documents/${d.id}?download=1">Download</a>
-          <button class="btn btn-ghost btn-sm ep-danger" onclick="epDeleteDoc(${empId},${d.id})">Delete</button>
+          <button class="btn btn-ghost btn-sm ep-danger" onclick="epDeleteDoc(${empId},${d.id},'${boxId}')">Delete</button>
         </span>
       </div>`).join('')
       : '<div class="ep-empty">No documents yet. Upload a starter form or contract as a PDF.</div>';
   } catch { box.innerHTML = '<div class="ep-empty">Could not load documents.</div>'; }
 }
 
-function epUploadDoc(empId, input) {
-  const file = input.files[0];
-  input.value = '';
-  if (!file) return;
-  if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') { showToast('Only PDF files can be uploaded', 'error'); return; }
-  if (file.size > 3 * 1024 * 1024) { showToast('PDF must be under 3 MB', 'error'); return; }
-  const doc_type = document.getElementById('epDocType')?.value || 'other';
-  const reader = new FileReader();
-  reader.onload = async e => {
-    const res = await fetch(`/api/employees/${empId}/documents`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file_name: file.name, file_data: e.target.result.split(',')[1], doc_type })
-    }).catch(() => null);
-    if (!res || !res.ok) {
-      const err = res ? await res.json().catch(() => ({})) : {};
-      showToast(err.error || 'Upload failed', 'error');
-      return;
-    }
-    showToast('Document uploaded', 'success');
-    loadEmpDocs(empId);
-  };
-  reader.readAsDataURL(file);
+// Reads a chosen PDF and checks it client-side; resolves to {file_name, file_data} or null.
+function readPdfFile(file) {
+  return new Promise(resolve => {
+    if (!file) return resolve(null);
+    if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') { showToast('Only PDF files can be uploaded', 'error'); return resolve(null); }
+    if (file.size > 3 * 1024 * 1024) { showToast('PDF must be under 3 MB', 'error'); return resolve(null); }
+    const reader = new FileReader();
+    reader.onload = e => resolve({ file_name: file.name, file_data: e.target.result.split(',')[1] });
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
 }
 
-async function epDeleteDoc(empId, docId) {
+async function postEmpDoc(empId, doc, doc_type) {
+  const res = await fetch(`/api/employees/${empId}/documents`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...doc, doc_type })
+  }).catch(() => null);
+  if (res && res.ok) return true;
+  const err = res ? await res.json().catch(() => ({})) : {};
+  showToast(err.error || 'Upload failed', 'error');
+  return false;
+}
+
+async function epUploadDoc(empId, input) {
+  const file = input.files[0];
+  input.value = '';
+  const doc = await readPdfFile(file);
+  if (!doc) return;
+  if (await postEmpDoc(empId, doc, document.getElementById('epDocType')?.value || 'other')) {
+    showToast('Document uploaded', 'success');
+    loadEmpDocs(empId);
+  }
+}
+
+async function epDeleteDoc(empId, docId, boxId = 'epDocs') {
   if (!await showConfirm('Delete this document? This cannot be undone.')) return;
   const res = await fetch(`/api/employee-documents/${docId}`, { method: 'DELETE' }).catch(() => null);
   if (!res || !res.ok) { showToast('Could not delete document', 'error'); return; }
   showToast('Document deleted', 'success');
-  loadEmpDocs(empId);
+  loadEmpDocs(empId, boxId, () => boxId === 'epDocs' ? _profileEmpId === empId : Number(document.getElementById('empId').value) === empId);
+}
+
+// ── Documents inside the Add/Edit Employee modal ──
+// Editing: uploads save immediately. Adding: files wait here until the employee exists.
+let _empPendingDocs = [];
+
+function empModalRenderPending() {
+  const box = document.getElementById('empDocs');
+  box.innerHTML = _empPendingDocs.length ? _empPendingDocs.map((d, i) => `<div class="ep-row">
+      <span>${esc(d.file_name)}<small>${esc(EMP_DOC_TYPES[d.doc_type] || 'Other')} · uploads when you save</small></span>
+      <button class="btn btn-ghost btn-sm ep-danger" onclick="_empPendingDocs.splice(${i},1);empModalRenderPending()">Remove</button>
+    </div>`).join('') : '<div class="ep-empty">Nothing added yet. Files upload when you save the employee.</div>';
+}
+
+function empModalDocsInit(emp) {
+  const wrap = document.getElementById('empDocsWrap');
+  _empPendingDocs = [];
+  const isAdmin = currentUser && currentUser.role === 'admin';
+  wrap.classList.toggle('hidden', !isAdmin);
+  if (!isAdmin) return;
+  document.getElementById('empDocType').innerHTML = docTypeOptions();
+  if (emp) loadEmpDocs(emp.id, 'empDocs', () => Number(document.getElementById('empId').value) === emp.id);
+  else empModalRenderPending();
+}
+
+async function empModalUploadDoc(input) {
+  const file = input.files[0];
+  input.value = '';
+  const doc = await readPdfFile(file);
+  if (!doc) return;
+  const doc_type = document.getElementById('empDocType').value || 'other';
+  const id = Number(document.getElementById('empId').value);
+  if (id) {
+    if (await postEmpDoc(id, doc, doc_type)) {
+      showToast('Document uploaded', 'success');
+      loadEmpDocs(id, 'empDocs', () => Number(document.getElementById('empId').value) === id);
+    }
+  } else {
+    _empPendingDocs.push({ ...doc, doc_type });
+    empModalRenderPending();
+  }
+}
+
+// ── Probation, onboarding and payslips on the profile panel (admin only) ──
+function probationDetailHtml(emp) {
+  if (emp.probation_review_done_at) return `Review done ${fmtDateShort(emp.probation_review_done_at)}`;
+  const days = probationDaysLeft(emp);
+  const cls = days < 0 ? 'is-alert' : days <= 14 ? 'is-warn' : '';
+  return `Ends ${fmtDateShort(emp.probation_end_date)} <span class="db-tag ${cls}">${probationLabel(days)}</span>
+    <button type="button" class="btn btn-sm" style="margin-top:8px;display:block" onclick="epProbationDone(${emp.id})">Mark review done</button>`;
+}
+
+async function epProbationDone(empId) {
+  const res = await fetch(`/api/employees/${empId}/probation/complete`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => null);
+  if (!res || !res.ok) { showToast('Could not save', 'error'); return; }
+  showToast('Probation review marked done', 'success');
+  await loadEmpTable();
+  openEmployeeProfile(empId);
+}
+
+const ID_TYPE_LABEL = { passport: 'Passport', driving_licence: 'Driving licence', other: 'ID document' };
+
+async function loadEmpOnboarding(empId) {
+  const box = document.getElementById('epOnboarding');
+  if (!box) return;
+  const emp = (allEmployeesData || []).find(e => e.id === empId) || {};
+  try {
+    const res = await fetch(`/api/employees/${empId}/onboarding`);
+    if (!res.ok) throw new Error();
+    const o = await res.json();
+    if (_profileEmpId !== empId) return;
+    const done = ['details', 'id', 'nda'].filter(k => o.steps[k]).length;
+    const status = o.completed ? `<span class="ep-status ep-status--on">Completed ${fmtDateShort(String(o.completed_at).slice(0, 10))}</span>`
+      : o.required ? `<span class="ep-status ep-status--wait">Waiting for them · ${done}/3 done</span>`
+      : done ? `<span class="ep-status">${done}/3 filled in</span>` : '<span class="ep-status">Not required</span>';
+    const detail = (label, value, wide) => `<div class="ep-detail"${wide ? ' style="grid-column:1/-1"' : ''}><span>${label}</span><strong style="white-space:pre-line">${value || '<em>—</em>'}</strong></div>`;
+    box.innerHTML = `
+      <div class="ep-row"><span>Status<small>${emp.portal_pin || emp.has_pin ? 'They are sent through this the first time they sign in with a new PIN.' : 'No portal login yet. It starts when you give them a PIN.'}</small></span>${status}</div>
+      ${o.started ? `<div class="ep-details" style="margin:12px 0">
+        ${detail('Date of birth', o.date_of_birth ? fmtDateShort(o.date_of_birth) : '')}
+        ${detail('Emergency contact', [o.emergency_contact_name, o.emergency_contact_phone].filter(Boolean).map(esc).join(' · '))}
+        ${detail('Address', esc(o.address), true)}
+      </div>
+      <div class="ep-row"><span>${o.id_doc ? esc(ID_TYPE_LABEL[o.id_doc.type] || 'ID document') : 'ID document'}<small>${o.id_doc ? esc(o.id_doc.name) : 'Not uploaded'}</small></span>
+        ${o.id_doc ? `<a class="btn btn-ghost btn-sm" href="/api/employees/${empId}/onboarding/id" target="_blank" rel="noopener">View</a>` : ''}</div>
+      <div class="ep-row"><span>NDA<small>${o.nda ? `Signed by ${esc(o.nda.signed_name)} · ${fmtDateShort(String(o.nda.signed_at).slice(0, 10))}` : 'Not signed'}</small></span>
+        ${o.nda ? `<a class="btn btn-ghost btn-sm" href="/api/employees/${empId}/onboarding/nda" target="_blank" rel="noopener">View signed copy</a>` : ''}</div>` : ''}
+      <div class="ep-actions" style="padding:12px 0 0;border:none">
+        <button class="btn btn-sm" onclick="epRequireOnboarding(${empId})">${o.completed ? 'Make them onboard again' : 'Require onboarding at next login'}</button>
+        <button class="btn btn-ghost btn-sm" onclick="openNdaEditor()">Edit NDA wording</button>
+      </div>`;
+  } catch { box.innerHTML = '<div class="ep-empty">Could not load onboarding.</div>'; }
+}
+
+async function epRequireOnboarding(empId) {
+  if (!await showConfirm('They will have to go through onboarding the next time they sign in, and sign the NDA again. Continue?')) return;
+  const res = await fetch(`/api/employees/${empId}/onboarding/require`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => null);
+  if (!res || !res.ok) { showToast('Could not update', 'error'); return; }
+  showToast('They will be asked to onboard at next login', 'success');
+  loadEmpOnboarding(empId);
+}
+
+async function openNdaEditor() {
+  const res = await fetch('/api/nda-text').catch(() => null);
+  const d = res && res.ok ? await res.json() : { text: '' };
+  let m = document.getElementById('ndaEditModal');
+  if (!m) {
+    m = document.createElement('div');
+    m.className = 'modal-overlay';
+    m.id = 'ndaEditModal';
+    m.addEventListener('click', e => { if (e.target === m) closeModal('ndaEditModal'); });
+    document.body.appendChild(m);
+  }
+  m.innerHTML = `<div class="modal" style="max-width:640px">
+    <div class="modal-header"><h2>NDA wording</h2><button class="modal-close" onclick="closeModal('ndaEditModal')">✕</button></div>
+    <p style="font-size:0.8rem;color:var(--muted);margin:0 0 10px">${d.is_default ? 'This is a generic starting point. Replace it with wording your solicitor has approved.' : 'This is what new starters read and sign.'} Changes apply to people who sign from now on; signed copies keep the text they signed.</p>
+    <textarea id="ndaEditText" class="form-control" rows="16" style="width:100%;font:13px/1.5 var(--font-sans)">${esc(d.text)}</textarea>
+    <div style="display:flex;gap:10px;justify-content:space-between;margin-top:14px">
+      <button class="btn btn-ghost" onclick="saveNdaText(true)">Reset to default</button>
+      <span style="display:flex;gap:10px"><button class="btn btn-ghost" onclick="closeModal('ndaEditModal')">Cancel</button><button class="btn btn-primary" onclick="saveNdaText(false)">Save</button></span>
+    </div></div>`;
+  openModal('ndaEditModal');
+}
+
+async function saveNdaText(reset) {
+  const text = reset ? '' : document.getElementById('ndaEditText').value;
+  if (!reset && text.trim().length < 20) { showToast('The NDA text looks too short', 'error'); return; }
+  const res = await fetch('/api/nda-text', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) }).catch(() => null);
+  if (!res || !res.ok) { showToast('Could not save', 'error'); return; }
+  showToast(reset ? 'Reset to the default wording' : 'NDA wording saved', 'success');
+  closeModal('ndaEditModal');
+}
+
+async function loadEmpPayslips(empId) {
+  const box = document.getElementById('epPayslips');
+  if (!box) return;
+  try {
+    const res = await fetch(`/api/employees/${empId}/payslips`);
+    if (!res.ok) throw new Error();
+    const slips = await res.json();
+    if (_profileEmpId !== empId) return;
+    box.innerHTML = slips.length ? slips.map(p => `<div class="ep-row">
+        <span><a class="ep-doc-link" href="/api/payslips/${p.id}/file" target="_blank" rel="noopener">${MONTHS[p.pay_month]} ${p.pay_year}</a>
+          <small>${esc(p.file_name)} · ${docKb(p.file_size)} · uploaded ${fmtDateShort(String(p.created_at).slice(0, 10))}</small></span>
+        <button class="btn btn-ghost btn-sm ep-danger" onclick="epDeletePayslip(${empId},${p.id})">Delete</button>
+      </div>`).join('')
+      : '<div class="ep-empty">No payslips yet. Pick the month and upload the PDF; they will see it in their portal.</div>';
+  } catch { box.innerHTML = '<div class="ep-empty">Could not load payslips.</div>'; }
+}
+
+async function epUploadPayslip(empId, input) {
+  const file = input.files[0];
+  input.value = '';
+  const ym = document.getElementById('epSlipMonth').value;
+  if (!/^\d{4}-\d{2}$/.test(ym)) { showToast('Choose the month this payslip is for', 'error'); return; }
+  const doc = await readPdfFile(file);
+  if (!doc) return;
+  const [pay_year, pay_month] = ym.split('-').map(Number);
+  const res = await fetch(`/api/employees/${empId}/payslips`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...doc, pay_year, pay_month })
+  }).catch(() => null);
+  if (!res || !res.ok) {
+    const err = res ? await res.json().catch(() => ({})) : {};
+    showToast(err.error || 'Upload failed', 'error');
+    return;
+  }
+  showToast(`Payslip uploaded for ${MONTHS[pay_month]} ${pay_year}`, 'success');
+  loadEmpPayslips(empId);
+}
+
+async function epDeletePayslip(empId, id) {
+  if (!await showConfirm('Delete this payslip? They will no longer see it.')) return;
+  const res = await fetch(`/api/payslips/${id}`, { method: 'DELETE' }).catch(() => null);
+  if (!res || !res.ok) { showToast('Could not delete', 'error'); return; }
+  showToast('Payslip deleted', 'success');
+  loadEmpPayslips(empId);
+}
+
+// ── Bank holidays (admin calendar) ──
+let _bhYear = new Date().getFullYear();
+
+async function openBankHolidaysModal(year) {
+  if (year) _bhYear = year;
+  const isAdmin = currentUser && currentUser.role === 'admin';
+  const res = await fetch(`/api/bank-holidays?year=${_bhYear}`).catch(() => null);
+  const list = res && res.ok ? await res.json() : [];
+  let m = document.getElementById('bankHolidaysModal');
+  if (!m) {
+    m = document.createElement('div');
+    m.className = 'modal-overlay';
+    m.id = 'bankHolidaysModal';
+    m.addEventListener('click', e => { if (e.target === m) closeModal('bankHolidaysModal'); });
+    document.body.appendChild(m);
+  }
+  const region = { GB: 'England & Wales', AE: 'UAE', PH: 'Philippines', ALL: 'Everyone' };
+  const fmt = d => new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  m.innerHTML = `<div class="modal" style="max-width:560px">
+    <div class="modal-header"><h2>Bank holidays</h2><button class="modal-close" onclick="closeModal('bankHolidaysModal')">✕</button></div>
+    <p style="font-size:0.8rem;color:var(--muted);margin:0 0 10px">Staff see these in their portal calendar, and they never count against a holiday request. England &amp; Wales dates are worked out automatically; add any others (another country, a company closure).</p>
+    <div style="display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:8px">
+      <button class="btn btn-ghost btn-sm" onclick="openBankHolidaysModal(${_bhYear - 1})">‹</button><strong>${_bhYear}</strong>
+      <button class="btn btn-ghost btn-sm" onclick="openBankHolidaysModal(${_bhYear + 1})">›</button>
+    </div>
+    <div class="ep-list" style="max-height:300px;overflow:auto">
+      ${list.length ? list.map(h => `<div class="ep-row"><span>${esc(h.name)}<small>${fmt(h.date)} · ${region[h.region] || h.region}${h.builtin ? '' : ' · added by you'}</small></span>
+        ${!h.builtin && isAdmin ? `<button class="btn btn-ghost btn-sm ep-danger" onclick="deleteBankHoliday(${h.id})">Remove</button>` : ''}</div>`).join('')
+        : '<div class="ep-empty">No holidays for this year.</div>'}
+    </div>
+    ${isAdmin ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;align-items:flex-end">
+      <div class="form-group" style="margin:0"><label>Date</label><input type="date" id="bhDate" value="${_bhYear}-01-01"></div>
+      <div class="form-group" style="margin:0;flex:1;min-width:140px"><label>Name</label><input type="text" id="bhName" placeholder="e.g. Eid al-Fitr" maxlength="80"></div>
+      <div class="form-group" style="margin:0"><label>Applies to</label><select id="bhRegion"><option value="ALL">Everyone</option><option value="GB">England &amp; Wales (£ staff)</option><option value="AE">UAE (AED staff)</option><option value="PH">Philippines (₱ staff)</option></select></div>
+      <button class="btn btn-primary" onclick="addBankHoliday()">Add</button>
+    </div>` : ''}
+  </div>`;
+  openModal('bankHolidaysModal');
+}
+
+async function addBankHoliday() {
+  const date = document.getElementById('bhDate').value, name = document.getElementById('bhName').value.trim();
+  const region = document.getElementById('bhRegion').value;
+  if (!date || !name) { showToast('Enter a date and a name', 'error'); return; }
+  const res = await fetch('/api/bank-holidays', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date, name, region }) }).catch(() => null);
+  if (!res || !res.ok) { showToast('Could not add', 'error'); return; }
+  showToast('Bank holiday added', 'success');
+  openBankHolidaysModal(Number(date.slice(0, 4)));
+}
+
+async function deleteBankHoliday(id) {
+  const res = await fetch(`/api/bank-holidays/${id}`, { method: 'DELETE' }).catch(() => null);
+  if (!res || !res.ok) { showToast('Could not remove', 'error'); return; }
+  openBankHolidaysModal();
 }
 
 function epEdit(empId) {
@@ -3916,9 +4249,16 @@ function renderHotelTable() {
            <input type="file" accept=".pdf,.png,.jpg,.jpeg" style="display:none" onchange="htUploadInvoice(${r.id},this)">
          </label>`;
 
+    // Names open the full edit modal (like the deal tracker's company cell);
+    // the figures stay click-to-edit in place.
+    function cellOpen(val, style='') {
+      const display = val ? esc(String(val)) : '<span class="ht-empty">—</span>';
+      return `<td class="ht-cell ht-open" onclick="openHotelModal(${r.id})" title="Click to edit this event" style="${style}">${display}</td>`;
+    }
+
     return `<tr class="${rowClass}" id="htr-${r.id}">
-      ${cellText('event_name', r.event_name, 'font-weight:700')}
-      ${cellText('hotel', r.hotel||'')}
+      ${cellOpen(r.event_name, 'font-weight:700')}
+      ${cellOpen(r.hotel||'')}
       ${cellText('cost', r.cost||'')}
       ${cellCur('currency', r.currency || r.paid_currency || 'USD')}
       ${cellNum('av_amount', r.av_amount)}
@@ -6608,7 +6948,7 @@ async function initEmployeePortal(user) {
   document.querySelectorAll('.employee-only').forEach(el => el.classList.remove('hidden'));
 
   // Hide non-allowed nav items
-  const EMP_PAGES = ['dashboard', 'calendar', 'portfolio', 'eventkit', 'mydeals', 'profile', 'directory'];
+  const EMP_PAGES = ['dashboard', 'calendar', 'portfolio', 'eventkit', 'mydeals', 'profile', 'payslips', 'directory'];
   document.querySelectorAll('.nav-item').forEach(el => {
     if (!EMP_PAGES.includes(el.dataset.page)) el.style.display = 'none';
   });
@@ -6629,7 +6969,7 @@ async function initEmployeePortal(user) {
     const pageEl = document.getElementById('page-' + page);
     if (pageEl) pageEl.classList.add('active');
     document.querySelectorAll('[data-page="' + page + '"]').forEach(n => n.classList.add('active'));
-    const empTitles = { dashboard: 'Dashboard', calendar: 'Calendar', portfolio: 'Portfolio', eventkit: 'Event Kit', mydeals: 'My Deals', profile: 'My Profile', directory: 'Team' };
+    const empTitles = { dashboard: 'Dashboard', calendar: 'Calendar', portfolio: 'Portfolio', eventkit: 'Event Kit', mydeals: 'My Deals', profile: 'My Profile', payslips: 'Payslips', directory: 'Team' };
     const titleEl = document.getElementById('pageTitle');
     if (titleEl) titleEl.textContent = empTitles[page] || page;
     if (page === 'dashboard')  loadEmployeeDashboard(user);
@@ -6638,6 +6978,7 @@ async function initEmployeePortal(user) {
     if (page === 'eventkit')   loadEmployeeKitPage();
     if (page === 'mydeals')    loadMyDealsPage();
     if (page === 'profile')    loadEmployeeProfile();
+    if (page === 'payslips')   loadEmployeePayslips();
     if (page === 'directory')  loadEmployeeDirectory();
   };
 
@@ -6652,6 +6993,13 @@ async function initEmployeePortal(user) {
   // Poll notifications
   loadEmpNotifications();
   setInterval(loadEmpNotifications, 30000);
+
+  // A brand-new login is walked through onboarding before anything else
+  try {
+    const obRes = await fetch('/api/employee/onboarding');
+    const ob = obRes.ok ? await obRes.json() : null;
+    if (ob && ob.required) await runOnboarding(ob);
+  } catch (e) { console.warn('Onboarding check failed:', e); }
 
   // Show dashboard
   window.navigate('dashboard');
@@ -7140,8 +7488,9 @@ async function loadEmployeeProfile() {
   if (!el) return;
   el.innerHTML = '<div class="skeleton" style="height:300px;border-radius:16px"></div>';
   try {
-    const res = await fetch('/api/employee/profile');
+    const [res, obRes] = await Promise.all([fetch('/api/employee/profile'), fetch('/api/employee/onboarding').catch(() => null)]);
     const p = res.ok ? await res.json() : {};
+    const ob = obRes && obRes.ok ? await obRes.json() : null;
     const initials = (p.name || '?').split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
     const detail = (label, val) =>
       '<div style="display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--border);font:500 13px/1.3 var(--font-sans)">' +
@@ -7184,10 +7533,42 @@ async function loadEmployeeProfile() {
           '<div class="form-group" style="margin-bottom:18px"><label>Confirm new PIN</label><input id="profNewPin2" type="password" inputmode="numeric" maxlength="6" placeholder="Re-enter new PIN" autocomplete="new-password"></div>' +
           '<button class="btn btn-primary" style="width:100%" onclick="changeMyPin(' + (p.has_pin ? 'true' : 'false') + ')">Update PIN</button>' +
         '</div>' +
-      '</div>';
+      '</div>' +
+      (ob ? personalDetailsCard(ob) : '');
   } catch (e) {
     el.innerHTML = '<div class="alert alert-error">Failed to load profile: ' + e.message + '</div>';
   }
+}
+
+// Date of birth, address and emergency contact: shared with onboarding, editable any time
+function personalDetailsCard(ob) {
+  const d = ob.details || {};
+  const lbl = t => '<label style="font:600 11px/1 var(--font-sans);color:var(--muted);display:block;margin-bottom:6px">' + t + '</label>';
+  return '<div class="card" style="padding:24px;margin-top:16px">' +
+    '<div style="font:700 15px/1 var(--font-sans);color:var(--text);margin-bottom:6px">Personal details</div>' +
+    '<div style="font:500 12px/1.5 var(--font-mono);color:var(--muted);margin-bottom:18px">Only you and the admin team can see these.</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px" class="pd-grid">' +
+      '<div>' + lbl('Date of birth') + '<input id="pdDob" class="form-control" type="date" max="' + new Date().toISOString().slice(0, 10) + '" value="' + esc(d.date_of_birth || '') + '"></div>' +
+      '<div></div>' +
+      '<div style="grid-column:1/-1">' + lbl('Home address') + '<textarea id="pdAddress" class="form-control" rows="3" placeholder="Street, city, postcode">' + esc(d.address || '') + '</textarea></div>' +
+      '<div>' + lbl('Emergency contact name') + '<input id="pdEcName" class="form-control" type="text" maxlength="100" value="' + esc(d.emergency_contact_name || '') + '"></div>' +
+      '<div>' + lbl('Emergency contact phone') + '<input id="pdEcPhone" class="form-control" type="tel" maxlength="40" value="' + esc(d.emergency_contact_phone || '') + '"></div>' +
+    '</div>' +
+    '<button class="btn btn-primary" style="margin-top:16px" onclick="savePersonalDetails()">Save personal details</button>' +
+  '</div>';
+}
+
+async function savePersonalDetails() {
+  const body = {
+    date_of_birth: document.getElementById('pdDob').value,
+    address: document.getElementById('pdAddress').value.trim(),
+    emergency_contact_name: document.getElementById('pdEcName').value.trim(),
+    emergency_contact_phone: document.getElementById('pdEcPhone').value.trim(),
+  };
+  const res = await fetch('/api/employee/onboarding/details', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null);
+  const data = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { showToast(data.error || 'Could not save', 'error'); return; }
+  showToast('Personal details saved', 'success');
 }
 
 async function saveProfileDetails() {
@@ -7221,6 +7602,265 @@ async function changeMyPin(hasPin) {
     showToast('PIN updated successfully', 'success');
     loadEmployeeProfile();
   } catch (e) { showToast('Could not change PIN: ' + e.message, 'error'); }
+}
+
+// ─── PAYSLIPS (staff portal) ─────────────────────────────────────────────────
+async function loadEmployeePayslips() {
+  const el = document.getElementById('payslipsContent');
+  if (!el) return;
+  el.innerHTML = '<div class="skeleton" style="height:240px;border-radius:16px"></div>';
+  try {
+    const res = await fetch('/api/employee/payslips');
+    if (!res.ok) throw new Error('Could not load payslips');
+    const slips = await res.json();
+    const head = '<div class="page-head"><div><h1>Payslips</h1><div class="sub">// Your monthly payslips</div></div></div>';
+    if (!slips.length) {
+      el.innerHTML = head + '<div class="card" style="padding:28px;text-align:center;color:var(--muted)">No payslips yet. When one is ready it will appear here and you will get a notification.</div>';
+      return;
+    }
+    const byYear = {};
+    slips.forEach(p => { (byYear[p.pay_year] = byYear[p.pay_year] || []).push(p); });
+    el.innerHTML = head + Object.keys(byYear).sort((a, b) => b - a).map(y =>
+      '<div class="card" style="margin-bottom:16px"><div class="card-header"><span class="card-title">' + y + '</span></div><div style="padding:0 16px 8px">' +
+      byYear[y].map(p =>
+        '<div class="ps-row"><div><div class="ps-month">' + MONTHS[p.pay_month] + ' ' + p.pay_year + '</div>' +
+        '<div class="ps-sub">Added ' + fmtDateShort(String(p.created_at).slice(0, 10)) + '</div></div>' +
+        '<div class="ps-actions"><a class="btn btn-ghost btn-sm" href="/api/payslips/' + p.id + '/file" target="_blank" rel="noopener">View</a>' +
+        '<a class="btn btn-sm" href="/api/payslips/' + p.id + '/file?download=1">Download</a></div></div>').join('') +
+      '</div></div>').join('');
+  } catch (e) {
+    el.innerHTML = '<div class="alert alert-error">' + esc(e.message) + '</div>';
+  }
+}
+
+// ─── ONBOARDING (staff portal, first sign-in) ────────────────────────────────
+// A full-screen wizard that blocks the portal until details, ID and NDA are in.
+// Progress is saved at each step, so closing the tab and coming back resumes it.
+const OB = { data: null, step: 1, resolve: null, drawn: false };
+
+function runOnboarding(data) {
+  return new Promise(resolve => {
+    OB.data = data; OB.resolve = resolve;
+    OB.step = !data.steps.details ? 1 : !data.steps.id ? 2 : 3;
+    let ov = document.getElementById('obOverlay');
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'obOverlay';
+      ov.className = 'ob-overlay';
+      document.body.appendChild(ov);
+    }
+    obRender();
+  });
+}
+
+function obFirstName() { return String(((window.currentUser || {}).name || '').split(' ')[0] || 'there'); }
+
+function obRender() {
+  const ov = document.getElementById('obOverlay');
+  const d = OB.data, st = d.steps;
+  const labels = ['Your details', 'ID document', 'Sign the NDA'];
+  const chips = labels.map((l, i) => {
+    const n = i + 1, done = [st.details, st.id, st.nda][i];
+    return '<button type="button" class="ob-step' + (OB.step === n ? ' is-active' : '') + (done ? ' is-done' : '') + '" onclick="obGo(' + n + ')">' +
+      '<span class="ob-dot">' + (done ? '✓' : n) + '</span><span class="ob-steplabel">' + l + '</span></button>';
+  }).join('');
+  ov.innerHTML = '<div class="ob-wrap"><div class="ob-card">' +
+    '<div class="ob-top"><div><h1>Welcome, ' + esc(obFirstName()) + '</h1><p>Three quick steps and you are in. Your progress is saved as you go.</p></div>' +
+    '<button type="button" class="btn btn-ghost btn-sm" onclick="obSignOut()">Sign out</button></div>' +
+    '<div class="ob-steps">' + chips + '</div>' +
+    '<div id="obBody"></div></div></div>';
+  [obStepDetails, obStepId, obStepNda][OB.step - 1]();
+}
+
+function obGo(n) {
+  // Later steps open once the ones before them are done
+  const st = OB.data.steps;
+  if (n === 2 && !st.details) { showToast('Fill in your details first', 'info'); return; }
+  if (n === 3 && !(st.details && st.id)) { showToast('Finish the earlier steps first', 'info'); return; }
+  OB.step = n; obRender();
+}
+
+async function obSignOut() {
+  await fetch('/api/logout', { method: 'POST' });
+  window.location.href = '/login.html';
+}
+
+async function obRefresh() {
+  const res = await fetch('/api/employee/onboarding');
+  if (res.ok) OB.data = await res.json();
+  return OB.data;
+}
+
+function obField(label, input, hint) {
+  return '<div class="ob-field"><label>' + label + '</label>' + input + (hint ? '<small>' + hint + '</small>' : '') + '</div>';
+}
+
+function obStepDetails() {
+  const d = OB.data.details;
+  document.getElementById('obBody').innerHTML =
+    '<h2>Your details</h2>' +
+    '<div class="ob-grid">' +
+      obField('Date of birth', '<input id="obDob" class="form-control" type="date" max="' + new Date().toISOString().slice(0, 10) + '" value="' + esc(d.date_of_birth || '') + '">') +
+      obField('Phone number', '<input id="obPhone" class="form-control" type="tel" maxlength="40" placeholder="e.g. 07700 900123" value="' + esc(d.phone || '') + '">') +
+      '<div style="grid-column:1/-1">' + obField('Home address', '<textarea id="obAddress" class="form-control" rows="3" placeholder="Street, city, postcode">' + esc(d.address || '') + '</textarea>') + '</div>' +
+      obField('Emergency contact <span>(optional)</span>', '<input id="obEcName" class="form-control" type="text" maxlength="100" placeholder="Name" value="' + esc(d.emergency_contact_name || '') + '">') +
+      obField('Their phone number', '<input id="obEcPhone" class="form-control" type="tel" maxlength="40" value="' + esc(d.emergency_contact_phone || '') + '">') +
+    '</div>' +
+    '<button class="btn btn-primary ob-next" onclick="obSaveDetails(this)">Save and continue</button>';
+}
+
+async function obSaveDetails(btn) {
+  const body = {
+    date_of_birth: document.getElementById('obDob').value,
+    phone: document.getElementById('obPhone').value.trim(),
+    address: document.getElementById('obAddress').value.trim(),
+    emergency_contact_name: document.getElementById('obEcName').value.trim(),
+    emergency_contact_phone: document.getElementById('obEcPhone').value.trim(),
+  };
+  if (!body.date_of_birth) return showToast('Enter your date of birth', 'error');
+  if (!body.phone) return showToast('Enter your phone number', 'error');
+  if (!body.address) return showToast('Enter your home address', 'error');
+  btn.disabled = true;
+  const res = await fetch('/api/employee/onboarding/details', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null);
+  const data = res ? await res.json().catch(() => ({})) : {};
+  btn.disabled = false;
+  if (!res || !res.ok) return showToast(data.error || 'Could not save, please try again', 'error');
+  await obRefresh();
+  if (OB.data.completed) return obFinish();
+  OB.step = 2; obRender();
+}
+
+// Phone photos are often 4-8 MB; shrink them so the upload fits
+function obShrinkImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const scale = Math.min(1, 1800 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      resolve({ file_name: file.name.replace(/\.\w+$/, '') + '.jpg', file_data: c.toDataURL('image/jpeg', 0.85).split(',')[1] });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('That image could not be read')); };
+    img.src = url;
+  });
+}
+
+function obStepId() {
+  const cur = OB.data.id_doc;
+  document.getElementById('obBody').innerHTML =
+    '<h2>Passport or driving licence</h2>' +
+    '<p class="ob-help">Upload a clear photo or scan. A PDF, JPG or PNG is fine.</p>' +
+    (cur ? '<div class="ob-ok">✓ Uploaded: ' + esc(cur.name) + '</div>' : '') +
+    '<div class="ob-choice">' +
+      '<label><input type="radio" name="obIdType" value="passport" checked> Passport</label>' +
+      '<label><input type="radio" name="obIdType" value="driving_licence"> Driving licence</label>' +
+    '</div>' +
+    '<label class="ob-drop"><input id="obIdFile" type="file" accept=".pdf,.jpg,.jpeg,.png,image/*,application/pdf" onchange="obIdChosen(this)">' +
+      '<span id="obIdName">' + (cur ? 'Choose a different file' : 'Choose a file') + '</span></label>' +
+    '<div class="ob-actions"><button class="btn btn-ghost" onclick="obGo(1)">Back</button>' +
+    (cur ? '<button class="btn btn-ghost" onclick="obGo(3)">Keep this and continue</button>' : '') +
+    '<button class="btn btn-primary" id="obIdBtn" onclick="obUploadId(this)" disabled>Upload and continue</button></div>';
+}
+
+function obIdChosen(input) {
+  const f = input.files[0];
+  document.getElementById('obIdName').textContent = f ? f.name : 'Choose a file';
+  document.getElementById('obIdBtn').disabled = !f;
+}
+
+async function obUploadId(btn) {
+  const f = document.getElementById('obIdFile').files[0];
+  if (!f) return;
+  btn.disabled = true;
+  try {
+    let doc;
+    if (/^image\//.test(f.type)) doc = await obShrinkImage(f);
+    else if (f.type === 'application/pdf' || /\.pdf$/i.test(f.name)) doc = await readPdfFile(f);
+    else throw new Error('Upload a PDF, JPG or PNG');
+    if (!doc) { btn.disabled = false; return; }
+    const id_doc_type = (document.querySelector('input[name="obIdType"]:checked') || {}).value || 'other';
+    const res = await fetch('/api/employee/onboarding/id', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...doc, id_doc_type }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Upload failed');
+    await obRefresh();
+    if (OB.data.completed) return obFinish();
+    OB.step = 3; obRender();
+  } catch (e) { showToast(e.message, 'error'); btn.disabled = false; }
+}
+
+function obStepNda() {
+  const nda = OB.data.nda;
+  OB.drawn = false;
+  document.getElementById('obBody').innerHTML =
+    '<h2>Non-disclosure agreement</h2>' +
+    '<p class="ob-help">Please read this and sign at the bottom.</p>' +
+    '<div class="ob-nda" id="obNdaText">' + esc(nda.text) + '</div>' +
+    obField('Type your full name', '<input id="obSignName" class="form-control" type="text" maxlength="120" autocomplete="name" value="' + esc((window.currentUser || {}).name || '') + '">') +
+    '<div class="ob-field"><label>Draw your signature <button type="button" class="ob-link" onclick="obClearSig()">Clear</button></label>' +
+      '<canvas id="obSig" class="ob-sig" height="150"></canvas><small>Use your finger or mouse.</small></div>' +
+    '<label class="ob-agree"><input id="obAgree" type="checkbox"> I have read and agree to this agreement.</label>' +
+    '<div class="ob-actions"><button class="btn btn-ghost" onclick="obGo(2)">Back</button>' +
+    '<button class="btn btn-primary" onclick="obSign(this)">Sign and finish</button></div>';
+  obInitSig();
+}
+
+function obInitSig() {
+  const c = document.getElementById('obSig');
+  const ratio = window.devicePixelRatio || 1;
+  const w = c.clientWidth || 500;
+  c.width = w * ratio; c.height = 150 * ratio;
+  const ctx = c.getContext('2d');
+  ctx.scale(ratio, ratio);
+  ctx.lineWidth = 2.2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111';
+  let drawing = false, last = null;
+  const pos = e => { const r = c.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  c.addEventListener('pointerdown', e => { drawing = true; last = pos(e); c.setPointerCapture(e.pointerId); e.preventDefault(); });
+  c.addEventListener('pointermove', e => {
+    if (!drawing) return;
+    const p = pos(e);
+    ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+    last = p; OB.drawn = true;
+  });
+  const stop = () => { drawing = false; };
+  c.addEventListener('pointerup', stop); c.addEventListener('pointercancel', stop);
+}
+
+function obClearSig() {
+  const c = document.getElementById('obSig');
+  if (!c) return;
+  c.getContext('2d').clearRect(0, 0, c.width, c.height);
+  OB.drawn = false;
+}
+
+async function obSign(btn) {
+  const signed_name = document.getElementById('obSignName').value.trim();
+  if (signed_name.length < 3) return showToast('Type your full name', 'error');
+  if (!OB.drawn) return showToast('Draw your signature in the box', 'error');
+  if (!document.getElementById('obAgree').checked) return showToast('Tick the box to confirm you agree', 'error');
+  btn.disabled = true;
+  const signature = document.getElementById('obSig').toDataURL('image/png');
+  const res = await fetch('/api/employee/onboarding/sign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ signed_name, signature, agree: true }) }).catch(() => null);
+  const data = res ? await res.json().catch(() => ({})) : {};
+  btn.disabled = false;
+  if (!res || !res.ok) return showToast(data.error || 'Could not save your signature', 'error');
+  await obRefresh();
+  if (OB.data.completed) return obFinish();
+  // Something earlier is still missing (e.g. cleared by an admin): go back to it
+  OB.step = !OB.data.steps.details ? 1 : !OB.data.steps.id ? 2 : 3;
+  showToast('One more step needs finishing first', 'info');
+  obRender();
+}
+
+function obFinish() {
+  document.getElementById('obBody').innerHTML = '<div class="ob-done"><div class="ob-tick">✓</div><h2>All done</h2><p>Thanks, ' + esc(obFirstName()) + '. Taking you to your portal…</p></div>';
+  setTimeout(() => {
+    document.getElementById('obOverlay')?.remove();
+    showToast('Welcome aboard!', 'success');
+    if (OB.resolve) OB.resolve();
+  }, 1200);
 }
 
 // ─── EMPLOYEE DIRECTORY (staff portal) ────────────────────────────────────────
@@ -9421,25 +10061,25 @@ async function loadEmployeeCalendar() {
     container = document.getElementById('empCalContainer');
   }
 
-  // Ensure day-off modal lives at body level (correct overlay behaviour)
+  // Ensure the request modal lives at body level (correct overlay behaviour)
   if (!document.getElementById('empDayOffModal')) {
     const m = document.createElement('div');
     m.className = 'modal-overlay';
     m.id = 'empDayOffModal';
     m.innerHTML =
-      '<div class="modal" style="max-width:380px">' +
-        '<div class="modal-header"><span class="modal-title">Request Day Off</span>' +
+      '<div class="modal" style="max-width:460px">' +
+        '<div class="modal-header"><span class="modal-title" id="empReqTitle">Request Time Off</span>' +
           '<button class="modal-close" onclick="closeModal(\'empDayOffModal\')">×</button></div>' +
         '<div style="padding:20px;display:flex;flex-direction:column;gap:14px">' +
-          '<div id="empDayOffRangeNote" class="hidden" style="font:600 12px/1.4 var(--font-sans);color:var(--accent);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 10px"></div>' +
           '<div class="form-row" style="display:flex;gap:10px">' +
-            '<div class="form-group" style="flex:1"><label>From</label><input type="date" id="empDayOffDate" onchange="empDayOffSyncEnd()"></div>' +
-            '<div class="form-group" style="flex:1"><label>To</label><input type="date" id="empDayOffEndDate"></div>' +
+            '<div class="form-group" style="flex:1"><label>From</label><input type="date" id="empDayOffDate" onchange="empDayOffSyncEnd();empRequestPreview()"></div>' +
+            '<div class="form-group" style="flex:1"><label>To</label><input type="date" id="empDayOffEndDate" onchange="empRequestPreview()"></div>' +
           '</div>' +
           '<div class="form-group"><label>Type</label>' +
-            '<select id="empDayOffType"><option value="1">Full Day</option><option value="0.5">Half Day</option></select></div>' +
-          '<div class="form-group"><label>Reason <span style="color:var(--muted);font-weight:400">(required)</span></label><textarea id="empDayOffReason" class="form-control" rows="3" placeholder="e.g. Medical appointment, personal matter..."></textarea></div>' +
-          '<button class="btn btn-primary" style="width:100%" onclick="submitEmpDayOff()">Submit Request</button>' +
+            '<select id="empDayOffType" onchange="empRequestPreview()"><option value="1">Full days</option><option value="0.5">Half days</option></select></div>' +
+          '<div id="empReqPreview" class="hr-preview"></div>' +
+          '<div class="form-group"><label>Reason <span style="color:var(--muted);font-weight:400">(required)</span></label><textarea id="empDayOffReason" class="form-control" rows="3" placeholder="e.g. Annual leave, medical appointment…"></textarea></div>' +
+          '<button class="btn btn-primary" id="empReqSubmit" style="width:100%" onclick="submitEmpDayOff()">Submit Request</button>' +
         '</div>' +
       '</div>';
     m.addEventListener('click', function(e) { if (e.target === m) closeModal('empDayOffModal'); });
@@ -9449,12 +10089,18 @@ async function loadEmployeeCalendar() {
   container.innerHTML = '<div class="skeleton" style="height:400px;border-radius:12px"></div>';
 
   try {
-    const [requestsRes, teamRes, upcomingRes] = await Promise.all([
+    const [requestsRes, teamRes, upcomingRes, groupsRes, bhMap] = await Promise.all([
       fetch('/api/employee/day-off-requests'),
       fetch('/api/calendar?year=' + empCalYear + '&month=' + empCalMonth),
-      fetch('/api/employee/upcoming?days=60')
+      fetch('/api/employee/upcoming?days=60'),
+      fetch('/api/employee/holiday-requests'),
+      empBankHolidays(empCalYear)
     ]);
     const allRequests = requestsRes.ok ? await requestsRes.json() : [];
+    const reqGroups = groupsRes.ok ? await groupsRes.json() : [];
+    window._empReqGroups = {}; window._empReqByDate = {};
+    reqGroups.forEach(g => { window._empReqGroups[g.key] = g; g.dates.forEach(d => { window._empReqByDate[d] = g; }); });
+    window._empBH = bhMap;
     const teamRecords = teamRes.ok    ? await teamRes.json()     : [];
     const upcomingData = upcomingRes.ok ? await upcomingRes.json() : { dayOffs: [], reminders: [] };
     const upcomingDayOffs = upcomingData.dayOffs || [];
@@ -9513,6 +10159,18 @@ async function loadEmployeeCalendar() {
       else if (status === 'approved') { bg = '#6ee7d418'; border = '1px solid #6ee7b455'; statusBar = '<div style="font:700 9px/1 var(--font-mono);color:var(--primary);margin-top:4px;letter-spacing:.5px;width:100%;text-align:center">MY DAY OFF</div>'; }
       else if (status === 'declined') { bg = '#ef444412'; border = '1px solid #f8717155'; statusBar = '<div style="font:700 9px/1 var(--font-mono);color:#f87171;margin-top:4px;letter-spacing:.5px;width:100%;text-align:center">DECLINED</div>'; }
 
+      // Weekends and bank holidays never count against the allowance
+      const colIdx = (startDow + d - 1) % 7;
+      const isWeekend = colIdx >= 5;
+      const bhName = bhMap.get(dateStr) || '';
+      let bhHtml = '';
+      if (bhName) {
+        if (!status) { bg = '#f59e0b14'; border = isToday ? border : '1px solid #f59e0b55'; }
+        bhHtml = '<div class="emp-cal-bh" title="' + esc(bhName) + '">' + esc(bhName) + '</div>';
+      } else if (isWeekend && !status && !isToday) {
+        bg = 'var(--surface)';
+      }
+
       let teamHtml = '';
       if (team.length) {
         teamHtml = team.slice(0, 3).map(n => {
@@ -9525,8 +10183,8 @@ async function loadEmployeeCalendar() {
       gridHtml +=
         '<div class="emp-cal-day" data-date="' + dateStr + '" style="background:' + bg + ';border:' + border + ';border-radius:8px;padding:8px 6px 6px;min-height:72px;cursor:pointer;display:flex;flex-direction:column;align-items:center;user-select:none"'
         + ' onmousedown="empDayMouseDown(event,\'' + dateStr + '\')" onmouseenter="empDayMouseEnter(\'' + dateStr + '\')" ontouchstart="empDayMouseDown(event,\'' + dateStr + '\')">' +
-          '<div style="font:' + (isToday?'800':'700') + ' 15px/1 var(--font-mono);color:' + (isToday?'var(--primary)':isPast?'var(--dim)':'var(--text)') + ';width:100%;text-align:center">' + d + '</div>' +
-          statusBar + teamHtml +
+          '<div style="font:' + (isToday?'800':'700') + ' 15px/1 var(--font-mono);color:' + (isToday?'var(--primary)':(isPast||isWeekend)?'var(--dim)':'var(--text)') + ';width:100%;text-align:center">' + d + '</div>' +
+          statusBar + bhHtml + teamHtml +
         '</div>';
     }
     gridHtml += '</div>' +
@@ -9534,6 +10192,8 @@ async function loadEmployeeCalendar() {
         '<span><span style="display:inline-block;width:10px;height:10px;background:#d9770618;border:1px solid #fb923c55;border-radius:3px;margin-right:4px;vertical-align:middle"></span>Pending</span>' +
         '<span><span style="display:inline-block;width:10px;height:10px;background:#6ee7d418;border:1px solid #6ee7b455;border-radius:3px;margin-right:4px;vertical-align:middle"></span>My day off</span>' +
         '<span><span style="display:inline-block;width:10px;height:10px;background:#7c3aed30;border-radius:3px;margin-right:4px;vertical-align:middle"></span>Team off</span>' +
+        '<span><span style="display:inline-block;width:10px;height:10px;background:#f59e0b14;border:1px solid #f59e0b55;border-radius:3px;margin-right:4px;vertical-align:middle"></span>Bank holiday</span>' +
+        '<span style="color:var(--dim)">Weekends and bank holidays are never counted against your allowance</span>' +
       '</div>';
 
     // Upcoming panel: team day-offs + staff-visible reminders
@@ -9566,6 +10226,8 @@ async function loadEmployeeCalendar() {
 
     const remHtml = dayOffItems + remItems;
 
+    const requestsCard = empRequestsCard(reqGroups);
+
     container.innerHTML =
       '<div style="display:flex;gap:12px;align-items:center;margin-bottom:16px">' +
         '<button class="btn btn-ghost" onclick="empCalPrev()">‹ Prev</button>' +
@@ -9582,7 +10244,7 @@ async function loadEmployeeCalendar() {
         '<div class="card"><div class="card-header"><span class="card-title">What\'s Coming Up</span><span style="font:700 11px/1 var(--font-mono);color:var(--muted)">NEXT 60D</span></div>' +
           '<div style="padding:4px 16px 12px">' + (remHtml || '<div style="color:var(--muted);font-size:0.82rem;padding:12px 0">No upcoming team events or days off</div>') + '</div>' +
         '</div>' +
-      '</div>';
+      '</div>' + requestsCard;
 
   } catch(e) {
     container.innerHTML = '<div class="alert alert-error">Failed to load calendar: ' + e.message + '</div>';
@@ -9632,15 +10294,28 @@ function empDayClick(dateStr) {
     body += '<div style="height:8px"></div>';
   }
 
+  // Bank holiday / weekend notes
+  const bhName = (window._empBH && window._empBH.get(dateStr)) || '';
+  const dow = dt.getDay();
+  const nonWorking = !!bhName || dow === 0 || dow === 6;
+  const grp = (window._empReqByDate || {})[dateStr];
+  if (bhName) body = '<div class="hr-note hr-note--bh">🏖 Bank holiday: ' + esc(bhName) + '. It is not counted against your allowance.</div>' + body;
+  else if (dow === 0 || dow === 6) body = '<div class="hr-note">Weekend. It is not counted against your allowance.</div>' + body;
+
   // Actions
   let actions = '';
-  if (!isPast && !rec) {
+  if (!isPast && !rec && !nonWorking) {
     actions = `<button class="btn btn-primary" style="width:100%;margin-top:4px" onclick="closeEmpDayModal();openEmpDayOffModalDate('${dateStr}')">+ Request Day Off</button>`;
+  } else if (status === 'pending' && grp && grp.can_edit) {
+    actions = `<div style="display:flex;gap:8px;margin-top:4px">` +
+      `<button class="btn btn-ghost" style="flex:1" onclick="closeEmpDayModal();editEmpRequest('${grp.key}')">Edit request</button>` +
+      `<button class="btn btn-danger" style="flex:1" onclick="closeEmpDayModal();cancelEmpRequest('${grp.key}')">Cancel request</button></div>` +
+      (grp.dates.length > 1 ? `<div style="font:500 11px/1.4 var(--font-sans);color:var(--muted);margin-top:8px">This is part of a request for ${grp.dates.length} days (${grp.dates[0]} → ${grp.dates[grp.dates.length - 1]}).</div>` : '');
   } else if (status === 'pending') {
     actions = `<button class="btn btn-danger" style="width:100%;margin-top:4px" onclick="closeEmpDayModal();cancelEmpDayOff('${dateStr}')">Cancel My Request</button>`;
   }
 
-  if (!rec && !team.length) {
+  if (!rec && !team.length && !nonWorking) {
     body = '<div style="text-align:center;padding:20px 0;color:var(--muted);font:500 13px/1.5 var(--font-mono)">Nothing booked on this day yet.</div>';
   }
 
@@ -9696,31 +10371,87 @@ function showEmpDeclineReason(reason) {
   document.body.appendChild(modal);
 }
 
-function openEmpDayOffModal() {
-  const d = new Date().toISOString().slice(0,10);
-  document.getElementById('empDayOffDate').value = d;
-  document.getElementById('empDayOffEndDate').value = d;
-  document.getElementById('empDayOffReason').value = '';
-  document.getElementById('empDayOffRangeNote').classList.add('hidden');
-  openModal('empDayOffModal');
+// ─── Time-off requests (staff portal) ────────────────────────────────────────
+// A request is a date range. The server books only its working days (no
+// weekends, no bank holidays), and a request can be edited or cancelled while
+// it is still pending. The preview below shows exactly what will be booked.
+let _empReqEditKey = null, _empPrevTimer = null, _empPrevSeq = 0, _empPrev = null;
+const _empBHCache = {};
+
+async function empBankHolidays(year) {
+  if (_empBHCache[year]) return _empBHCache[year];
+  let list = [];
+  try { const r = await fetch('/api/employee/bank-holidays?year=' + year); if (r.ok) list = await r.json(); } catch {}
+  const map = new Map(list.map(h => [h.date, h.name]));
+  _empBHCache[year] = map;
+  return map;
 }
-function openEmpDayOffModalDate(date) {
-  document.getElementById('empDayOffDate').value = date;
-  document.getElementById('empDayOffEndDate').value = date;
-  document.getElementById('empDayOffReason').value = '';
-  document.getElementById('empDayOffRangeNote').classList.add('hidden');
+
+function empOpenRequestModal(start, end, opts = {}) {
+  _empReqEditKey = opts.key || null;
+  document.getElementById('empReqTitle').textContent = opts.key ? 'Edit Request' : 'Request Time Off';
+  document.getElementById('empReqSubmit').textContent = opts.key ? 'Save Changes' : 'Submit Request';
+  document.getElementById('empDayOffDate').value = start;
+  document.getElementById('empDayOffEndDate').value = end || start;
+  document.getElementById('empDayOffType').value = String(opts.type || 1);
+  document.getElementById('empDayOffReason').value = opts.reason || '';
   openModal('empDayOffModal');
+  empRequestPreview();
 }
-function openEmpDayOffModalRange(startDate, endDate) {
-  document.getElementById('empDayOffDate').value = startDate;
-  document.getElementById('empDayOffEndDate').value = endDate;
-  document.getElementById('empDayOffReason').value = '';
-  const days = empDateRange(startDate, endDate).length;
-  const note = document.getElementById('empDayOffRangeNote');
-  note.textContent = '📅 Requesting ' + days + ' day' + (days !== 1 ? 's' : '') + ': ' + startDate + ' → ' + endDate;
-  note.classList.remove('hidden');
-  openModal('empDayOffModal');
+function openEmpDayOffModal() { const d = new Date().toLocaleDateString('en-CA'); empOpenRequestModal(d, d); }
+function openEmpDayOffModalDate(date) { empOpenRequestModal(date, date); }
+function openEmpDayOffModalRange(startDate, endDate) { empOpenRequestModal(startDate, endDate); }
+function editEmpRequest(key) {
+  const g = (window._empReqGroups || {})[key];
+  if (!g) return;
+  empOpenRequestModal(g.start, g.end, { key, type: g.is_day_off, reason: g.reason });
 }
+
+const empShort = d => new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+const empDays = n => n + ' day' + (n === 1 ? '' : 's');
+
+function empRequestPreview() {
+  clearTimeout(_empPrevTimer);
+  const box = document.getElementById('empReqPreview');
+  const btn = document.getElementById('empReqSubmit');
+  const start = document.getElementById('empDayOffDate').value;
+  const end = document.getElementById('empDayOffEndDate').value || start;
+  const type = document.getElementById('empDayOffType').value;
+  _empPrev = null;
+  if (!start) { box.innerHTML = '<span class="hr-muted">Choose your dates.</span>'; btn.disabled = true; return; }
+  box.innerHTML = '<span class="hr-muted">Checking your dates…</span>';
+  btn.disabled = true;
+  _empPrevTimer = setTimeout(async () => {
+    const seq = ++_empPrevSeq;
+    const params = new URLSearchParams({ start, end, is_day_off: type });
+    if (_empReqEditKey) params.set('exclude', _empReqEditKey);
+    let res, d;
+    try { res = await fetch('/api/employee/holiday-preview?' + params); d = await res.json(); } catch { res = null; }
+    if (seq !== _empPrevSeq) return;
+    if (!res || !res.ok) { box.innerHTML = '<div class="hr-warn">' + esc((d && d.error) || 'Could not check those dates') + '</div>'; return; }
+    _empPrev = d;
+    const a = d.allowance;
+    const after = a.remaining - d.days;
+    let html = d.working_days.length
+      ? '<div class="hr-big">' + empDays(d.days) + (parseFloat(type) === 0.5 ? ' <span class="hr-muted">(half days)</span>' : '') + '</div>' +
+        '<div class="hr-muted">' + empShort(d.working_days[0]) + (d.working_days.length > 1 ? ' → ' + empShort(d.working_days[d.working_days.length - 1]) : '') + '</div>'
+      : '<div class="hr-warn">Those dates are all weekends or bank holidays, so there is nothing to book.</div>';
+    if (d.skipped.length) {
+      html += '<div class="hr-skip"><span class="hr-muted">Not counted:</span> ' + d.skipped.map(x =>
+        '<span class="hr-chip' + (x.bank_holiday ? ' hr-chip--bh' : '') + '">' + empShort(x.date) + ' · ' + esc(x.reason) + '</span>').join('') + '</div>';
+    }
+    if (d.working_days.length) {
+      html += '<div class="hr-allow">' + a.year + ' allowance: <b>' + a.allowed + '</b> · used ' + a.used + ' · pending ' + a.pending +
+        ' · <b class="' + (after < 0 ? 'hr-neg' : '') + '">' + (after < 0 ? 'over by ' + (-after) : after + ' left after this') + '</b></div>';
+      if (after < 0) html += '<div class="hr-warn">This goes over your allowance by ' + (-after) + ' day' + (after === -1 ? '' : 's') + '. Extra days can be deducted from your pay.</div>';
+    }
+    if (d.spans_years) html += '<div class="hr-muted">This spans two years; the allowance shown is for ' + a.year + '.</div>';
+    if (d.clashes.length) html += '<div class="hr-warn">You already have time off booked on ' + d.clashes.slice(0, 4).map(empShort).join(', ') + (d.clashes.length > 4 ? '…' : '') + '.</div>';
+    box.innerHTML = html;
+    btn.disabled = !d.working_days.length || d.clashes.length > 0;
+  }, 250);
+}
+
 function empDayOffSyncEnd() {
   const start = document.getElementById('empDayOffDate').value;
   const endEl = document.getElementById('empDayOffEndDate');
@@ -9744,15 +10475,58 @@ async function submitEmpDayOff() {
   const reason = (document.getElementById('empDayOffReason').value || '').trim();
   if (!start) return showToast('Please select a date', 'error');
   if (!reason) return showToast('Please add a reason for your request', 'error');
-  const dates = empDateRange(start, end > start ? end : start);
-  let ok = 0, fail = 0;
-  for (const date of dates) {
-    const res = await fetch('/api/employee/day-off', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ date, is_day_off, reason }) });
-    if (res.ok) ok++; else fail++;
-  }
+  const editing = !!_empReqEditKey;
+  const btn = document.getElementById('empReqSubmit');
+  btn.disabled = true;
+  const res = await fetch('/api/employee/holiday-requests' + (editing ? '/' + _empReqEditKey : ''), {
+    method: editing ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ start, end: end >= start ? end : start, is_day_off, reason })
+  }).catch(() => null);
+  const data = res ? await res.json().catch(() => ({})) : {};
+  btn.disabled = false;
+  if (!res || !res.ok) { showToast(data.error || 'Request failed', 'error'); return; }
   closeModal('empDayOffModal');
-  if (ok > 0) showToast(ok === 1 ? 'Day off submitted!' : ok + ' day-off requests submitted!' + (fail ? ` (${fail} skipped — already booked)` : ''), 'success');
-  else showToast('Request failed — those dates may already be booked', 'error');
+  const skipped = (data.skipped || []).length;
+  showToast((editing ? 'Request updated: ' : 'Request sent: ') + empDays(data.days) +
+    (skipped ? ` (${skipped} weekend/bank-holiday day${skipped === 1 ? '' : 's'} not counted)` : ''), 'success');
+  loadEmployeeCalendar();
+}
+
+// "My Requests": every request, with edit and cancel while it is still pending
+function empRequestsCard(groups) {
+  const todayStr = new Date().toLocaleDateString('en-CA');
+  const label = { pending: 'Pending', approved: 'Approved', declined: 'Declined', mixed: 'Part approved' };
+  const rows = groups.slice(0, 30).map(g => {
+    const past = g.end < todayStr;
+    const range = g.start === g.end ? empShort(g.start) : empShort(g.start) + ' → ' + empShort(g.end);
+    const yr = g.start.slice(0, 4);
+    let note = '';
+    if (g.status === 'declined') note = '<div class="hr-req-sub hr-neg">Declined' + (g.decline_reason ? ': ' + esc(g.decline_reason) : '') + '</div>';
+    else if (g.status === 'approved') note = '<div class="hr-req-sub">Approved. To change it, ask your manager.</div>';
+    else if (g.status === 'mixed') note = '<div class="hr-req-sub">Some days are already approved, so this can no longer be edited. You can still cancel the days that are pending.</div>';
+    return '<div class="hr-req' + (past ? ' is-past' : '') + '">' +
+      '<div class="hr-req-main">' +
+        '<div class="hr-req-dates">' + range + ' <span class="hr-req-yr">' + yr + '</span> <span class="hr-badge hr-badge--' + g.status + '">' + label[g.status] + '</span></div>' +
+        '<div class="hr-req-sub">' + empDays(g.days) + (g.is_day_off === 0.5 ? ' (half days)' : '') + (g.reason ? ' · ' + esc(g.reason) : '') + '</div>' + note +
+      '</div>' +
+      '<div class="hr-req-actions">' +
+        (g.can_edit ? '<button class="btn btn-ghost btn-sm" onclick="editEmpRequest(\'' + g.key + '\')">Edit</button>' : '') +
+        (g.can_cancel ? '<button class="btn btn-ghost btn-sm hr-cancel" onclick="cancelEmpRequest(\'' + g.key + '\')">Cancel</button>' : '') +
+      '</div></div>';
+  }).join('');
+  return '<div class="card" style="margin-top:16px"><div class="card-header"><span class="card-title">My Requests</span>' +
+    '<span style="font:700 11px/1 var(--font-mono);color:var(--muted)">' + groups.length + ' total</span></div>' +
+    '<div style="padding:4px 16px 12px">' + (rows || '<div style="color:var(--muted);font-size:0.85rem;padding:14px 0">You have not requested any time off yet. Click a date, or drag across several, to start.</div>') + '</div></div>';
+}
+
+async function cancelEmpRequest(key) {
+  const g = (window._empReqGroups || {})[key];
+  const what = g ? (g.start === g.end ? empShort(g.start) : empShort(g.start) + ' → ' + empShort(g.end)) : 'this request';
+  if (!await showConfirm('Cancel your request for ' + what + '? You can always make a new one.')) return;
+  const res = await fetch('/api/employee/holiday-requests/' + key, { method: 'DELETE' }).catch(() => null);
+  const data = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { showToast(data.error || 'Could not cancel', 'error'); return; }
+  showToast('Request cancelled', 'success');
   loadEmployeeCalendar();
 }
 
@@ -9803,6 +10577,8 @@ function empDragFinish() {
 }
 
 async function cancelEmpDayOff(date) {
+  const grp = (window._empReqByDate || {})[date];
+  if (grp && grp.can_cancel) return cancelEmpRequest(grp.key);
   if (!await showConfirm('Cancel your pending day off request for ' + date + '?')) return;
   const res = await fetch('/api/employee/day-off/' + date, { method:'DELETE' });
   if (res.ok) { showToast('Request cancelled', 'success'); loadEmployeeCalendar(); }

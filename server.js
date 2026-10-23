@@ -11,6 +11,7 @@ const { sql, initDb } = require('./database');
 const { registerWasteman } = require('./wasteman');
 const { createBridgeRouter } = require('./bridge');
 const { createProgrammeRouter } = require('./programme-routes');
+const { createPortalRouter } = require('./portal-routes');
 const programmeSeries = require('./programme-2027');
 
 // Email transporter — configured via env vars; silently disabled if not set
@@ -341,6 +342,7 @@ const ALLOWED_BREAK_MINUTES = 40;
 const DAY_OFF_ALLOWANCE = { payroll: 20, self_employed: 5 };
 
 const { allowanceFor: allowanceForYear } = require('./allowance');
+const { selfEmployedYearTarget } = require('./salary-periods');
 const allowanceFor = (emp, year) => allowanceForYear(emp, year, DAY_OFF_ALLOWANCE);
 
 // Count Mon–Fri days in a given month (no bank holidays — add if needed)
@@ -529,6 +531,9 @@ app.use('/api/bridge', createBridgeRouter({ q, ensureDb, insertDealEvents }));
 // applying it renames rows that deals are allocated to.
 app.use('/api/programme', createProgrammeRouter({ q, requireAuth, requireAdminOrManager }));
 
+// Staff portal: onboarding, payslips, bank holidays, holiday requests, probation
+app.use('/api', createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManager, allowanceFor, notifyAdmin: sendAdminEmail }));
+
 // ─── AUTH ────────────────────────────────────────────────────────────────────
 
 app.post('/api/login', async (req, res) => {
@@ -622,25 +627,25 @@ app.put('/api/admins/:id/password', requireAuth, async (req, res) => {
 
 // ─── EMPLOYEES ───────────────────────────────────────────────────────────────
 
+// What a non-admin may see of an employee row: no pay, and never the portal PIN
+// (colleagues could read each other's PINs and log in as them). has_pin says whether one is set.
+const publicEmployee = ({ annual_salary, daily_rate, pension_rate, portal_pin, ...rest }) => ({ ...rest, has_pin: !!portal_pin });
+
 app.get('/api/employees', requireAuth, async (req, res) => {
   const { rows } = await q('SELECT * FROM employees WHERE active = 1 ORDER BY name');
-  if (req.user.role !== 'admin') {
-    return res.json(rows.map(({ annual_salary, daily_rate, pension_rate, ...rest }) => rest));
-  }
+  if (req.user.role !== 'admin') return res.json(rows.map(publicEmployee));
   res.json(rows);
 });
 
 app.get('/api/employees/all', requireAuth, async (req, res) => {
   const { rows } = await q('SELECT * FROM employees ORDER BY name');
-  if (req.user.role !== 'admin') {
-    return res.json(rows.map(({ annual_salary, daily_rate, pension_rate, ...rest }) => rest));
-  }
+  if (req.user.role !== 'admin') return res.json(rows.map(publicEmployee));
   res.json(rows);
 });
 
 app.post('/api/employees', requireAuth, async (req, res) => {
   const { name, employment_type, annual_salary, currency, start_date, pension_rate,
-          job_title, department, phone, email, contract_end_date } = req.body;
+          job_title, department, phone, email, contract_end_date, probation_end_date } = req.body;
   if (!name) return res.status(400).json({ error: 'Name required' });
   const annualSal = parseFloat(annual_salary) || 0;
   const daily_rate = parseFloat((annualSal / 260).toFixed(4));
@@ -649,26 +654,47 @@ app.post('/api/employees', requireAuth, async (req, res) => {
   const { rows } = await q(
     `INSERT INTO employees
        (name, daily_rate, employment_type, annual_salary, currency, start_date, pension_rate,
-        job_title, department, phone, email, contract_end_date)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-    [name, daily_rate, employment_type || 'payroll', annualSal, cur, start_date || null, pensionRate,
-     job_title || '', department || '', phone || '', email || '', contract_end_date || null]
+        job_title, department, phone, email, contract_end_date, probation_end_date)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+    [name, daily_rate, employment_type || 'payroll', annualSal, cur, start_date ? String(start_date).slice(0, 10) : null, pensionRate,
+     job_title || '', department || '', phone || '', email || '', contract_end_date ? String(contract_end_date).slice(0, 10) : null,
+     probation_end_date ? String(probation_end_date).slice(0, 10) : null]
   );
   res.json({ id: rows[0].id, name, daily_rate });
 });
 
+// Giving someone their first portal PIN is a new login: their first sign-in walks them
+// through onboarding (details, ID, NDA). Existing logins are left alone.
+async function requireOnboardingForNewLogin(empId, hadPin) {
+  if (hadPin) return;
+  await q(
+    `INSERT INTO employee_onboarding (employee_id, required) VALUES (?, true)
+     ON CONFLICT (employee_id) DO UPDATE SET required = true WHERE employee_onboarding.completed_at IS NULL`,
+    [empId]);
+}
+
 app.put('/api/employees/:id', requireAuth, async (req, res) => {
   const { name, active, employment_type, annual_salary, currency, salary_reason, salary_effective,
           start_date, pension_rate, job_title, department, phone, email, contract_end_date,
-          portal_pin } = req.body;
+          probation_end_date, portal_pin } = req.body;
   const annualSal = parseFloat(annual_salary) || 0;
   const daily_rate = parseFloat((annualSal / 260).toFixed(4));
   const cur = ['GBP','AED','PHP'].includes(currency) ? currency : 'GBP';
   const pensionRate = (employment_type === 'payroll' && pension_rate != null && pension_rate !== '') ? parseFloat(pension_rate) : 0;
 
   // If salary changed, log old salary to history before updating
-  const { rows: current } = await q('SELECT annual_salary, currency FROM employees WHERE id = ?', [req.params.id]);
+  const { rows: current } = await q('SELECT annual_salary, currency, start_date, portal_pin FROM employees WHERE id = ?', [req.params.id]);
   if (current[0] && parseFloat(current[0].annual_salary) !== annualSal) {
+    // First recorded change: log the salary they had until now, so the year's pay
+    // can be worked out month by month instead of repricing the whole year.
+    const { rows: hist } = await q('SELECT id FROM salary_history WHERE employee_id = ? LIMIT 1', [req.params.id]);
+    if (!hist.length && parseFloat(current[0].annual_salary) > 0) {
+      const wasStart = current[0].start_date ? current[0].start_date.toISOString().slice(0, 10) : '2000-01-01';
+      await q(
+        'INSERT INTO salary_history (employee_id, annual_salary, currency, effective_from, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)',
+        [req.params.id, current[0].annual_salary, current[0].currency || cur, wasStart, 'Salary before first change', req.admin.id]
+      );
+    }
     await q(
       'INSERT INTO salary_history (employee_id, annual_salary, currency, effective_from, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)',
       [req.params.id, annualSal, cur,
@@ -682,14 +708,20 @@ app.put('/api/employees/:id', requireAuth, async (req, res) => {
 
   await q(
     `UPDATE employees SET name=?, daily_rate=?, active=?, employment_type=?, annual_salary=?,
-     currency=?, start_date=?, pension_rate=?,
-     job_title=?, department=?, phone=?, email=?, contract_end_date=?, portal_pin=COALESCE(?, portal_pin)
+     currency=?, start_date=CASE WHEN ?::boolean THEN ?::date ELSE start_date END, pension_rate=?,
+     job_title=?, department=?, phone=?, email=?, contract_end_date=?, portal_pin=COALESCE(?, portal_pin),
+     probation_review_done_at=CASE WHEN ?::boolean AND probation_end_date IS DISTINCT FROM ?::date THEN NULL ELSE probation_review_done_at END,
+     probation_end_date=CASE WHEN ?::boolean THEN ?::date ELSE probation_end_date END
      WHERE id=?`,
     [name, daily_rate, active !== undefined ? active : 1, employment_type || 'payroll',
-     annualSal, cur, start_date || null, pensionRate,
+     annualSal, cur, start_date !== undefined, start_date ? String(start_date).slice(0, 10) : null, pensionRate,
      job_title || '', department || '', phone || '', email || '',
-     contract_end_date || null, pinVal, req.params.id]
+     contract_end_date ? String(contract_end_date).slice(0, 10) : null, pinVal,
+     probation_end_date !== undefined, probation_end_date ? String(probation_end_date).slice(0, 10) : null,
+     probation_end_date !== undefined, probation_end_date ? String(probation_end_date).slice(0, 10) : null,
+     req.params.id]
   );
+  if (pinVal) await requireOnboardingForNewLogin(req.params.id, !!(current[0] && current[0].portal_pin));
   res.json({ success: true });
 });
 
@@ -697,8 +729,10 @@ app.patch('/api/employees/:id', requireAuth, async (req, res) => {
   try {
     const { portal_pin } = req.body;
     const pinVal = portal_pin ? String(portal_pin).replace(/\D/g,'').slice(0,6) || null : null;
+    const { rows: before } = await q('SELECT portal_pin FROM employees WHERE id=?', [req.params.id]);
     const { rows } = await q('UPDATE employees SET portal_pin=? WHERE id=? RETURNING id', [pinVal, req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    if (pinVal) await requireOnboardingForNewLogin(req.params.id, !!(before[0] && before[0].portal_pin));
     res.json({ ok: true });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -739,7 +773,9 @@ app.put('/api/employees/:id/portal-pin', requireAuth, requireAdmin, async (req, 
   // Store plaintext digits, consistent with the employee edit form and staff login
   const pinVal = String(pin || '').replace(/\D/g, '').slice(0, 6);
   if (pinVal.length < 4) return res.status(400).json({ error: 'PIN must be at least 4 digits' });
+  const { rows: before } = await q('SELECT portal_pin FROM employees WHERE id = ?', [req.params.id]);
   await q('UPDATE employees SET portal_pin = ? WHERE id = ?', [pinVal, req.params.id]);
+  await requireOnboardingForNewLogin(req.params.id, !!(before[0] && before[0].portal_pin));
   res.json({ success: true });
 });
 
@@ -948,6 +984,15 @@ app.get('/api/employee/salary', requireAuth, async (req, res) => {
     } else if (startedThisYear) {
       const yearEnd = calcEarnedPay(annualSal, startDateStr, `${year}-12-31`);
       salaryTarget = yearEnd?.total_expected ?? annualSal;
+    }
+    // Same promotion handling as the admin overview, so staff see the figure the admin sees
+    if (emp.employment_type === 'self_employed') {
+      const { rows: history } = await q(
+        'SELECT id, annual_salary, effective_from::TEXT AS effective_from FROM salary_history WHERE employee_id = ?', [empId]);
+      const stepped = selfEmployedYearTarget({
+        history, year, startDate: startDateStr,
+        endDate: isTerminated ? emp.termination_date.toISOString().slice(0, 10) : null });
+      if (stepped !== null) salaryTarget = stepped;
     }
 
     const ukPay = emp.employment_type === 'payroll' && annualSal > 0
@@ -1236,6 +1281,12 @@ app.get('/api/salary-overview', requireAuth, requireAdmin, async (req, res) => {
       } else if (startedThisYear) {
         const yearEnd = calcEarnedPay(annualSal, startDateStr, `${year}-12-31`);
         salaryTarget = yearEnd?.total_expected ?? annualSal;
+      }
+      // Promoted part-way through the year (self-employed): pay each month at the
+      // salary in force then, instead of re-pricing the whole year at the new one.
+      if (emp.employment_type === 'self_employed') {
+        const stepped = selfEmployedYearTarget({ history: salaryHistory, year, startDate: startDateStr, endDate: terminationDateStr });
+        if (stepped !== null) salaryTarget = stepped;
       }
 
       // Auto-calculate UK PAYE + NI + pension for payroll employees
@@ -3565,6 +3616,10 @@ async function wmFetchSalaryOverview(year) {
     } else if (startedThisYear) {
       const yearEnd = calcEarnedPay(annualSal, startDateStr, `${year}-12-31`);
       salaryTarget  = yearEnd?.total_expected ?? annualSal;
+    }
+    if (emp.employment_type === 'self_employed') {
+      const stepped = selfEmployedYearTarget({ history: salaryHistory, year, startDate: startDateStr, endDate: terminationDateStr });
+      if (stepped !== null) salaryTarget = stepped;
     }
     const ukPay          = emp.employment_type === 'payroll' && annualSal > 0 ? calcUKNetPay(annualSal, parseFloat(emp.pension_rate) || 0) : null;
     const netFactor      = ukPay ? ukPay.net_annual / annualSal : 1;
