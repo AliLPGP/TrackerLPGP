@@ -344,7 +344,8 @@ function renderEmpTable() {
 function openEmpModal(emp = null) {
   document.getElementById('empId').value = emp ? emp.id : '';
   document.getElementById('empName').value = emp ? emp.name : '';
-  document.getElementById('empStartDate').value = emp ? (emp.start_date || '') : today();
+  // The API sends DATE columns as full timestamps; a date input only accepts YYYY-MM-DD
+  document.getElementById('empStartDate').value = emp ? String(emp.start_date || '').slice(0, 10) : today();
   document.getElementById('empType').value = emp ? (emp.employment_type || 'payroll') : 'payroll';
   document.getElementById('empCurrency').value = emp ? (emp.currency || 'GBP') : 'GBP';
   document.getElementById('empAnnualSalary').value = emp ? emp.annual_salary : 0;
@@ -353,7 +354,7 @@ function openEmpModal(emp = null) {
   document.getElementById('empDepartment').value = emp ? (emp.department || '') : '';
   document.getElementById('empPhone').value = emp ? (emp.phone || '') : '';
   document.getElementById('empEmail').value = emp ? (emp.email || '') : '';
-  document.getElementById('empContractEnd').value = emp ? (emp.contract_end_date || '') : '';
+  document.getElementById('empContractEnd').value = emp ? String(emp.contract_end_date || '').slice(0, 10) : '';
   document.getElementById('empSalaryEffective').value = today();
   document.getElementById('empSalaryReason').value = '';
   // Don't prefill a legacy bcrypt-hashed PIN (starts with $2) — would mangle on save

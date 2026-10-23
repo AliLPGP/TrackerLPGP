@@ -341,6 +341,7 @@ const ALLOWED_BREAK_MINUTES = 40;
 const DAY_OFF_ALLOWANCE = { payroll: 20, self_employed: 5 };
 
 const { allowanceFor: allowanceForYear } = require('./allowance');
+const { selfEmployedYearTarget } = require('./salary-periods');
 const allowanceFor = (emp, year) => allowanceForYear(emp, year, DAY_OFF_ALLOWANCE);
 
 // Count Mon–Fri days in a given month (no bank holidays — add if needed)
@@ -667,8 +668,18 @@ app.put('/api/employees/:id', requireAuth, async (req, res) => {
   const pensionRate = (employment_type === 'payroll' && pension_rate != null && pension_rate !== '') ? parseFloat(pension_rate) : 0;
 
   // If salary changed, log old salary to history before updating
-  const { rows: current } = await q('SELECT annual_salary, currency FROM employees WHERE id = ?', [req.params.id]);
+  const { rows: current } = await q('SELECT annual_salary, currency, start_date FROM employees WHERE id = ?', [req.params.id]);
   if (current[0] && parseFloat(current[0].annual_salary) !== annualSal) {
+    // First recorded change: log the salary they had until now, so the year's pay
+    // can be worked out month by month instead of repricing the whole year.
+    const { rows: hist } = await q('SELECT id FROM salary_history WHERE employee_id = ? LIMIT 1', [req.params.id]);
+    if (!hist.length && parseFloat(current[0].annual_salary) > 0) {
+      const wasStart = current[0].start_date ? current[0].start_date.toISOString().slice(0, 10) : '2000-01-01';
+      await q(
+        'INSERT INTO salary_history (employee_id, annual_salary, currency, effective_from, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)',
+        [req.params.id, current[0].annual_salary, current[0].currency || cur, wasStart, 'Salary before first change', req.admin.id]
+      );
+    }
     await q(
       'INSERT INTO salary_history (employee_id, annual_salary, currency, effective_from, reason, created_by) VALUES (?, ?, ?, ?, ?, ?)',
       [req.params.id, annualSal, cur,
@@ -682,13 +693,13 @@ app.put('/api/employees/:id', requireAuth, async (req, res) => {
 
   await q(
     `UPDATE employees SET name=?, daily_rate=?, active=?, employment_type=?, annual_salary=?,
-     currency=?, start_date=?, pension_rate=?,
+     currency=?, start_date=CASE WHEN ?::boolean THEN ?::date ELSE start_date END, pension_rate=?,
      job_title=?, department=?, phone=?, email=?, contract_end_date=?, portal_pin=COALESCE(?, portal_pin)
      WHERE id=?`,
     [name, daily_rate, active !== undefined ? active : 1, employment_type || 'payroll',
-     annualSal, cur, start_date || null, pensionRate,
+     annualSal, cur, start_date !== undefined, start_date ? String(start_date).slice(0, 10) : null, pensionRate,
      job_title || '', department || '', phone || '', email || '',
-     contract_end_date || null, pinVal, req.params.id]
+     contract_end_date ? String(contract_end_date).slice(0, 10) : null, pinVal, req.params.id]
   );
   res.json({ success: true });
 });
@@ -1236,6 +1247,12 @@ app.get('/api/salary-overview', requireAuth, requireAdmin, async (req, res) => {
       } else if (startedThisYear) {
         const yearEnd = calcEarnedPay(annualSal, startDateStr, `${year}-12-31`);
         salaryTarget = yearEnd?.total_expected ?? annualSal;
+      }
+      // Promoted part-way through the year (self-employed): pay each month at the
+      // salary in force then, instead of re-pricing the whole year at the new one.
+      if (emp.employment_type === 'self_employed') {
+        const stepped = selfEmployedYearTarget({ history: salaryHistory, year, startDate: startDateStr, endDate: terminationDateStr });
+        if (stepped !== null) salaryTarget = stepped;
       }
 
       // Auto-calculate UK PAYE + NI + pension for payroll employees
@@ -3565,6 +3582,10 @@ async function wmFetchSalaryOverview(year) {
     } else if (startedThisYear) {
       const yearEnd = calcEarnedPay(annualSal, startDateStr, `${year}-12-31`);
       salaryTarget  = yearEnd?.total_expected ?? annualSal;
+    }
+    if (emp.employment_type === 'self_employed') {
+      const stepped = selfEmployedYearTarget({ history: salaryHistory, year, startDate: startDateStr, endDate: terminationDateStr });
+      if (stepped !== null) salaryTarget = stepped;
     }
     const ukPay          = emp.employment_type === 'payroll' && annualSal > 0 ? calcUKNetPay(annualSal, parseFloat(emp.pension_rate) || 0) : null;
     const netFactor      = ukPay ? ukPay.net_annual / annualSal : 1;
