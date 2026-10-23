@@ -3982,9 +3982,16 @@ function renderHotelTable() {
            <input type="file" accept=".pdf,.png,.jpg,.jpeg" style="display:none" onchange="htUploadInvoice(${r.id},this)">
          </label>`;
 
+    // Names open the full edit modal (like the deal tracker's company cell);
+    // the figures stay click-to-edit in place.
+    function cellOpen(val, style='') {
+      const display = val ? esc(String(val)) : '<span class="ht-empty">—</span>';
+      return `<td class="ht-cell ht-open" onclick="openHotelModal(${r.id})" title="Click to edit this event" style="${style}">${display}</td>`;
+    }
+
     return `<tr class="${rowClass}" id="htr-${r.id}">
-      ${cellText('event_name', r.event_name, 'font-weight:700')}
-      ${cellText('hotel', r.hotel||'')}
+      ${cellOpen(r.event_name, 'font-weight:700')}
+      ${cellOpen(r.hotel||'')}
       ${cellText('cost', r.cost||'')}
       ${cellCur('currency', r.currency || r.paid_currency || 'USD')}
       ${cellNum('av_amount', r.av_amount)}
