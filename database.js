@@ -457,6 +457,64 @@ async function runMigrations() {
 )`);
   await sql(`ALTER TABLE day_off_requests ADD COLUMN IF NOT EXISTS reason TEXT`);
 
+  // Several rows of one holiday request share a group_id, so it can be edited or cancelled as a whole
+  await sql(`ALTER TABLE day_off_requests ADD COLUMN IF NOT EXISTS group_id TEXT`);
+
+  // Probation: set an end date and the review is flagged as due until it is marked done
+  await sql(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_end_date DATE`);
+  await sql(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_review_done_at DATE`);
+
+  // First-login onboarding: personal details, an ID document and a signed NDA.
+  // Kept apart from `employees` because that table is sent to every logged-in user.
+  await sql(`
+    CREATE TABLE IF NOT EXISTS employee_onboarding (
+      employee_id INT PRIMARY KEY REFERENCES employees(id) ON DELETE CASCADE,
+      required BOOLEAN NOT NULL DEFAULT false,
+      date_of_birth DATE,
+      address TEXT NOT NULL DEFAULT '',
+      emergency_contact_name TEXT NOT NULL DEFAULT '',
+      emergency_contact_phone TEXT NOT NULL DEFAULT '',
+      id_doc_type TEXT,
+      id_doc_name TEXT,
+      id_doc_data TEXT,
+      id_uploaded_at TIMESTAMPTZ,
+      nda_text TEXT,
+      nda_signed_name TEXT,
+      nda_signature TEXT,
+      nda_signed_at TIMESTAMPTZ,
+      completed_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // One payslip PDF per person per month, uploaded by an admin
+  await sql(`
+    CREATE TABLE IF NOT EXISTS employee_payslips (
+      id SERIAL PRIMARY KEY,
+      employee_id INT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+      pay_year INT NOT NULL,
+      pay_month INT NOT NULL CHECK (pay_month BETWEEN 1 AND 12),
+      file_name TEXT NOT NULL,
+      file_data TEXT NOT NULL,
+      file_size INT NOT NULL DEFAULT 0,
+      uploaded_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (employee_id, pay_year, pay_month)
+    )
+  `);
+
+  // Extra bank holidays an admin adds (other countries, one-offs) and small settings such as the NDA wording
+  await sql(`
+    CREATE TABLE IF NOT EXISTS bank_holidays (
+      id SERIAL PRIMARY KEY,
+      holiday_date DATE NOT NULL,
+      name TEXT NOT NULL,
+      region TEXT NOT NULL DEFAULT 'ALL',
+      UNIQUE (holiday_date, region)
+    )
+  `);
+  await sql(`CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+
   await sql(`CREATE TABLE IF NOT EXISTS emp_notifications (
   id SERIAL PRIMARY KEY,
   employee_id INTEGER NOT NULL,
