@@ -66,6 +66,10 @@
         <span class="icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>
         <span class="nav-label">My Profile</span>
       </div>
+      <div class="nav-item employee-only hidden" data-page="payslips">
+        <span class="icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg></span>
+        <span class="nav-label">Payslips</span>
+      </div>
       <div class="nav-item employee-only hidden" data-page="directory">
         <span class="icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span>
         <span class="nav-label">Team</span>
@@ -390,6 +394,7 @@
             <select id="calEmpFilter" onchange="loadCalendar()">
               <option value="">All Employees</option>
             </select>
+            <button class="btn btn-ghost btn-sm" onclick="openBankHolidaysModal()">Bank holidays</button>
             <button class="btn btn-primary btn-sm" onclick="openCalReminderModal()">+ Reminder</button>
           </div>
         </div>
@@ -733,6 +738,11 @@
   <div id="profileContent"></div>
 </div>
 
+<!-- ══ PAYSLIPS (staff portal) ══ -->
+<div class="page" id="page-payslips">
+  <div id="payslipsContent"></div>
+</div>
+
 <!-- ══ TEAM DIRECTORY (staff portal) ══ -->
 <div class="page" id="page-directory">
   <div id="directoryContent"></div>
@@ -856,7 +866,7 @@
       </div>
       <div class="form-group">
         <label>Start Date</label>
-        <input type="date" id="empStartDate">
+        <input type="date" id="empStartDate" onchange="empProbationChange()">
       </div>
     </div>
     <div class="form-row">
@@ -892,6 +902,25 @@
       <div class="form-group">
         <label>Contract End Date <span style="font-weight:400;color:var(--muted)">(leave blank if permanent)</span></label>
         <input type="date" id="empContractEnd">
+      </div>
+    </div>
+
+    <div class="modal-section-label" style="margin-top:8px">Probation</div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Probation period</label>
+        <select id="empProbation" onchange="empProbationChange()">
+          <option value="">Not on probation</option>
+          <option value="1">1 month from start date</option>
+          <option value="2">2 months from start date</option>
+          <option value="3">3 months from start date</option>
+          <option value="6">6 months from start date</option>
+          <option value="custom">Choose an end date…</option>
+        </select>
+      </div>
+      <div class="form-group" id="empProbationEndWrap" style="display:none">
+        <label>Probation ends <span style="font-weight:400;color:var(--muted)">(review shows on your dashboard)</span></label>
+        <input type="date" id="empProbationEnd" oninput="document.getElementById('empProbation').value='custom'">
       </div>
     </div>
 
@@ -1527,6 +1556,7 @@
   <div class="bottom-nav-item" data-page="eventkit"><span class="bottom-nav-icon">📦</span><span class="bottom-nav-label">Event Kit</span></div>
   <div class="bottom-nav-item sales-only hidden" data-page="mydeals"><span class="bottom-nav-icon">💷</span><span class="bottom-nav-label">Deals</span></div>
   <div class="bottom-nav-item employee-only hidden" data-page="profile"><span class="bottom-nav-icon">👤</span><span class="bottom-nav-label">Profile</span></div>
+  <div class="bottom-nav-item employee-only hidden" data-page="payslips"><span class="bottom-nav-icon">🧾</span><span class="bottom-nav-label">Payslips</span></div>
   <div class="bottom-nav-item employee-only hidden" data-page="directory"><span class="bottom-nav-icon">👥</span><span class="bottom-nav-label">Team</span></div>
 </nav>
 

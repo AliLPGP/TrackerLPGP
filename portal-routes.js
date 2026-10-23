@@ -362,11 +362,12 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       const dob = String(b.date_of_birth || '');
       if (!ISO_DATE.test(dob) || Number.isNaN(Date.parse(dob))) return res.status(400).json({ error: 'Enter your date of birth' });
       if (dob > today() || dob < '1900-01-01') return res.status(400).json({ error: 'That date of birth does not look right' });
-      const phone = String(b.phone || '').trim().slice(0, 40);
+      const empId = req.user.employee_id;
+      // A phone number is optional here only when one is already on file
+      const phone = b.phone != null ? String(b.phone).trim().slice(0, 40) : String((await getEmployee(empId) || {}).phone || '').trim();
       const address = String(b.address || '').trim().slice(0, 400);
       if (!phone) return res.status(400).json({ error: 'Enter a phone number' });
       if (!address) return res.status(400).json({ error: 'Enter your address' });
-      const empId = req.user.employee_id;
       await q(
         `INSERT INTO employee_onboarding (employee_id, date_of_birth, address, emergency_contact_name, emergency_contact_phone)
          VALUES (?, ?, ?, ?, ?)

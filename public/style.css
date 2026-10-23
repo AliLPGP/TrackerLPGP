@@ -7301,3 +7301,107 @@ body.login-body { background: var(--bg); position: relative; min-height: 100vh; 
 /* Hotel tracker: name cells open the edit modal */
 .ht-cell.ht-open { cursor: pointer; }
 .ht-cell.ht-open:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+
+/* Probation / onboarding on the employee panel and list */
+.emp-probation { margin-left: 6px; padding: 1px 7px; border-radius: 999px; font: 600 10.5px/1.5 var(--font-sans); background: var(--warning-soft); color: var(--warning); vertical-align: 1px; }
+.ep-status--wait { background: var(--warning-soft); color: var(--warning); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Staff portal: onboarding, payslips, time-off requests
+   ═══════════════════════════════════════════════════════════════════════════ */
+.ob-overlay { position: fixed; inset: 0; z-index: 3000; background: var(--bg); overflow-y: auto; }
+.ob-wrap { min-height: 100%; display: flex; align-items: flex-start; justify-content: center; padding: 32px 16px; }
+.ob-card { width: 100%; max-width: 620px; background: var(--surface); border: 1px solid var(--border); border-radius: 18px; padding: 28px; box-shadow: 0 10px 40px rgba(0,0,0,.12); }
+.ob-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 18px; }
+.ob-top h1 { margin: 0 0 4px; font: 700 22px/1.2 var(--font-sans); color: var(--text); }
+.ob-top p { margin: 0; font: 400 13.5px/1.5 var(--font-sans); color: var(--muted); }
+.ob-steps { display: flex; gap: 8px; margin-bottom: 22px; }
+.ob-step { flex: 1; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: transparent; color: var(--muted); cursor: pointer; font: 600 12px/1.2 var(--font-sans); text-align: left; }
+.ob-step.is-active { border-color: var(--accent); color: var(--text); background: var(--surface-2); }
+.ob-step.is-done .ob-dot { background: var(--positive); color: #fff; border-color: var(--positive); }
+.ob-dot { flex: 0 0 22px; width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid currentColor; display: inline-flex; align-items: center; justify-content: center; font: 700 11px/1 var(--font-sans); }
+#obBody h2 { margin: 0 0 12px; font: 700 17px/1.3 var(--font-sans); color: var(--text); }
+.ob-help { margin: -4px 0 14px; font: 400 13px/1.5 var(--font-sans); color: var(--muted); }
+.ob-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.ob-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
+.ob-field label { font: 600 12px/1.2 var(--font-sans); color: var(--muted); display: flex; justify-content: space-between; align-items: center; }
+.ob-field label span { font-weight: 400; }
+.ob-field small { font: 400 11.5px/1.3 var(--font-sans); color: var(--dim); }
+.ob-next { margin-top: 18px; width: 100%; }
+.ob-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; margin-top: 18px; }
+.ob-ok { padding: 10px 12px; margin-bottom: 12px; border-radius: 10px; background: var(--positive-soft); color: var(--positive); font: 600 13px/1.3 var(--font-sans); }
+.ob-choice { display: flex; gap: 18px; margin-bottom: 12px; font: 500 13.5px/1 var(--font-sans); color: var(--text); }
+.ob-choice label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.ob-drop { display: block; padding: 22px; border: 1.5px dashed var(--border-bright); border-radius: 12px; text-align: center; cursor: pointer; color: var(--muted); font: 500 13.5px/1.3 var(--font-sans); }
+.ob-drop:hover { border-color: var(--accent); color: var(--text); }
+.ob-drop input { display: none; }
+.ob-nda { max-height: 240px; overflow-y: auto; padding: 14px; margin-bottom: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); white-space: pre-wrap; font: 400 12.5px/1.6 var(--font-sans); color: var(--text); }
+.ob-sig { width: 100%; height: 150px; border: 1px solid var(--border-bright); border-radius: 10px; background: #fff; touch-action: none; cursor: crosshair; }
+.ob-link { background: none; border: none; color: var(--accent); font: 600 12px/1 var(--font-sans); cursor: pointer; padding: 0; }
+.ob-agree { display: flex; gap: 8px; align-items: center; margin-top: 12px; font: 500 13px/1.4 var(--font-sans); color: var(--text); cursor: pointer; }
+.ob-done { text-align: center; padding: 30px 0; }
+.ob-done p { color: var(--muted); font: 400 14px/1.5 var(--font-sans); }
+.ob-tick { width: 56px; height: 56px; margin: 0 auto 12px; border-radius: 50%; background: var(--positive); color: #fff; font: 700 28px/56px var(--font-sans); }
+@media (max-width: 560px) {
+  .ob-card { padding: 20px 16px; border-radius: 14px; }
+  .ob-grid { grid-template-columns: 1fr; }
+  .ob-steplabel { display: none; }
+  .ob-step { justify-content: center; }
+  .pd-grid { grid-template-columns: 1fr !important; }
+}
+
+.ps-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.ps-row:last-child { border-bottom: none; }
+.ps-month { font: 600 14px/1.3 var(--font-sans); color: var(--text); }
+.ps-sub { margin-top: 2px; font: 400 12px/1.3 var(--font-sans); color: var(--muted); }
+.ps-actions { display: flex; gap: 8px; }
+
+.emp-cal-bh { margin-top: 3px; padding: 2px 4px; max-width: 100%; border-radius: 4px; background: #f59e0b30; color: #b45309; font: 600 9px/1.3 var(--font-mono); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hr-preview { padding: 12px 14px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); min-height: 48px; font: 400 13px/1.5 var(--font-sans); color: var(--text); }
+.hr-big { font: 700 18px/1.3 var(--font-sans); }
+.hr-muted { color: var(--muted); font-size: 12.5px; }
+.hr-skip { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.hr-chip { padding: 2px 8px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); font: 500 11.5px/1.5 var(--font-sans); color: var(--muted); }
+.hr-chip--bh { background: #f59e0b1f; border-color: #f59e0b55; color: #b45309; }
+.hr-allow { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); font: 400 12.5px/1.5 var(--font-sans); color: var(--muted); }
+.hr-allow b { color: var(--text); }
+.hr-neg, .hr-allow b.hr-neg { color: var(--negative); }
+.hr-warn { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: var(--warning-soft); color: var(--warning); font: 500 12.5px/1.4 var(--font-sans); }
+.hr-note { padding: 10px 12px; margin-bottom: 12px; border-radius: 8px; background: var(--surface-2); color: var(--muted); font: 500 12.5px/1.4 var(--font-sans); }
+.hr-note--bh { background: #f59e0b1f; color: #b45309; }
+.hr-req { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.hr-req:last-child { border-bottom: none; }
+.hr-req.is-past { opacity: .6; }
+.hr-req-main { min-width: 0; }
+.hr-req-dates { font: 600 14px/1.4 var(--font-sans); color: var(--text); }
+.hr-req-yr { color: var(--dim); font-weight: 500; font-size: 12px; margin-right: 4px; }
+.hr-req-sub { margin-top: 3px; font: 400 12.5px/1.4 var(--font-sans); color: var(--muted); }
+.hr-req-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.hr-cancel { color: var(--negative); }
+.hr-badge { padding: 2px 8px; border-radius: 999px; font: 600 11px/1.5 var(--font-sans); background: var(--surface-2); color: var(--muted); }
+.hr-badge--pending { background: var(--warning-soft); color: var(--warning); }
+.hr-badge--approved { background: var(--positive-soft); color: var(--positive); }
+.hr-badge--declined { background: var(--negative-soft); color: var(--negative); }
+.hr-badge--mixed { background: var(--accent-soft, var(--surface-2)); color: var(--accent); }
+@media (max-width: 560px) { .hr-req { flex-direction: column; align-items: flex-start; } }
+
+/* .form-control is used by the staff portal (profile, onboarding, requests) outside a .form-group */
+.form-control {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--surface);
+  color: var(--text);
+  border: 1.5px solid var(--border);
+  border-radius: 9px;
+  padding: 9px 12px;
+  font: 400 13px/1.4 var(--font-sans);
+  outline: none;
+  transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
+}
+.form-control:hover { border-color: var(--border-bright); }
+.form-control:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.form-control::placeholder { color: var(--dim); }
+textarea.form-control { resize: vertical; }
+/* Date boxes have a wide intrinsic size; let them shrink inside a two-column row on phones */
+#empDayOffModal .form-group { min-width: 0; }
+#empDayOffModal input[type=date] { min-width: 0; width: 100%; box-sizing: border-box; }
