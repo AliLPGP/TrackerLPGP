@@ -360,6 +360,7 @@ function openEmpModal(emp = null) {
   // Don't prefill a legacy bcrypt-hashed PIN (starts with $2) — would mangle on save
   document.getElementById('empPin').value = (emp && emp.portal_pin && !String(emp.portal_pin).startsWith('$2')) ? emp.portal_pin : '';
   document.getElementById('salaryChangeFields').classList.add('hidden');
+  empModalDocsInit(emp);
   document.getElementById('empModalTitle').textContent = emp ? 'Edit Employee' : 'Add Employee';
   const prWrap = document.getElementById('empPortfolioWrap');
   if (prWrap) {
@@ -413,11 +414,19 @@ async function saveEmployee() {
       body: JSON.stringify({ ...payload, active: 1, salary_reason, salary_effective })
     });
   } else {
-    await fetch('/api/employees', {
+    const created = await fetch('/api/employees', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
-    });
+    }).then(r => r.ok ? r.json() : null).catch(() => null);
+    if (created && created.id && _empPendingDocs.length) {
+      let failed = 0;
+      for (const d of _empPendingDocs) {
+        if (!await postEmpDoc(created.id, { file_name: d.file_name, file_data: d.file_data }, d.doc_type)) failed++;
+      }
+      if (failed) showToast(`${failed} document${failed > 1 ? 's' : ''} didn't upload — add them from the employee's profile`, 'error');
+    }
+    _empPendingDocs = [];
   }
   closeModal('empModal');
   await loadEmployees();
@@ -1074,7 +1083,7 @@ async function openEmployeeProfile(empId) {
         <h3>Documents</h3>
         <div class="ep-doc-add">
           <select id="epDocType" class="ep-doc-type" aria-label="Document type">
-            ${Object.entries(EMP_DOC_TYPES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}
+            ${docTypeOptions()}
           </select>
           <label class="btn btn-sm">Upload PDF<input type="file" accept=".pdf,application/pdf" hidden onchange="epUploadDoc(${emp.id},this)"></label>
         </div>
@@ -1127,57 +1136,113 @@ async function openEmployeeProfile(empId) {
 // Starter forms, contracts and other PDFs kept on the profile (admin only).
 const EMP_DOC_TYPES = { starter_form: 'Starter form', contract: 'Contract', id: 'ID / right to work', other: 'Other' };
 
-async function loadEmpDocs(empId) {
-  const box = document.getElementById('epDocs');
+const docTypeOptions = () => Object.entries(EMP_DOC_TYPES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
+const docKb = b => b < 1048576 ? Math.max(1, Math.round(b / 1024)) + ' KB' : (b / 1048576).toFixed(1) + ' MB';
+
+// boxId: the element to fill (profile panel or edit modal). stillOpen: bail if the
+// view was closed or switched to someone else while the request was in flight.
+async function loadEmpDocs(empId, boxId = 'epDocs', stillOpen = () => _profileEmpId === empId) {
+  const box = document.getElementById(boxId);
   if (!box) return;
   try {
     const res = await fetch(`/api/employees/${empId}/documents`);
     if (!res.ok) throw new Error();
     const docs = await res.json();
-    if (_profileEmpId !== empId) return;
-    const kb = b => b < 1048576 ? Math.max(1, Math.round(b / 1024)) + ' KB' : (b / 1048576).toFixed(1) + ' MB';
+    if (!stillOpen()) return;
     box.innerHTML = docs.length ? docs.map(d => `<div class="ep-row">
         <span><a class="ep-doc-link" href="/api/employee-documents/${d.id}" target="_blank" rel="noopener">${esc(d.file_name)}</a>
-          <small>${esc(EMP_DOC_TYPES[d.doc_type] || 'Other')} · ${kb(d.file_size)} · ${fmtDateShort(String(d.created_at).slice(0, 10))}${d.uploaded_by ? ' · ' + esc(d.uploaded_by) : ''}</small></span>
+          <small>${esc(EMP_DOC_TYPES[d.doc_type] || 'Other')} · ${docKb(d.file_size)} · ${fmtDateShort(String(d.created_at).slice(0, 10))}${d.uploaded_by ? ' · ' + esc(d.uploaded_by) : ''}</small></span>
         <span class="ep-doc-btns">
           <a class="btn btn-ghost btn-sm" href="/api/employee-documents/${d.id}?download=1">Download</a>
-          <button class="btn btn-ghost btn-sm ep-danger" onclick="epDeleteDoc(${empId},${d.id})">Delete</button>
+          <button class="btn btn-ghost btn-sm ep-danger" onclick="epDeleteDoc(${empId},${d.id},'${boxId}')">Delete</button>
         </span>
       </div>`).join('')
       : '<div class="ep-empty">No documents yet. Upload a starter form or contract as a PDF.</div>';
   } catch { box.innerHTML = '<div class="ep-empty">Could not load documents.</div>'; }
 }
 
-function epUploadDoc(empId, input) {
-  const file = input.files[0];
-  input.value = '';
-  if (!file) return;
-  if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') { showToast('Only PDF files can be uploaded', 'error'); return; }
-  if (file.size > 3 * 1024 * 1024) { showToast('PDF must be under 3 MB', 'error'); return; }
-  const doc_type = document.getElementById('epDocType')?.value || 'other';
-  const reader = new FileReader();
-  reader.onload = async e => {
-    const res = await fetch(`/api/employees/${empId}/documents`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file_name: file.name, file_data: e.target.result.split(',')[1], doc_type })
-    }).catch(() => null);
-    if (!res || !res.ok) {
-      const err = res ? await res.json().catch(() => ({})) : {};
-      showToast(err.error || 'Upload failed', 'error');
-      return;
-    }
-    showToast('Document uploaded', 'success');
-    loadEmpDocs(empId);
-  };
-  reader.readAsDataURL(file);
+// Reads a chosen PDF and checks it client-side; resolves to {file_name, file_data} or null.
+function readPdfFile(file) {
+  return new Promise(resolve => {
+    if (!file) return resolve(null);
+    if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') { showToast('Only PDF files can be uploaded', 'error'); return resolve(null); }
+    if (file.size > 3 * 1024 * 1024) { showToast('PDF must be under 3 MB', 'error'); return resolve(null); }
+    const reader = new FileReader();
+    reader.onload = e => resolve({ file_name: file.name, file_data: e.target.result.split(',')[1] });
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
 }
 
-async function epDeleteDoc(empId, docId) {
+async function postEmpDoc(empId, doc, doc_type) {
+  const res = await fetch(`/api/employees/${empId}/documents`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...doc, doc_type })
+  }).catch(() => null);
+  if (res && res.ok) return true;
+  const err = res ? await res.json().catch(() => ({})) : {};
+  showToast(err.error || 'Upload failed', 'error');
+  return false;
+}
+
+async function epUploadDoc(empId, input) {
+  const file = input.files[0];
+  input.value = '';
+  const doc = await readPdfFile(file);
+  if (!doc) return;
+  if (await postEmpDoc(empId, doc, document.getElementById('epDocType')?.value || 'other')) {
+    showToast('Document uploaded', 'success');
+    loadEmpDocs(empId);
+  }
+}
+
+async function epDeleteDoc(empId, docId, boxId = 'epDocs') {
   if (!await showConfirm('Delete this document? This cannot be undone.')) return;
   const res = await fetch(`/api/employee-documents/${docId}`, { method: 'DELETE' }).catch(() => null);
   if (!res || !res.ok) { showToast('Could not delete document', 'error'); return; }
   showToast('Document deleted', 'success');
-  loadEmpDocs(empId);
+  loadEmpDocs(empId, boxId, () => boxId === 'epDocs' ? _profileEmpId === empId : Number(document.getElementById('empId').value) === empId);
+}
+
+// ── Documents inside the Add/Edit Employee modal ──
+// Editing: uploads save immediately. Adding: files wait here until the employee exists.
+let _empPendingDocs = [];
+
+function empModalRenderPending() {
+  const box = document.getElementById('empDocs');
+  box.innerHTML = _empPendingDocs.length ? _empPendingDocs.map((d, i) => `<div class="ep-row">
+      <span>${esc(d.file_name)}<small>${esc(EMP_DOC_TYPES[d.doc_type] || 'Other')} · uploads when you save</small></span>
+      <button class="btn btn-ghost btn-sm ep-danger" onclick="_empPendingDocs.splice(${i},1);empModalRenderPending()">Remove</button>
+    </div>`).join('') : '<div class="ep-empty">Nothing added yet. Files upload when you save the employee.</div>';
+}
+
+function empModalDocsInit(emp) {
+  const wrap = document.getElementById('empDocsWrap');
+  _empPendingDocs = [];
+  const isAdmin = currentUser && currentUser.role === 'admin';
+  wrap.classList.toggle('hidden', !isAdmin);
+  if (!isAdmin) return;
+  document.getElementById('empDocType').innerHTML = docTypeOptions();
+  if (emp) loadEmpDocs(emp.id, 'empDocs', () => Number(document.getElementById('empId').value) === emp.id);
+  else empModalRenderPending();
+}
+
+async function empModalUploadDoc(input) {
+  const file = input.files[0];
+  input.value = '';
+  const doc = await readPdfFile(file);
+  if (!doc) return;
+  const doc_type = document.getElementById('empDocType').value || 'other';
+  const id = Number(document.getElementById('empId').value);
+  if (id) {
+    if (await postEmpDoc(id, doc, doc_type)) {
+      showToast('Document uploaded', 'success');
+      loadEmpDocs(id, 'empDocs', () => Number(document.getElementById('empId').value) === id);
+    }
+  } else {
+    _empPendingDocs.push({ ...doc, doc_type });
+    empModalRenderPending();
+  }
 }
 
 function epEdit(empId) {
