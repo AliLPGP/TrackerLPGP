@@ -342,7 +342,7 @@ const ALLOWED_BREAK_MINUTES = 40;
 const DAY_OFF_ALLOWANCE = { payroll: 20, self_employed: 5 };
 
 const { allowanceFor: allowanceForYear } = require('./allowance');
-const { selfEmployedYearTarget } = require('./salary-periods');
+const { selfEmployedYearTarget, salaryOnDate, payBands, periodsFrom } = require('./salary-periods');
 const allowanceFor = (emp, year) => allowanceForYear(emp, year, DAY_OFF_ALLOWANCE);
 
 // Count Mon–Fri days in a given month (no bank holidays — add if needed)
@@ -425,6 +425,64 @@ function calcProRatedPay(annualSalary, startDateStr) {
   return calcEarnedPay(annualSalary, startDateStr, null);
 }
 
+// Everything the salary screens need about what a person earns in `year`, in one place
+// (the admin overview, the staff salary card and the assistant used to each carry their
+// own copy of this and drifted apart).
+//
+// Without a salary change it is the long-standing calculation: pro-rated from the start
+// date in the year they started, to the termination date if they left, else the full
+// annual salary. A self-employed person whose salary changed (history holds two or more
+// salaries) is paid month by month at the salary in force; the first month is priced at
+// their starting salary, and `pay_bands` lists the salary steps so it can be shown.
+function yearPayFigures({ emp, year, history, annualSal, startDateStr, terminationDateStr, isTerminated }) {
+  const startedThisYear = !!(startDateStr && startDateStr.startsWith(String(year)));
+  const stepped = emp.employment_type === 'self_employed' && periodsFrom(history).length >= 2;
+  const startSal = stepped ? salaryOnDate(history, startDateStr || `${year}-01-01`, annualSal) : annualSal;
+
+  const earnedPay = isTerminated
+    ? calcEarnedPay(startSal, startDateStr, terminationDateStr)
+    : (startedThisYear ? calcProRatedPay(startSal, startDateStr) : null);
+
+  // First-month full payment: start date -> end of start month (regardless of today)
+  let firstMonthFull = null;
+  if (!isTerminated && startedThisYear && startDateStr) {
+    const [fY, fM] = startDateStr.split('-').map(Number);
+    const lastDay = new Date(fY, fM, 0).getDate();
+    firstMonthFull = calcEarnedPay(startSal, startDateStr, `${fY}-${String(fM).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`);
+  }
+
+  // Salary target for the year: terminated -> earned to the termination date,
+  // started this year -> pro-rated to 31 Dec, otherwise the full annual salary
+  let salaryTarget = annualSal;
+  if (isTerminated) {
+    salaryTarget = earnedPay?.total_expected ?? annualSal;
+  } else if (startedThisYear) {
+    const yearEnd = calcEarnedPay(startSal, startDateStr, `${year}-12-31`);
+    salaryTarget = yearEnd?.total_expected ?? annualSal;
+  }
+
+  let bands = [];
+  if (stepped) {
+    const total = selfEmployedYearTarget({ history, year, startDate: startDateStr, endDate: terminationDateStr });
+    if (total !== null) {
+      salaryTarget = total;
+      bands = payBands({ history, year, startDate: startDateStr, endDate: terminationDateStr });
+      // "Earned to date" follows the same steps, so it agrees with the target
+      if (earnedPay && startedThisYear) {
+        const endIso = terminationDateStr || new Date().toISOString().slice(0, 10);
+        const toDate = selfEmployedYearTarget({ history, year, startDate: startDateStr, endDate: endIso });
+        if (toDate !== null) {
+          const last = startSal > 0 ? earnedPay.last_month_pay * (salaryOnDate(history, endIso, startSal) / startSal) : earnedPay.last_month_pay;
+          earnedPay.last_month_pay = parseFloat(last.toFixed(2));
+          earnedPay.full_months_pay = parseFloat((toDate - earnedPay.first_month_pay - earnedPay.last_month_pay).toFixed(2));
+          earnedPay.total_expected = toDate;
+        }
+      }
+    }
+  }
+  return { earnedPay, firstMonthFull, salaryTarget, startedThisYear, payBands: bands };
+}
+
 // Daily rate for a specific month: (annual ÷ 12) ÷ working days in that month
 function dailyRateForMonth(annualSalary, year, month) {
   return (annualSalary / 12) / workingDaysInMonth(year, month);
@@ -451,6 +509,13 @@ async function calcExcessDeductions(empId, year, annualSalary, allowance) {
     ORDER BY record_date ASC
   `, [empId, year]);
 
+  // A day off is priced at the salary in force on that day, so a raise in November
+  // never re-prices days taken in the spring. With no salary changes on record this is
+  // simply the current salary, as before.
+  const { rows: history } = await q(
+    'SELECT id, annual_salary, effective_from::TEXT AS effective_from FROM salary_history WHERE employee_id = ?', [empId]);
+  const salaryOn = day => salaryOnDate(history, day, annualSalary);
+
   // Charge walk. countExempt=false skips exempt days (the real figure); passing
   // true prices the same year as if nothing were exempt, so the difference is
   // exactly what the exemptions saved.
@@ -467,7 +532,7 @@ async function calcExcessDeductions(empId, year, annualSalary, allowance) {
 
       const [y, m] = r.record_date.split('-').map(Number);
       const wDays  = workingDaysInMonth(y, m);
-      const rate   = dailyRateForMonth(annualSalary, y, m);
+      const rate   = dailyRateForMonth(salaryOn(r.record_date), y, m);
       const amount = excessHere * rate;
       total  += amount;
       excess += excessHere;
@@ -498,7 +563,7 @@ async function calcExcessDeductions(empId, year, annualSalary, allowance) {
       const key = `${y}-${String(m).padStart(2, '0')}`;
       if (!actual.months[key]) {
         actual.months[key] = { year: y, month: m, working_days: workingDaysInMonth(y, m),
-                               rate: parseFloat(dailyRateForMonth(annualSalary, y, m).toFixed(4)),
+                               rate: parseFloat(dailyRateForMonth(salaryOn(r.record_date), y, m).toFixed(4)),
                                days: 0, exempt_days: 0, deduction: 0 };
       }
       actual.months[key].exempt_days += val;
@@ -964,36 +1029,13 @@ app.get('/api/employee/salary', requireAuth, async (req, res) => {
     const annualSal   = parseFloat(emp.annual_salary) || 0;
     const dayCalc     = await calcExcessDeductions(empId, year, annualSal, allowance);
     const startDateStr = emp.start_date ? emp.start_date.toISOString().slice(0,10) : null;
-    const startedThisYear = startDateStr && startDateStr.startsWith(String(year));
     const isTerminated = !emp.active && !!emp.termination_date;
 
-    const earnedPay = isTerminated
-      ? calcEarnedPay(annualSal, startDateStr, emp.termination_date.toISOString().slice(0,10))
-      : (startedThisYear ? calcProRatedPay(annualSal, startDateStr) : null);
-
-    let firstMonthFull = null;
-    if (!isTerminated && startedThisYear && startDateStr) {
-      const [fY, fM] = startDateStr.split('-').map(Number);
-      const lastDay = new Date(fY, fM, 0).getDate();
-      firstMonthFull = calcEarnedPay(annualSal, startDateStr, `${fY}-${String(fM).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`);
-    }
-
-    let salaryTarget = annualSal;
-    if (isTerminated) {
-      salaryTarget = earnedPay?.total_expected ?? annualSal;
-    } else if (startedThisYear) {
-      const yearEnd = calcEarnedPay(annualSal, startDateStr, `${year}-12-31`);
-      salaryTarget = yearEnd?.total_expected ?? annualSal;
-    }
-    // Same promotion handling as the admin overview, so staff see the figure the admin sees
-    if (emp.employment_type === 'self_employed') {
-      const { rows: history } = await q(
-        'SELECT id, annual_salary, effective_from::TEXT AS effective_from FROM salary_history WHERE employee_id = ?', [empId]);
-      const stepped = selfEmployedYearTarget({
-        history, year, startDate: startDateStr,
-        endDate: isTerminated ? emp.termination_date.toISOString().slice(0, 10) : null });
-      if (stepped !== null) salaryTarget = stepped;
-    }
+    const { rows: history } = await q(
+      'SELECT id, annual_salary, effective_from::TEXT AS effective_from FROM salary_history WHERE employee_id = ?', [empId]);
+    const { earnedPay, firstMonthFull, salaryTarget, payBands: bands } = yearPayFigures({
+      emp, year, history, annualSal, startDateStr, isTerminated,
+      terminationDateStr: emp.termination_date ? emp.termination_date.toISOString().slice(0, 10) : null });
 
     const ukPay = emp.employment_type === 'payroll' && annualSal > 0
       ? calcUKNetPay(annualSal, parseFloat(emp.pension_rate) || 0)
@@ -1024,6 +1066,7 @@ app.get('/api/employee/salary', requireAuth, async (req, res) => {
       is_terminated:    isTerminated,
       pro_rated:        !isTerminated ? earnedPay : null,
       first_month_full: firstMonthFull,
+      pay_bands:        bands,
       payments,
       bonuses:          bonusRows,
       total_bonuses:    totalBonuses,
@@ -1251,43 +1294,9 @@ app.get('/api/salary-overview', requireAuth, requireAdmin, async (req, res) => {
       const terminationDateStr = emp.termination_date  ? emp.termination_date.toISOString().slice(0,10)  : null;
       const isTerminated       = !emp.active && !!terminationDateStr;
 
-      // Pro-rated only applies if the employee started THIS year (not in a previous year)
-      const startedThisYear = startDateStr && startDateStr.startsWith(String(year));
-
-      // For terminated employees: earned = pro-rated from start to termination date
-      // For active employees who started this year: show pro-rated reference (start → today)
-      // For all others: full annual salary is the target, no pro-rated reference
-      const earnedPay = isTerminated
-        ? calcEarnedPay(annualSal, startDateStr, terminationDateStr)
-        : (startedThisYear ? calcProRatedPay(annualSal, startDateStr) : null);
-
-      // First-month full payment: start date → end of start month (regardless of today)
-      // Used to show "how much to pay at end of first month" for mid-month starters
-      let firstMonthFull = null;
-      if (!isTerminated && startedThisYear && startDateStr) {
-        const [fY, fM] = startDateStr.split('-').map(Number);
-        const lastDay = new Date(fY, fM, 0).getDate();
-        const eomStr = `${fY}-${String(fM).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
-        firstMonthFull = calcEarnedPay(annualSal, startDateStr, eomStr);
-      }
-
-      // Salary target for this year:
-      //   terminated  → earned from start to termination date
-      //   started this year (active) → pro-rated from start date to Dec 31 of this year
-      //   otherwise   → full annual salary
-      let salaryTarget = annualSal;
-      if (isTerminated) {
-        salaryTarget = earnedPay?.total_expected ?? annualSal;
-      } else if (startedThisYear) {
-        const yearEnd = calcEarnedPay(annualSal, startDateStr, `${year}-12-31`);
-        salaryTarget = yearEnd?.total_expected ?? annualSal;
-      }
-      // Promoted part-way through the year (self-employed): pay each month at the
-      // salary in force then, instead of re-pricing the whole year at the new one.
-      if (emp.employment_type === 'self_employed') {
-        const stepped = selfEmployedYearTarget({ history: salaryHistory, year, startDate: startDateStr, endDate: terminationDateStr });
-        if (stepped !== null) salaryTarget = stepped;
-      }
+      // Pro-rating, first-month payment and the year's target (see yearPayFigures)
+      const { earnedPay, firstMonthFull, salaryTarget, payBands: bands } = yearPayFigures({
+        emp, year, history: salaryHistory, annualSal, startDateStr, terminationDateStr, isTerminated });
 
       // Auto-calculate UK PAYE + NI + pension for payroll employees
       const ukPay = emp.employment_type === 'payroll' && annualSal > 0
@@ -1330,6 +1339,7 @@ app.get('/api/salary-overview', requireAuth, requireAdmin, async (req, res) => {
         earned_to_date:      isTerminated ? earnedPay?.total_expected ?? annualSal : null,
         pro_rated:           !isTerminated ? earnedPay : null,
         first_month_full:    firstMonthFull,
+        pay_bands:           bands,
         earned_breakdown:    isTerminated ? earnedPay : null,
         salary_history:      salaryHistory,
         payments,
@@ -3600,27 +3610,8 @@ async function wmFetchSalaryOverview(year) {
     const startDateStr       = emp.start_date       ? emp.start_date.toISOString().slice(0,10)       : null;
     const terminationDateStr = emp.termination_date ? emp.termination_date.toISOString().slice(0,10) : null;
     const isTerminated       = !emp.active && !!terminationDateStr;
-    const startedThisYear    = startDateStr && startDateStr.startsWith(String(year));
-    const earnedPay = isTerminated
-      ? calcEarnedPay(annualSal, startDateStr, terminationDateStr)
-      : (startedThisYear ? calcProRatedPay(annualSal, startDateStr) : null);
-    let firstMonthFull = null;
-    if (!isTerminated && startedThisYear && startDateStr) {
-      const [fY, fM] = startDateStr.split('-').map(Number);
-      const lastDay  = new Date(fY, fM, 0).getDate();
-      firstMonthFull = calcEarnedPay(annualSal, startDateStr, `${fY}-${String(fM).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`);
-    }
-    let salaryTarget = annualSal;
-    if (isTerminated) {
-      salaryTarget = earnedPay?.total_expected ?? annualSal;
-    } else if (startedThisYear) {
-      const yearEnd = calcEarnedPay(annualSal, startDateStr, `${year}-12-31`);
-      salaryTarget  = yearEnd?.total_expected ?? annualSal;
-    }
-    if (emp.employment_type === 'self_employed') {
-      const stepped = selfEmployedYearTarget({ history: salaryHistory, year, startDate: startDateStr, endDate: terminationDateStr });
-      if (stepped !== null) salaryTarget = stepped;
-    }
+    const { salaryTarget } = yearPayFigures({
+      emp, year, history: salaryHistory, annualSal, startDateStr, terminationDateStr, isTerminated });
     const ukPay          = emp.employment_type === 'payroll' && annualSal > 0 ? calcUKNetPay(annualSal, parseFloat(emp.pension_rate) || 0) : null;
     const netFactor      = ukPay ? ukPay.net_annual / annualSal : 1;
     const netSalaryTarget = parseFloat((salaryTarget * netFactor).toFixed(2));

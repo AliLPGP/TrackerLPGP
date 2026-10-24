@@ -3013,6 +3013,13 @@ async function loadSalaryPage() {
               <span class="sc-chevron">›</span>
             </button>
             <div class="sc-sec-body">
+              ${(emp.pay_bands || []).length ? `
+              <div class="sc-breakdown">
+                <div class="sc-breakdown-title">How this year's pay is worked out</div>
+                ${emp.pay_bands.map(b => `<div class="sc-breakdown-row"><span>${fmtDateShort(b.from)} → ${fmtDateShort(b.to)}</span><span>${sym}${b.monthly.toLocaleString('en-GB',{minimumFractionDigits:2})} / month</span></div>`).join('')}
+                <div class="sc-breakdown-row total"><span>Target for the year</span><span>${sym}${(parseFloat(emp.salary_target) || 0).toLocaleString('en-GB',{minimumFractionDigits:2})}</span></div>
+                <div class="sc-hist-hint">Each row below is a salary and the day it started. If one was added by mistake, delete it with ×.</div>
+              </div>` : ''}
               ${salaryHistory.map(h => `
                 <div class="sc-hist-item">
                   <span class="sc-item-date">${h.effective_from||''}</span>

@@ -7405,3 +7405,5 @@ textarea.form-control { resize: vertical; }
 /* Date boxes have a wide intrinsic size; let them shrink inside a two-column row on phones */
 #empDayOffModal .form-group { min-width: 0; }
 #empDayOffModal input[type=date] { min-width: 0; width: 100%; box-sizing: border-box; }
+
+.sc-hist-hint { margin-top: 8px; font: 400 12px/1.4 var(--font-sans); color: var(--muted); }

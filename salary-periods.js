@@ -31,15 +31,45 @@ function periodsFrom(history) {
   return rows.filter((p, i) => !rows[i + 1] || rows[i + 1].from !== p.from);
 }
 
+// The annual salary in force on a given day. With fewer than two salaries on record
+// there is no timeline to follow, so the caller's current salary stands.
+function salaryOnDate(history, day, fallback) {
+  const periods = periodsFrom(history);
+  if (periods.length < 2) return fallback;
+  let cur = periods[0].annual;
+  for (const p of periods) { if (p.from <= day) cur = p.annual; else break; }
+  return cur;
+}
+
+// The salary bands that make up a year, for showing how a target was worked out:
+// [{from, to, annual, monthly}] clipped to the days the person was employed that year.
+// Empty unless the salary actually changed within that window.
+function payBands({ history, year, startDate, endDate }) {
+  const periods = periodsFrom(history);
+  if (periods.length < 2) return [];
+  const yStart = `${year}-01-01`, yEnd = `${year}-12-31`;
+  const start = iso(startDate), end = iso(endDate);
+  const winFrom = start && start > yStart ? start : yStart;
+  const winTo = end && end < yEnd ? end : yEnd;
+  const bands = [];
+  periods.forEach((p, i) => {
+    const nextFrom = periods[i + 1] ? addDay(periods[i + 1].from, -1) : '9999-12-31';
+    const from = i === 0 ? winFrom : (p.from > winFrom ? p.from : winFrom);
+    const to = nextFrom < winTo ? nextFrom : winTo;
+    if (from <= to) bands.push({ from, to, annual: p.annual, monthly: parseFloat((p.annual / 12).toFixed(2)) });
+  });
+  return bands.length > 1 ? bands : [];
+}
+
+function addDay(isoDate, n) {
+  return new Date(Date.parse(isoDate + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+}
+
 function selfEmployedYearTarget({ history, year, startDate, endDate }) {
   const periods = periodsFrom(history);
   if (periods.length < 2) return null;
 
-  const salaryOn = day => {
-    let cur = periods[0].annual;
-    for (const p of periods) { if (p.from <= day) cur = p.annual; else break; }
-    return cur;
-  };
+  const salaryOn = day => salaryOnDate(history, day, periods[0].annual);
   const yStart = `${year}-01-01`, yEnd = `${year}-12-31`;
   const start = iso(startDate), end = iso(endDate);
   const winFrom = start && start > yStart ? start : yStart;
@@ -68,4 +98,4 @@ function selfEmployedYearTarget({ history, year, startDate, endDate }) {
   return parseFloat(total.toFixed(2));
 }
 
-module.exports = { selfEmployedYearTarget, periodsFrom, workdaysBetween };
+module.exports = { selfEmployedYearTarget, periodsFrom, workdaysBetween, salaryOnDate, payBands };
