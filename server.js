@@ -642,9 +642,12 @@ app.post('/api/employee-login', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/me', requireAuth, (req, res) => {
+app.get('/api/me', requireAuth, async (req, res) => {
   if (req.user.role === 'employee') {
-    return res.json({ role: 'employee', employee_id: req.user.employee_id, name: req.user.name, email: req.user.email });
+    // employment_type decides what the portal shows (payslips are payroll-only)
+    let employment_type = null;
+    try { employment_type = ((await q('SELECT employment_type FROM employees WHERE id = ?', [req.user.employee_id])).rows[0] || {}).employment_type || null; } catch {}
+    return res.json({ role: 'employee', employee_id: req.user.employee_id, name: req.user.name, email: req.user.email, employment_type });
   }
   res.json({ username: req.user.username, role: req.user.role || 'admin' });
 });
@@ -1680,7 +1683,7 @@ app.delete('/api/employee-notes/:id', requireAuth, async (req, res) => {
 // contracts carry salary terms. Vercel caps a request body at 4.5 MB, so the
 // file itself is held to 3 MB once base64 has added its third.
 
-const EMP_DOC_TYPES = ['starter_form', 'contract', 'id', 'other'];
+const EMP_DOC_TYPES = ['starter_form', 'contract', 'id', 'nda', 'other'];
 const EMP_DOC_MAX_BYTES = 3 * 1024 * 1024;
 
 app.get('/api/employees/:id/documents', requireAuth, requireAdmin, async (req, res) => {

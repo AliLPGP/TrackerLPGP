@@ -316,6 +316,7 @@
         <div class="emp-head">
           <p class="emp-summary" id="empSub"></p>
           <div class="emp-head-actions">
+            <button class="btn btn-ghost" onclick="openOnboardingFiles()">Onboarding files</button>
             <button class="btn btn-primary" onclick="openEmpModal()">+ Add employee</button>
           </div>
         </div>
@@ -448,9 +449,8 @@
         <div class="filter-bar" style="align-items:center;gap:10px;flex-wrap:wrap">
           <!-- Year filter -->
           <div class="deal-q-filters" id="hotelYearFilters">
-            <button class="deal-q-btn active" data-hyr="all" onclick="setHotelYear(this,'all')">All Years</button>
             <button class="deal-q-btn" data-hyr="2025" onclick="setHotelYear(this,'2025')">2025</button>
-            <button class="deal-q-btn" data-hyr="2026" onclick="setHotelYear(this,'2026')">2026</button>
+            <button class="deal-q-btn active" data-hyr="2026" onclick="setHotelYear(this,'2026')">2026</button>
             <button class="deal-q-btn" data-hyr="2027" onclick="setHotelYear(this,'2027')">2027</button>
           </div>
           <!-- Status filter -->

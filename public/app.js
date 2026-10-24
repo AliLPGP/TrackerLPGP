@@ -1154,7 +1154,7 @@ async function openEmployeeProfile(empId) {
       <div class="ep-sec-head"><h3>Onboarding</h3></div>
       <div id="epOnboarding"><div class="ep-loading">Loading…</div></div>
     </section>
-    <section class="ep-sec">
+    ${emp.employment_type === 'payroll' ? `<section class="ep-sec">
       <div class="ep-sec-head">
         <h3>Payslips</h3>
         <div class="ep-doc-add">
@@ -1163,7 +1163,7 @@ async function openEmployeeProfile(empId) {
         </div>
       </div>
       <div id="epPayslips" class="ep-list"><div class="ep-loading">Loading…</div></div>
-    </section>` : ''}
+    </section>` : ''}` : ''}
 
     ${isAdmin ? `<section class="ep-sec">
       <h3>Recent payments</h3>
@@ -1200,7 +1200,7 @@ async function openEmployeeProfile(empId) {
   if (payEl) payEl.innerHTML = pays.length
     ? pays.slice(0, 6).map(p => `<div class="ep-row"><span>${MONTHS[Number(p.payment_month)]} ${p.payment_year}${p.notes ? `<small>${esc(p.notes)}</small>` : ''}</span><strong>${fmtMoney(p.amount, p.currency || emp.currency)}</strong></div>`).join('')
     : '<div class="ep-empty">No payments recorded.</div>';
-  if (isAdmin) { loadEmpDocs(empId); loadEmpOnboarding(empId); loadEmpPayslips(empId); }
+  if (isAdmin) { loadEmpDocs(empId); loadEmpOnboarding(empId); if (emp.employment_type === 'payroll') loadEmpPayslips(empId); }
   if (canManage) {
     loadEmpPortfolioRoles(empId, 'epPortfolio');
     loadEmpEvents(empId, 'epEvents');
@@ -1208,7 +1208,7 @@ async function openEmployeeProfile(empId) {
 }
 
 // Starter forms, contracts and other PDFs kept on the profile (admin only).
-const EMP_DOC_TYPES = { starter_form: 'Starter form', contract: 'Contract', id: 'ID / right to work', other: 'Other' };
+const EMP_DOC_TYPES = { starter_form: 'Starter form', contract: 'Contract', id: 'ID / right to work', nda: 'NDA (signed)', other: 'Other' };
 
 const docTypeOptions = () => Object.entries(EMP_DOC_TYPES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
 const docKb = b => b < 1048576 ? Math.max(1, Math.round(b / 1024)) + ' KB' : (b / 1048576).toFixed(1) + ' MB';
@@ -1362,11 +1362,13 @@ async function loadEmpOnboarding(empId) {
       </div>
       <div class="ep-row"><span>${o.id_doc ? esc(ID_TYPE_LABEL[o.id_doc.type] || 'ID document') : 'ID document'}<small>${o.id_doc ? esc(o.id_doc.name) : 'Not uploaded'}</small></span>
         ${o.id_doc ? `<a class="btn btn-ghost btn-sm" href="/api/employees/${empId}/onboarding/id" target="_blank" rel="noopener">View</a>` : ''}</div>
+      ${o.needs_starter ? `<div class="ep-row"><span>Starter sheet<small>${o.starter ? `Completed and signed · ${fmtDateShort(String(o.starter.signed_at).slice(0, 10))}` : 'Not completed'}</small></span>
+        ${o.starter && o.starter.doc_id ? `<a class="btn btn-ghost btn-sm" href="/api/employee-documents/${o.starter.doc_id}" target="_blank" rel="noopener">View signed copy</a>` : ''}</div>` : ''}
       <div class="ep-row"><span>NDA<small>${o.nda ? `Signed by ${esc(o.nda.signed_name)} · ${fmtDateShort(String(o.nda.signed_at).slice(0, 10))}` : 'Not signed'}</small></span>
-        ${o.nda ? `<a class="btn btn-ghost btn-sm" href="/api/employees/${empId}/onboarding/nda" target="_blank" rel="noopener">View signed copy</a>` : ''}</div>` : ''}
+        ${o.nda ? `<a class="btn btn-ghost btn-sm" href="${o.nda.doc_id ? '/api/employee-documents/' + o.nda.doc_id : '/api/employees/' + empId + '/onboarding/nda'}" target="_blank" rel="noopener">View signed copy</a>` : ''}</div>` : ''}
       <div class="ep-actions" style="padding:12px 0 0;border:none">
         <button class="btn btn-sm" onclick="epRequireOnboarding(${empId})">${o.completed ? 'Make them onboard again' : 'Require onboarding at next login'}</button>
-        <button class="btn btn-ghost btn-sm" onclick="openNdaEditor()">Edit NDA wording</button>
+        <button class="btn btn-ghost btn-sm" onclick="closeEmployeeProfile();openOnboardingFiles()">Onboarding files</button>
       </div>`;
   } catch { box.innerHTML = '<div class="ep-empty">Could not load onboarding.</div>'; }
 }
@@ -1377,6 +1379,78 @@ async function epRequireOnboarding(empId) {
   if (!res || !res.ok) { showToast('Could not update', 'error'); return; }
   showToast('They will be asked to onboard at next login', 'success');
   loadEmpOnboarding(empId);
+}
+
+// ── Onboarding files: the company's own NDA and starter sheet (admin) ──
+const OB_FILES = {
+  nda: { title: 'NDA', who: 'Everyone signs this', empty: 'Upload your NDA as a PDF. Staff read it in the platform and sign it; a signed copy goes on their employee file.' },
+  starter: { title: 'Starter sheet', who: 'Payroll staff only', empty: 'Upload the starter sheet payroll staff need to complete. If it has fillable fields they can fill it in on screen; otherwise they download it, complete it and upload it back.' },
+};
+
+async function openOnboardingFiles() {
+  const res = await fetch('/api/onboarding/templates').catch(() => null);
+  if (!res || !res.ok) { showToast('Could not load the onboarding files', 'error'); return; }
+  const meta = await res.json();
+  let m = document.getElementById('obFilesModal');
+  if (!m) {
+    m = document.createElement('div');
+    m.className = 'modal-overlay';
+    m.id = 'obFilesModal';
+    m.addEventListener('click', e => { if (e.target === m) closeModal('obFilesModal'); });
+    document.body.appendChild(m);
+  }
+  const kb = b => b < 1048576 ? Math.max(1, Math.round(b / 1024)) + ' KB' : (b / 1048576).toFixed(1) + ' MB';
+  const slot = key => {
+    const f = meta[key], o = OB_FILES[key];
+    return `<div class="obf-slot">
+      <div class="obf-head"><div><h3>${o.title}</h3><small>${o.who}</small></div>
+        ${f ? '<span class="ep-status ep-status--on">In use</span>' : '<span class="ep-status">Not set</span>'}</div>
+      ${f ? `<div class="obf-file"><span class="ob-pdf-badge">PDF</span>
+          <div><strong>${esc(f.file_name)}</strong><small>${kb(f.file_size)} · updated ${fmtDateShort(String(f.updated_at).slice(0, 10))}${f.uploaded_by ? ' by ' + esc(f.uploaded_by) : ''}</small></div></div>`
+        : `<p class="obf-empty">${o.empty}</p>`}
+      <div class="obf-actions">
+        ${f ? `<a class="btn btn-ghost btn-sm" href="/api/onboarding/templates/${key}/file" target="_blank" rel="noopener">View</a>` : ''}
+        <label class="btn btn-sm">${f ? 'Replace PDF' : 'Upload PDF'}<input type="file" accept=".pdf,application/pdf" hidden onchange="uploadOnboardingFile('${key}', this)"></label>
+        ${f ? `<button class="btn btn-ghost btn-sm ep-danger" onclick="removeOnboardingFile('${key}')">Remove</button>` : ''}
+      </div>
+      <div class="obf-note" id="obfNote-${key}"></div>
+    </div>`;
+  };
+  m.innerHTML = `<div class="modal" style="max-width:600px">
+    <div class="modal-header"><h2>Onboarding files</h2><button class="modal-close" onclick="closeModal('obFilesModal')">✕</button></div>
+    <p style="font-size:0.82rem;color:var(--muted);margin:0 0 14px">These are shown to staff in the onboarding screen. They read each one in full, then sign, and the signed PDF is stored on their employee file. PDFs up to 3 MB.</p>
+    ${slot('nda')}${slot('starter')}
+    <div class="obf-foot">No NDA file uploaded? Staff sign the written NDA wording instead. <button type="button" class="ob-link" onclick="closeModal('obFilesModal');openNdaEditor()">Edit that wording</button></div>
+  </div>`;
+  openModal('obFilesModal');
+}
+
+async function uploadOnboardingFile(key, input) {
+  const f = input.files[0];
+  input.value = '';
+  const doc = await readPdfFile(f);
+  if (!doc) return;
+  const res = await fetch('/api/onboarding/templates/' + key, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(doc) }).catch(() => null);
+  const data = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { showToast(data.error || 'Upload failed', 'error'); return; }
+  await openOnboardingFiles();
+  const note = document.getElementById('obfNote-' + key);
+  if (note) {
+    note.className = 'obf-note is-ok';
+    note.textContent = key === 'starter'
+      ? (data.fillable ? `Uploaded. This form has ${data.fields} fillable field${data.fields === 1 ? '' : 's'}, so staff can fill it in on screen.`
+                       : 'Uploaded. This PDF has no fillable fields, so staff will download it, complete it and upload their copy.')
+      : `Uploaded (${data.pages} page${data.pages === 1 ? '' : 's'}). New signatures will be on this file.`;
+  }
+  showToast(OB_FILES[key].title + ' uploaded', 'success');
+}
+
+async function removeOnboardingFile(key) {
+  if (!await showConfirm(`Remove the ${OB_FILES[key].title} file? Documents people already signed stay on their files.`)) return;
+  const res = await fetch('/api/onboarding/templates/' + key, { method: 'DELETE' }).catch(() => null);
+  if (!res || !res.ok) { showToast('Could not remove it', 'error'); return; }
+  showToast('Removed', 'success');
+  openOnboardingFiles();
 }
 
 async function openNdaEditor() {
@@ -4058,13 +4132,15 @@ function renderUpcomingWidget(upcoming) {
 // ─── HOTEL EXPENSES ──────────────────────────────────────────────────────────
 
 let hotelData = [];
-let _hotelYearFilter = 'all';
+// One year at a time: this year if it has a tab, otherwise the newest tab
+let _hotelYearFilter = String([2025, 2026, 2027].includes(new Date().getFullYear()) ? new Date().getFullYear() : 2027);
 const HOTEL_YEARS = [2025, 2026, 2027, 2028];
 
 async function loadHotelExpenses() {
   const res = await fetch('/api/hotel-expenses');
   if (!res.ok) { showToast('Failed to load hotel expenses', 'error'); return; }
   hotelData = await res.json();
+  document.querySelectorAll('#hotelYearFilters .deal-q-btn').forEach(b => b.classList.toggle('active', b.dataset.hyr === _hotelYearFilter));
   renderHotelSummary();
   renderHotelTable();
 }
@@ -4111,26 +4187,17 @@ function fmtHotelAmount(v) {
 function renderHotelSummary() {
   const yearData = hotelYearFiltered();
 
-  function parseCost(str) {
-    if (!str) return 0;
-    return parseFloat(String(str).replace(/[^0-9.]/g, '')) || 0;
-  }
-
   const byCur = {};
-  function ensureCur(c) { byCur[c] = byCur[c] || { paid: 0, av: 0, cost: 0 }; }
+  function ensureCur(c) { byCur[c] = byCur[c] || { paid: 0, av: 0 }; }
   yearData.forEach(r => {
     const paidCur = r.paid_currency || r.currency || 'USD';
     const avCur   = r.av_currency   || r.currency || 'USD';
-    const costCur = r.paid_currency || r.currency || 'USD';
     ensureCur(paidCur);
     if (r.paid_amount != null) byCur[paidCur].paid += parseFloat(r.paid_amount) || 0;
     if (r.av_amount != null && r.av_billing !== 'included') {
       ensureCur(avCur);
       byCur[avCur].av += parseFloat(r.av_amount) || 0;
     }
-    const costNum = parseCost(r.cost);
-    ensureCur(costCur);
-    if (costNum > 0) byCur[costCur].cost += costNum;
   });
 
   const total  = yearData.length;
@@ -4139,41 +4206,38 @@ function renderHotelSummary() {
 
   // GBP conversion rates (approximate)
   const TO_GBP = { GBP:1, USD:0.787, EUR:0.855, CHF:0.885, AED:0.2141, PHP:0.0138 };
-  let gbpPaid = 0, gbpAv = 0, gbpCost = 0;
+  let gbpPaid = 0, gbpAv = 0;
   Object.entries(byCur).forEach(([cur, sums]) => {
     const rate = TO_GBP[cur] || 0.787;
     gbpPaid += sums.paid * rate;
     gbpAv   += sums.av   * rate;
-    gbpCost += sums.cost * rate;
   });
-  const gbpOutstanding = gbpCost > 0 ? Math.max(0, gbpCost - gbpPaid) : null;
   const yr = _hotelYearFilter !== 'all' ? ` · ${_hotelYearFilter}` : '';
+  const partial = yearData.filter(r => r.status === 'partial').length;
+  const notStarted = unpaid - partial;
 
-  // Headline figures, all in GBP; the per-currency detail sits in a table below.
+  // Headline figures: money in GBP, and how many events are still to pay. (The hotel cost
+  // column is free text, so it is not totalled here.)
   const card = (label, value, sub, extra = '') => `
     <div class="deal-stat-card ${extra}">
       <div class="deal-stat-label">${label}</div>
       <div class="deal-stat-value">${value}</div>
       <div class="deal-stat-sub">${sub}</div>
     </div>`;
-  const cards = `<div class="deal-stat-cards">
-    ${card(`Hotel cost${yr}`, gbpCost > 0 ? '£' + fmtN(gbpCost) : '—', `${total} event${total === 1 ? '' : 's'} · in GBP`)}
-    ${card('AV cost', '£' + fmtN(gbpAv), 'Billed separately')}
+  const cards = `<div class="deal-stat-cards hotel-stat-cards">
+    ${card(`AV cost${yr}`, '£' + fmtN(gbpAv), 'Billed separately')}
     ${card('Paid so far', '£' + fmtN(gbpPaid), `${total - unpaid} of ${total} fully paid`)}
-    ${card('Outstanding', gbpOutstanding === null ? '—' : '£' + fmtN(gbpOutstanding),
-           unpaid > 0 ? `${unpaid} event${unpaid === 1 ? '' : 's'} still to pay` : 'All settled',
+    ${card('Left to pay', unpaid > 0 ? `${unpaid} event${unpaid === 1 ? '' : 's'}` : 'None',
+           unpaid > 0 ? `${notStarted} not paid · ${partial} part paid` : 'All settled',
            unpaid > 0 ? 'ds--remaining' : 'ds--remaining is-clear')}
   </div>`;
 
-  const curRows = Object.entries(byCur).filter(([, s]) => s.cost || s.av || s.paid).map(([cur, sums]) => {
+  const curRows = Object.entries(byCur).filter(([, s]) => s.av || s.paid).map(([cur, sums]) => {
     const sym = hotelCurrencySymbol(cur);
-    const outstanding = sums.cost > 0 ? Math.max(0, sums.cost - sums.paid) : null;
     return `<tr>
       <td><strong>${cur}</strong></td>
-      <td class="dt-r">${sums.cost > 0 ? sym + fmtN(sums.cost) : '—'}</td>
       <td class="dt-r">${sym}${fmtN(sums.av)}</td>
       <td class="dt-r">${sym}${fmtN(sums.paid)}</td>
-      <td class="dt-r">${outstanding === null ? '—' : outstanding > 0 ? `<span class="hotel-owe">${sym}${fmtN(outstanding)}</span>` : '<span class="hotel-settled">Settled</span>'}</td>
     </tr>`;
   }).join('');
   const byCurrency = curRows ? `
@@ -4181,7 +4245,7 @@ function renderHotelSummary() {
       <div class="card-header"><span class="card-title">By currency</span>
         <span class="hotel-cur-rates">GBP figures use USD×0.787 · EUR×0.855 · CHF×0.885 · AED×0.214</span></div>
       <div class="table-wrap"><table class="hotel-cur-table">
-        <thead><tr><th>Currency</th><th class="dt-r">Hotel cost</th><th class="dt-r">AV cost</th><th class="dt-r">Paid</th><th class="dt-r">Outstanding</th></tr></thead>
+        <thead><tr><th>Currency</th><th class="dt-r">AV cost</th><th class="dt-r">Paid</th></tr></thead>
         <tbody>${curRows}</tbody>
       </table></div>
     </div>` : '';
@@ -6954,8 +7018,9 @@ async function initEmployeePortal(user) {
   // Reveal employee-only nav items (e.g. My Profile)
   document.querySelectorAll('.employee-only').forEach(el => el.classList.remove('hidden'));
 
-  // Hide non-allowed nav items
-  const EMP_PAGES = ['dashboard', 'calendar', 'portfolio', 'eventkit', 'mydeals', 'profile', 'payslips', 'directory'];
+  // Hide non-allowed nav items. Payslips are for payroll staff only.
+  const EMP_PAGES = ['dashboard', 'calendar', 'portfolio', 'eventkit', 'mydeals', 'profile', 'payslips', 'directory']
+    .filter(p => p !== 'payslips' || user.employment_type === 'payroll');
   document.querySelectorAll('.nav-item').forEach(el => {
     if (!EMP_PAGES.includes(el.dataset.page)) el.style.display = 'none';
   });
@@ -7006,6 +7071,7 @@ async function initEmployeePortal(user) {
     const obRes = await fetch('/api/employee/onboarding');
     const ob = obRes.ok ? await obRes.json() : null;
     if (ob && ob.required) await runOnboarding(ob);
+    else if (ob && !ob.completed) obShowBanner();
   } catch (e) { console.warn('Onboarding check failed:', e); }
 
   // Show dashboard
@@ -7441,7 +7507,7 @@ async function loadEmployeeDashboard(user) {
                 '<div style="font:500 12px/1.4 var(--font-mono);color:var(--muted);margin-top:4px">' + esc([profile.job_title, profile.department].filter(Boolean).join(' · ')) + '</div>' +
               '</div>' +
             '</div>' +
-            (profile.start_date ? '<div style="font:500 11px/1 var(--font-mono);color:var(--muted);margin-bottom:16px">Since ' + profile.start_date + '</div>' : '') +
+            (profile.start_date ? '<div style="font:500 11px/1 var(--font-mono);color:var(--muted);margin-bottom:16px">Since ' + fmtDateShort(profile.start_date) + '</div>' : '') +
             '<div style="font:600 10px/1 var(--font-mono);text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:8px">Days Off ' + (profile.year||new Date().getFullYear()) + '</div>' +
             '<div style="display:flex;justify-content:space-between;gap:10px;font:600 12px/1.4 var(--font-mono);color:var(--muted);margin-bottom:6px">' +
               '<span style="white-space:nowrap">' + daysUsed + ' used</span>' +
@@ -7541,7 +7607,7 @@ async function loadEmployeeProfile() {
           '<button class="btn btn-primary" style="width:100%" onclick="changeMyPin(' + (p.has_pin ? 'true' : 'false') + ')">Update PIN</button>' +
         '</div>' +
       '</div>' +
-      (ob ? personalDetailsCard(ob) : '');
+      (ob ? onboardingCard(ob) + personalDetailsCard(ob) : '');
   } catch (e) {
     el.innerHTML = '<div class="alert alert-error">Failed to load profile: ' + e.message + '</div>';
   }
@@ -7640,51 +7706,92 @@ async function loadEmployeePayslips() {
   }
 }
 
-// ─── ONBOARDING (staff portal, first sign-in) ────────────────────────────────
-// A full-screen wizard that blocks the portal until details, ID and NDA are in.
-// Progress is saved at each step, so closing the tab and coming back resumes it.
-const OB = { data: null, step: 1, resolve: null, drawn: false };
+// ─── ONBOARDING (staff portal) ───────────────────────────────────────────────
+// A new login is walked through this before anything else (it cannot be closed);
+// someone who already had a login gets a banner and can open it, do part, and
+// come back later. Progress is saved at every step.
+//
+// Steps: your details -> ID -> starter sheet (payroll staff, if one has been set up)
+// -> NDA. The starter sheet and NDA are the company's own PDFs, shown here page by
+// page; the person reads to the end, fills in (starter sheet) and signs, and a signed
+// copy is stored on their employee file.
+const OB = { data: null, key: 'details', resolve: null, closable: false, ink: [], values: {}, reads: {}, mode: 'fill', completedFile: null };
 
+const OB_ICON = {
+  user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+  id: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2"/><path d="M14 10h4M14 14h4M6 16c.6-1.2 1.7-2 3-2s2.4.8 3 2"/></svg>',
+  doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>',
+  pen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
+  upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+};
+const OB_STEP = {
+  details: { label: 'Your details', icon: 'user' },
+  id: { label: 'ID', icon: 'id' },
+  starter: { label: 'Starter sheet', icon: 'doc' },
+  nda: { label: 'NDA', icon: 'pen' },
+};
+
+const obKeys = () => ['details', 'id', ...(OB.data.needs_starter ? ['starter'] : []), 'nda'];
+const obIsDone = k => !!OB.data.steps[k];
+const obFirstOpen = () => obKeys().find(k => !obIsDone(k)) || null;
+const obFirstName = () => String(((window.currentUser || {}).name || '').split(' ')[0] || 'there');
+const obEl = id => document.getElementById(id);
+
+// Used on first sign-in: resolves once everything is done. Cannot be closed.
 function runOnboarding(data) {
-  return new Promise(resolve => {
-    OB.data = data; OB.resolve = resolve;
-    OB.step = !data.steps.details ? 1 : !data.steps.id ? 2 : 3;
-    let ov = document.getElementById('obOverlay');
-    if (!ov) {
-      ov = document.createElement('div');
-      ov.id = 'obOverlay';
-      ov.className = 'ob-overlay';
-      document.body.appendChild(ov);
-    }
-    obRender();
-  });
+  return new Promise(resolve => { OB.resolve = resolve; obOpen(data, false); });
 }
 
-function obFirstName() { return String(((window.currentUser || {}).name || '').split(' ')[0] || 'there'); }
-
-function obRender() {
-  const ov = document.getElementById('obOverlay');
-  const d = OB.data, st = d.steps;
-  const labels = ['Your details', 'ID document', 'Sign the NDA'];
-  const chips = labels.map((l, i) => {
-    const n = i + 1, done = [st.details, st.id, st.nda][i];
-    return '<button type="button" class="ob-step' + (OB.step === n ? ' is-active' : '') + (done ? ' is-done' : '') + '" onclick="obGo(' + n + ')">' +
-      '<span class="ob-dot">' + (done ? '✓' : n) + '</span><span class="ob-steplabel">' + l + '</span></button>';
-  }).join('');
-  ov.innerHTML = '<div class="ob-wrap"><div class="ob-card">' +
-    '<div class="ob-top"><div><h1>Welcome, ' + esc(obFirstName()) + '</h1><p>Three quick steps and you are in. Your progress is saved as you go.</p></div>' +
-    '<button type="button" class="btn btn-ghost btn-sm" onclick="obSignOut()">Sign out</button></div>' +
-    '<div class="ob-steps">' + chips + '</div>' +
-    '<div id="obBody"></div></div></div>';
-  [obStepDetails, obStepId, obStepNda][OB.step - 1]();
+// Used from the banner and My Profile: can be closed and resumed later.
+async function startOnboarding() {
+  const res = await fetch('/api/employee/onboarding').catch(() => null);
+  if (!res || !res.ok) { showToast('Could not open your profile checklist', 'error'); return; }
+  OB.resolve = null;
+  obOpen(await res.json(), true);
 }
 
-function obGo(n) {
-  // Later steps open once the ones before them are done
-  const st = OB.data.steps;
-  if (n === 2 && !st.details) { showToast('Fill in your details first', 'info'); return; }
-  if (n === 3 && !(st.details && st.id)) { showToast('Finish the earlier steps first', 'info'); return; }
-  OB.step = n; obRender();
+function obOpen(data, closable) {
+  OB.data = data; OB.closable = closable; OB.values = {}; OB.reads = {}; OB.mode = 'fill'; OB.completedFile = null;
+  let ov = obEl('obOverlay');
+  if (!ov) { ov = document.createElement('div'); ov.id = 'obOverlay'; ov.className = 'ob-overlay'; document.body.appendChild(ov); }
+  document.body.classList.add('ob-open');
+  window.removeEventListener('resize', obOnResize);
+  window.addEventListener('resize', obOnResize);
+  ov.innerHTML =
+    '<div class="ob-wrap"><div class="ob-card">' +
+      '<div class="ob-top">' +
+        '<div class="ob-hello"><span class="ob-wave" aria-hidden="true">👋</span><div>' +
+          '<h1>' + (closable ? 'Complete your profile' : 'Welcome, ' + esc(obFirstName())) + '</h1>' +
+          '<p id="obSub"></p></div></div>' +
+        '<div class="ob-top-actions">' +
+          (closable ? '<button type="button" class="btn btn-ghost btn-sm" onclick="obClose()">Do this later</button>' : '') +
+          '<button type="button" class="btn btn-ghost btn-sm" onclick="obSignOut()">Sign out</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="ob-progress" aria-hidden="true"><div class="ob-progress-bar" id="obBar"></div></div>' +
+      '<div class="ob-steps" id="obSteps"></div>' +
+      '<div id="obBody" class="ob-body"></div>' +
+    '</div></div>';
+  obGo(obFirstOpen() || 'done');
+}
+
+function obClose() {
+  obEl('obOverlay')?.remove();
+  document.body.classList.remove('ob-open');
+  window.removeEventListener('resize', obOnResize);
+}
+
+// Turning a phone sideways changes the width the pages were drawn for
+let _obResizeTimer = null, _obLastWidth = 0;
+function obOnResize() {
+  clearTimeout(_obResizeTimer);
+  _obResizeTimer = setTimeout(() => {
+    const sc = obEl('obDocScroll');
+    if (!sc || !_obPdf.doc || _obPdf.key !== OB.key) return;
+    if (Math.abs(sc.clientWidth - _obLastWidth) > 30) obPaintPages();
+  }, 250);
 }
 
 async function obSignOut() {
@@ -7698,45 +7805,95 @@ async function obRefresh() {
   return OB.data;
 }
 
-function obField(label, input, hint) {
-  return '<div class="ob-field"><label>' + label + '</label>' + input + (hint ? '<small>' + hint + '</small>' : '') + '</div>';
+function obChrome() {
+  const keys = obKeys(), done = keys.filter(obIsDone).length;
+  obEl('obBar').style.width = Math.round(done / keys.length * 100) + '%';
+  obEl('obSub').textContent = done === keys.length ? 'Everything is in. Thank you!'
+    : (done ? done + ' of ' + keys.length + ' steps done. ' : '') + 'It takes a few minutes and your progress is saved as you go.';
+  const open = obFirstOpen();
+  obEl('obSteps').innerHTML = keys.map((k, i) => {
+    const m = OB_STEP[k], d = obIsDone(k), active = OB.key === k;
+    // Finished steps can be revisited; the next open step is reachable; later ones wait
+    const reachable = d || k === open;
+    return '<button type="button" class="ob-step' + (active ? ' is-active' : '') + (d ? ' is-done' : '') + (reachable ? '' : ' is-locked') + '"' +
+      (reachable ? ' onclick="obGo(\'' + k + '\')"' : ' disabled') + '>' +
+      '<span class="ob-dot">' + (d ? OB_ICON.check : OB_ICON[m.icon]) + '</span><span class="ob-steplabel">' + (i + 1) + '. ' + m.label + '</span></button>';
+  }).join('');
 }
 
+function obGo(key) {
+  OB.key = key;
+  obChrome();
+  const body = obEl('obBody');
+  body.classList.remove('ob-in'); void body.offsetWidth; body.classList.add('ob-in');
+  obEl('obOverlay').querySelector('.ob-card').scrollIntoView({ block: 'start' });
+  ({ details: obStepDetails, id: obStepId, starter: obStepDoc, nda: obStepDoc, done: obDone })[key](key);
+}
+
+// Tiny helpers for inline validation
+function obField(id, label, input, hint) {
+  return '<div class="ob-field" id="f-' + id + '"><label for="' + id + '">' + label + '</label>' + input +
+    '<div class="ob-err" id="e-' + id + '"></div>' + (hint ? '<small>' + hint + '</small>' : '') + '</div>';
+}
+function obErr(id, msg) {
+  const f = obEl('f-' + id), e = obEl('e-' + id);
+  if (!f) return;
+  f.classList.toggle('has-error', !!msg);
+  e.textContent = msg || '';
+}
+function obClearOnInput(ids) {
+  ids.forEach(id => { const el = obEl(id); if (el) el.addEventListener('input', () => obErr(id, '')); });
+}
+
+// ── Step 1: details ──
 function obStepDetails() {
   const d = OB.data.details;
-  document.getElementById('obBody').innerHTML =
-    '<h2>Your details</h2>' +
+  obEl('obBody').innerHTML =
+    '<h2>' + OB_ICON.user + ' About you</h2>' +
+    '<p class="ob-help">We keep this on your employee file. Only the admin team can see it.</p>' +
     '<div class="ob-grid">' +
-      obField('Date of birth', '<input id="obDob" class="form-control" type="date" max="' + new Date().toISOString().slice(0, 10) + '" value="' + esc(d.date_of_birth || '') + '">') +
-      obField('Phone number', '<input id="obPhone" class="form-control" type="tel" maxlength="40" placeholder="e.g. 07700 900123" value="' + esc(d.phone || '') + '">') +
-      '<div style="grid-column:1/-1">' + obField('Home address', '<textarea id="obAddress" class="form-control" rows="3" placeholder="Street, city, postcode">' + esc(d.address || '') + '</textarea>') + '</div>' +
-      obField('Emergency contact <span>(optional)</span>', '<input id="obEcName" class="form-control" type="text" maxlength="100" placeholder="Name" value="' + esc(d.emergency_contact_name || '') + '">') +
-      obField('Their phone number', '<input id="obEcPhone" class="form-control" type="tel" maxlength="40" value="' + esc(d.emergency_contact_phone || '') + '">') +
+      obField('obDob', 'Date of birth', '<input id="obDob" class="form-control" type="date" max="' + new Date().toISOString().slice(0, 10) + '" value="' + esc(d.date_of_birth || '') + '">') +
+      obField('obPhone', 'Phone number', '<input id="obPhone" class="form-control" type="tel" inputmode="tel" maxlength="40" placeholder="e.g. 07700 900123" value="' + esc(d.phone || '') + '">') +
+      '<div class="ob-span">' + obField('obAddress', 'Home address', '<textarea id="obAddress" class="form-control" rows="3" placeholder="House number and street&#10;Town&#10;Postcode">' + esc(d.address || '') + '</textarea>') + '</div>' +
     '</div>' +
-    '<button class="btn btn-primary ob-next" onclick="obSaveDetails(this)">Save and continue</button>';
+    '<div class="ob-subhead">Emergency contact <span>(optional, but really helpful)</span></div>' +
+    '<div class="ob-grid">' +
+      obField('obEcName', 'Their name', '<input id="obEcName" class="form-control" type="text" maxlength="100" value="' + esc(d.emergency_contact_name || '') + '">') +
+      obField('obEcPhone', 'Their phone number', '<input id="obEcPhone" class="form-control" type="tel" inputmode="tel" maxlength="40" value="' + esc(d.emergency_contact_phone || '') + '">') +
+    '</div>' +
+    '<div class="ob-actions"><button class="btn btn-primary ob-primary" id="obNext" onclick="obSaveDetails(this)">Save and continue</button></div>';
+  obClearOnInput(['obDob', 'obPhone', 'obAddress']);
 }
 
 async function obSaveDetails(btn) {
   const body = {
-    date_of_birth: document.getElementById('obDob').value,
-    phone: document.getElementById('obPhone').value.trim(),
-    address: document.getElementById('obAddress').value.trim(),
-    emergency_contact_name: document.getElementById('obEcName').value.trim(),
-    emergency_contact_phone: document.getElementById('obEcPhone').value.trim(),
+    date_of_birth: obEl('obDob').value,
+    phone: obEl('obPhone').value.trim(),
+    address: obEl('obAddress').value.trim(),
+    emergency_contact_name: obEl('obEcName').value.trim(),
+    emergency_contact_phone: obEl('obEcPhone').value.trim(),
   };
-  if (!body.date_of_birth) return showToast('Enter your date of birth', 'error');
-  if (!body.phone) return showToast('Enter your phone number', 'error');
-  if (!body.address) return showToast('Enter your home address', 'error');
-  btn.disabled = true;
+  let bad = false;
+  if (!body.date_of_birth) { obErr('obDob', 'Enter your date of birth'); bad = true; }
+  else if (body.date_of_birth > new Date().toISOString().slice(0, 10)) { obErr('obDob', 'That date is in the future'); bad = true; }
+  if (!body.phone) { obErr('obPhone', 'Enter a phone number we can reach you on'); bad = true; }
+  if (!body.address) { obErr('obAddress', 'Enter your home address'); bad = true; }
+  if (bad) return;
+  btn.disabled = true; btn.classList.add('is-busy');
   const res = await fetch('/api/employee/onboarding/details', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null);
   const data = res ? await res.json().catch(() => ({})) : {};
-  btn.disabled = false;
+  btn.disabled = false; btn.classList.remove('is-busy');
   if (!res || !res.ok) return showToast(data.error || 'Could not save, please try again', 'error');
-  await obRefresh();
-  if (OB.data.completed) return obFinish();
-  OB.step = 2; obRender();
+  await obAfterStep();
 }
 
+// After any step is saved: all done -> finish screen, otherwise on to the next open step
+async function obAfterStep() {
+  await obRefresh();
+  obGo(obFirstOpen() || 'done');
+}
+
+// ── Step 2: ID ──
 // Phone photos are often 4-8 MB; shrink them so the upload fits
 function obShrinkImage(file) {
   return new Promise((resolve, reject) => {
@@ -7755,119 +7912,412 @@ function obShrinkImage(file) {
   });
 }
 
-function obStepId() {
-  const cur = OB.data.id_doc;
-  document.getElementById('obBody').innerHTML =
-    '<h2>Passport or driving licence</h2>' +
-    '<p class="ob-help">Upload a clear photo or scan. A PDF, JPG or PNG is fine.</p>' +
-    (cur ? '<div class="ob-ok">✓ Uploaded: ' + esc(cur.name) + '</div>' : '') +
-    '<div class="ob-choice">' +
-      '<label><input type="radio" name="obIdType" value="passport" checked> Passport</label>' +
-      '<label><input type="radio" name="obIdType" value="driving_licence"> Driving licence</label>' +
-    '</div>' +
-    '<label class="ob-drop"><input id="obIdFile" type="file" accept=".pdf,.jpg,.jpeg,.png,image/*,application/pdf" onchange="obIdChosen(this)">' +
-      '<span id="obIdName">' + (cur ? 'Choose a different file' : 'Choose a file') + '</span></label>' +
-    '<div class="ob-actions"><button class="btn btn-ghost" onclick="obGo(1)">Back</button>' +
-    (cur ? '<button class="btn btn-ghost" onclick="obGo(3)">Keep this and continue</button>' : '') +
-    '<button class="btn btn-primary" id="obIdBtn" onclick="obUploadId(this)" disabled>Upload and continue</button></div>';
+// Turn a chosen file (PDF or photo) into {file_name, file_data} or throw a readable error
+async function obPrepareFile(f, maxMb) {
+  if (/^image\//.test(f.type)) return obShrinkImage(f);
+  if (f.type === 'application/pdf' || /\.pdf$/i.test(f.name)) {
+    if (f.size > maxMb * 1024 * 1024) throw new Error('That PDF is over ' + maxMb + ' MB. Try a smaller scan.');
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = e => resolve({ file_name: f.name, file_data: e.target.result.split(',')[1] });
+      r.onerror = () => reject(new Error('That file could not be read'));
+      r.readAsDataURL(f);
+    });
+  }
+  throw new Error('Upload a PDF, JPG or PNG');
 }
 
-function obIdChosen(input) {
-  const f = input.files[0];
-  document.getElementById('obIdName').textContent = f ? f.name : 'Choose a file';
-  document.getElementById('obIdBtn').disabled = !f;
+// A drag-and-drop box that reports the chosen file; shows a thumbnail for photos
+function obDropZone(id, onFile) {
+  const zone = obEl(id), input = zone.querySelector('input[type=file]');
+  const show = f => {
+    if (!f) return;
+    const prev = zone.querySelector('.ob-drop-preview');
+    const isImg = /^image\//.test(f.type);
+    prev.innerHTML = (isImg ? '<img alt="" src="' + URL.createObjectURL(f) + '">' : '<span class="ob-pdf-badge">PDF</span>') +
+      '<div><strong>' + esc(f.name) + '</strong><small>' + (f.size / 1048576 < 0.1 ? Math.max(1, Math.round(f.size / 1024)) + ' KB' : (f.size / 1048576).toFixed(1) + ' MB') + ' · click to change</small></div>';
+    zone.classList.add('has-file');
+    onFile(f);
+  };
+  input.addEventListener('change', () => show(input.files[0]));
+  ['dragenter', 'dragover'].forEach(ev => zone.addEventListener(ev, e => { e.preventDefault(); zone.classList.add('is-over'); }));
+  ['dragleave', 'drop'].forEach(ev => zone.addEventListener(ev, e => { e.preventDefault(); zone.classList.remove('is-over'); }));
+  zone.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) { try { input.files = e.dataTransfer.files; } catch {} show(f); } });
+}
+
+function obStepId() {
+  const cur = OB.data.id_doc;
+  obEl('obBody').innerHTML =
+    '<h2>' + OB_ICON.id + ' Proof of ID</h2>' +
+    '<p class="ob-help">Upload a clear photo or scan of your passport or driving licence. It is stored securely on your employee file.</p>' +
+    (cur ? '<div class="ob-ok">' + OB_ICON.check + '<span>Already uploaded: ' + esc(cur.name) + '. Add a new one only if you want to replace it.</span></div>' : '') +
+    '<div class="ob-choice" role="radiogroup" aria-label="Type of ID">' +
+      '<label class="ob-card-opt"><input type="radio" name="obIdType" value="passport" checked><span>' + OB_ICON.doc + '<b>Passport</b></span></label>' +
+      '<label class="ob-card-opt"><input type="radio" name="obIdType" value="driving_licence"><span>' + OB_ICON.id + '<b>Driving licence</b></span></label>' +
+    '</div>' +
+    '<label class="ob-drop" id="obIdDrop"><input id="obIdFile" type="file" accept=".pdf,.jpg,.jpeg,.png,image/*,application/pdf">' +
+      '<div class="ob-drop-empty">' + OB_ICON.upload + '<b>Drop your file here</b><small>or click to choose one. On a phone you can take a photo.</small></div>' +
+      '<div class="ob-drop-preview"></div></label>' +
+    '<div class="ob-err" id="obIdErr"></div>' +
+    '<div class="ob-actions">' +
+      '<button class="btn btn-ghost" onclick="obGo(\'details\')">Back</button>' +
+      (cur ? '<button class="btn btn-ghost" onclick="obGo(\'' + obKeys()[obKeys().indexOf('id') + 1] + '\')">Keep this one</button>' : '') +
+      '<button class="btn btn-primary ob-primary" id="obIdBtn" onclick="obUploadId(this)" disabled>Upload and continue</button></div>';
+  obDropZone('obIdDrop', () => { obEl('obIdBtn').disabled = false; obEl('obIdErr').textContent = ''; });
 }
 
 async function obUploadId(btn) {
-  const f = document.getElementById('obIdFile').files[0];
+  const f = obEl('obIdFile').files[0];
   if (!f) return;
-  btn.disabled = true;
+  btn.disabled = true; btn.classList.add('is-busy');
   try {
-    let doc;
-    if (/^image\//.test(f.type)) doc = await obShrinkImage(f);
-    else if (f.type === 'application/pdf' || /\.pdf$/i.test(f.name)) doc = await readPdfFile(f);
-    else throw new Error('Upload a PDF, JPG or PNG');
-    if (!doc) { btn.disabled = false; return; }
+    const doc = await obPrepareFile(f, 3);
     const id_doc_type = (document.querySelector('input[name="obIdType"]:checked') || {}).value || 'other';
     const res = await fetch('/api/employee/onboarding/id', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...doc, id_doc_type }) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'Upload failed');
-    await obRefresh();
-    if (OB.data.completed) return obFinish();
-    OB.step = 3; obRender();
-  } catch (e) { showToast(e.message, 'error'); btn.disabled = false; }
+    await obAfterStep();
+  } catch (e) {
+    obEl('obIdErr').textContent = e.message;
+    btn.disabled = false; btn.classList.remove('is-busy');
+  }
 }
 
-function obStepNda() {
-  const nda = OB.data.nda;
-  OB.drawn = false;
-  document.getElementById('obBody').innerHTML =
-    '<h2>Non-disclosure agreement</h2>' +
-    '<p class="ob-help">Please read this and sign at the bottom.</p>' +
-    '<div class="ob-nda" id="obNdaText">' + esc(nda.text) + '</div>' +
-    obField('Type your full name', '<input id="obSignName" class="form-control" type="text" maxlength="120" autocomplete="name" value="' + esc((window.currentUser || {}).name || '') + '">') +
-    '<div class="ob-field"><label>Draw your signature <button type="button" class="ob-link" onclick="obClearSig()">Clear</button></label>' +
-      '<canvas id="obSig" class="ob-sig" height="150"></canvas><small>Use your finger or mouse.</small></div>' +
-    '<label class="ob-agree"><input id="obAgree" type="checkbox"> I have read and agree to this agreement.</label>' +
-    '<div class="ob-actions"><button class="btn btn-ghost" onclick="obGo(2)">Back</button>' +
-    '<button class="btn btn-primary" onclick="obSign(this)">Sign and finish</button></div>';
+// ── PDF viewer (pdf.js, served from this site) ──
+let _pdfjsPromise = null;
+function loadPdfJs() {
+  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if (!_pdfjsPromise) {
+    _pdfjsPromise = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = '/vendor/pdfjs/pdf.min.js';
+      s.onload = () => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.js'; resolve(window.pdfjsLib); };
+      s.onerror = () => { _pdfjsPromise = null; reject(new Error('The document viewer could not load')); };
+      document.head.appendChild(s);
+    });
+  }
+  return _pdfjsPromise;
+}
+
+const OB_DOC = {
+  nda: { url: '/api/onboarding/templates/nda/file', title: 'Non-disclosure agreement', icon: 'pen',
+         help: 'Please read the whole agreement. Scroll to the end to unlock signing.', cta: 'Sign the NDA' },
+  starter: { url: '/api/onboarding/templates/starter/file', title: 'Starter sheet', icon: 'doc',
+         help: 'Your payroll details. Fill in the highlighted boxes, read to the end, then sign.', cta: 'Sign and submit' },
+};
+let _obPdf = { key: null, doc: null, info: null };
+
+// Steps 3 and 4: read (and fill in) a company document, then sign it
+async function obStepDoc(key) {
+  const meta = OB_DOC[key];
+  const textMode = key === 'nda' && OB.data.documents.nda.mode === 'text';
+  const prev = obKeys()[obKeys().indexOf(key) - 1];
+  obEl('obBody').innerHTML =
+    '<h2>' + OB_ICON[meta.icon] + ' ' + meta.title + '</h2>' +
+    '<p class="ob-help">' + meta.help + '</p>' +
+    '<div id="obDocTop"></div>' +
+    '<div class="ob-doc">' +
+      '<div class="ob-doc-bar"><span id="obDocPage">' + (textMode ? 'Agreement' : 'Loading the document…') + '</span>' +
+        (textMode ? '' : '<a class="ob-link" href="' + meta.url + '" target="_blank" rel="noopener">Open in a new tab</a>') + '</div>' +
+      '<div class="ob-doc-scroll" id="obDocScroll">' +
+        (textMode ? '<div class="ob-nda">' + esc(OB.data.nda.text) + '</div>' : '<div class="ob-doc-pages" id="obDocPages"><div class="ob-doc-loading"><span class="ob-spinner"></span></div></div>') +
+      '</div>' +
+      '<div class="ob-read" id="obRead"><div class="ob-read-bar"><span id="obReadFill"></span></div><span id="obReadMsg">Scroll to the end to unlock signing</span></div>' +
+    '</div>' +
+    '<div id="obAlt"></div>' +
+    '<div class="ob-sign is-locked" id="obSignBox">' +
+      '<div class="ob-lockmsg" id="obLockMsg">' + OB_ICON.lock + '<span>Read to the end of the document to unlock signing</span></div>' +
+      obField('obSignName', 'Type your full name', '<input id="obSignName" class="form-control" type="text" maxlength="120" autocomplete="name" value="' + esc((window.currentUser || {}).name || '') + '">') +
+      '<div class="ob-field" id="f-obSig"><label>Draw your signature <span class="ob-sigtools"><button type="button" class="ob-link" onclick="obUndoSig()">Undo</button><button type="button" class="ob-link" onclick="obClearSig()">Clear</button></span></label>' +
+        '<canvas id="obSig" class="ob-sig" height="150"></canvas><div class="ob-err" id="e-obSig"></div><small>Use your finger or mouse.</small></div>' +
+      '<label class="ob-agree" id="f-obAgree"><input id="obAgree" type="checkbox"> <span>I have read and agree to this ' + (key === 'nda' ? 'agreement' : 'declaration') + '.</span></label><div class="ob-err" id="e-obAgree"></div>' +
+      '<div class="ob-actions"><button class="btn btn-ghost" onclick="obGo(\'' + (prev || 'id') + '\')">Back</button>' +
+      '<button class="btn btn-primary ob-primary" id="obSignBtn" onclick="obSubmitDoc(\'' + key + '\', this)">' + meta.cta + '</button></div>' +
+    '</div>';
   obInitSig();
+  obClearOnInput(['obSignName']);
+  obEl('obAgree').addEventListener('change', () => { obEl('e-obAgree').textContent = ''; });
+  OB.reads[key] = OB.reads[key] || false;
+  obWatchReading(key, textMode);
+  if (textMode) return;
+
+  try {
+    const pdfjsLib = await loadPdfJs();
+    if (OB.key !== key) return;
+    const buf = await (await fetch(meta.url)).arrayBuffer();
+    const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+    let info = null;
+    if (key === 'starter') {
+      const r = await fetch('/api/employee/onboarding/starter/fields');
+      info = r.ok ? await r.json() : { fillable: false, fields: [], pages: [] };
+      if (!info.fillable) OB.mode = 'upload';
+    }
+    _obPdf = { key, doc, info };
+    if (OB.key !== key) return;
+    await obPaintPages();
+    if (key === 'starter') obStarterAlt();
+  } catch (e) {
+    // Never block signing because the viewer failed; offer the file directly
+    obEl('obDocPages').innerHTML = '<div class="ob-doc-fail">The document could not be shown here. <a class="ob-link" href="' + meta.url + '" target="_blank" rel="noopener">Open it in a new tab</a> to read it, then come back to sign.</div>';
+    obEl('obDocPage').textContent = 'Document';
+    obMarkRead(key, true);
+  }
 }
 
+// Draw every page to a canvas at the available width; lay the starter-sheet inputs over them
+async function obPaintPages() {
+  const { key, doc, info } = _obPdf;
+  const host = obEl('obDocPages');
+  if (!host || OB.key !== key) return;
+  const width = Math.max(260, Math.floor(obEl('obDocScroll').clientWidth - 2));
+  _obLastWidth = obEl('obDocScroll').clientWidth;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  host.innerHTML = '';
+  const showForm = key === 'starter' && info && info.fillable && OB.mode === 'fill';
+  for (let n = 1; n <= doc.numPages; n++) {
+    const page = await doc.getPage(n);
+    if (OB.key !== key) return;
+    const base = page.getViewport({ scale: 1 });
+    const scale = width / base.width;
+    const vp = page.getViewport({ scale: scale * dpr });
+    const wrap = document.createElement('div');
+    wrap.className = 'ob-page';
+    wrap.dataset.page = n;
+    wrap.style.width = width + 'px'; wrap.style.height = Math.round(base.height * scale) + 'px';
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
+    canvas.style.width = '100%'; canvas.style.height = '100%';
+    wrap.appendChild(canvas);
+    host.appendChild(wrap);
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+    if (showForm) obOverlayFields(wrap, n - 1, info, scale);
+  }
+  obEl('obDocScroll').dispatchEvent(new Event('scroll'));
+  obCountFields();
+}
+
+// Inputs positioned over each fillable field (PDF points from the top-left of the page)
+function obOverlayFields(wrap, pageIdx, info, scale) {
+  info.fields.filter(f => !f.readOnly).forEach(f => {
+    f.widgets.filter(w => w.page === pageIdx).forEach(w => {
+      let el;
+      if (f.type === 'checkbox') { el = document.createElement('input'); el.type = 'checkbox'; el.checked = OB.values[f.name] === true; }
+      else if (f.type === 'radio') { el = document.createElement('input'); el.type = 'radio'; el.name = 'r_' + f.name; el.value = (f.options || [])[w.index] || ''; el.checked = OB.values[f.name] === el.value; }
+      else if (f.type === 'dropdown') {
+        el = document.createElement('select');
+        el.innerHTML = '<option value=""></option>' + (f.options || []).map(o => '<option>' + esc(o) + '</option>').join('');
+        el.value = OB.values[f.name] || '';
+      } else if (f.multiline) { el = document.createElement('textarea'); el.value = OB.values[f.name] || ''; }
+      else { el = document.createElement('input'); el.type = 'text'; el.value = OB.values[f.name] || ''; if (f.maxLength) el.maxLength = f.maxLength; }
+      el.className = 'ob-f ob-f-' + f.type + (f.required ? ' is-required' : '');
+      el.style.cssText = 'left:' + (w.x * scale) + 'px;top:' + (w.y * scale) + 'px;width:' + (w.w * scale) + 'px;height:' + (w.h * scale) + 'px;font-size:' + Math.max(10, Math.min(16, w.h * scale * 0.62)) + 'px';
+      el.title = f.name.replace(/[_.]+/g, ' ');
+      const onChange = () => {
+        OB.values[f.name] = f.type === 'checkbox' ? el.checked : el.value;
+        el.classList.remove('has-error'); obCountFields();
+      };
+      el.addEventListener(f.type === 'text' ? 'input' : 'change', onChange);
+      wrap.appendChild(el);
+    });
+  });
+}
+
+function obCountFields() {
+  const info = _obPdf.info;
+  const note = obEl('obFieldCount');
+  if (!note || !info) return;
+  const fill = info.fields.filter(f => !f.readOnly && f.type !== 'checkbox');
+  const done = fill.filter(f => String(OB.values[f.name] || '').trim()).length;
+  note.textContent = done + ' of ' + fill.length + ' boxes filled';
+  note.classList.toggle('is-complete', fill.length > 0 && done === fill.length);
+}
+
+// The starter sheet can also be handed in as the person's own completed copy
+function obStarterAlt() {
+  const info = _obPdf.info, top = obEl('obDocTop'), alt = obEl('obAlt');
+  if (!info || !top) return;
+  if (info.fillable && OB.mode === 'fill') {
+    top.innerHTML = '<div class="ob-fillbar"><span id="obFieldCount"></span>' +
+      '<button type="button" class="ob-link" onclick="obSetMode(\'upload\')">Prefer to upload your own completed copy?</button></div>';
+    alt.innerHTML = '';
+    obCountFields();
+  } else {
+    top.innerHTML = '<div class="ob-note">' + (info.fillable
+      ? 'Upload your completed copy below, or <button type="button" class="ob-link" onclick="obSetMode(\'fill\')">fill it in on screen instead</button>.'
+      : 'This form cannot be filled in on screen. <a class="ob-link" href="' + OB_DOC.starter.url + '?download=1" download>Download it</a>, complete it, then upload your completed copy (a PDF or a clear photo).') + '</div>';
+    alt.innerHTML =
+      '<label class="ob-drop" id="obDoneDrop"><input id="obDoneFile" type="file" accept=".pdf,.jpg,.jpeg,.png,image/*,application/pdf">' +
+        '<div class="ob-drop-empty">' + OB_ICON.upload + '<b>Upload your completed starter sheet</b><small>PDF or photo, up to 2.5 MB. Click or drop it here.</small></div>' +
+        '<div class="ob-drop-preview"></div></label><div class="ob-err" id="obDoneErr"></div>';
+    obDropZone('obDoneDrop', f => { OB.completedFile = f; obEl('obDoneErr').textContent = ''; });
+  }
+}
+
+async function obSetMode(mode) {
+  OB.mode = mode; OB.completedFile = null;
+  await obPaintPages();
+  obStarterAlt();
+}
+
+// Unlock signing once the end of the document has been reached
+function obWatchReading(key, textMode) {
+  const sc = obEl('obDocScroll');
+  const fill = obEl('obReadFill'), msg = obEl('obReadMsg');
+  const update = () => {
+    const max = sc.scrollHeight - sc.clientHeight;
+    const pct = max <= 8 ? 100 : Math.min(100, Math.round(sc.scrollTop / max * 100));
+    fill.style.width = pct + '%';
+    const pages = sc.querySelectorAll('.ob-page');
+    if (pages.length) {
+      let cur = 1;
+      pages.forEach(p => { if (p.offsetTop - sc.scrollTop < sc.clientHeight * 0.6) cur = Number(p.dataset.page); });
+      obEl('obDocPage').textContent = 'Page ' + cur + ' of ' + pages.length;
+    }
+    if (pct >= 98 && sc.scrollHeight > 0 && (pages.length || textMode)) obMarkRead(key, true);
+    msg.textContent = OB.reads[key] ? 'You have reached the end' : 'Scroll to the end to unlock signing';
+  };
+  sc.addEventListener('scroll', update, { passive: true });
+  OB._readUpdate = update;
+  if (OB.reads[key]) obMarkRead(key, true);
+  update();
+}
+
+function obMarkRead(key, v) {
+  OB.reads[key] = v;
+  const box = obEl('obSignBox');
+  if (!box || OB.key !== key) return;
+  const wasLocked = box.classList.contains('is-locked');
+  box.classList.toggle('is-locked', !v);
+  // First time it opens: bring the signing box into view so it is obvious what comes next
+  if (v && wasLocked) box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  obEl('obRead')?.classList.toggle('is-done', v);
+  if (v) { const m = obEl('obReadMsg'); if (m) m.textContent = 'You have reached the end'; }
+}
+
+// ── Signature pad ──
 function obInitSig() {
-  const c = document.getElementById('obSig');
+  const c = obEl('obSig');
+  if (!c) return;
+  OB.ink = [];
   const ratio = window.devicePixelRatio || 1;
   const w = c.clientWidth || 500;
   c.width = w * ratio; c.height = 150 * ratio;
   const ctx = c.getContext('2d');
   ctx.scale(ratio, ratio);
-  ctx.lineWidth = 2.2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111';
-  let drawing = false, last = null;
+  const redraw = () => {
+    ctx.clearRect(0, 0, c.width, c.height);
+    ctx.lineWidth = 2.4; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111';
+    OB.ink.forEach(s => { ctx.beginPath(); s.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); if (s.length === 1) ctx.lineTo(s[0].x + 0.1, s[0].y); ctx.stroke(); });
+  };
+  OB._redrawSig = redraw;
+  let drawing = false;
   const pos = e => { const r = c.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
-  c.addEventListener('pointerdown', e => { drawing = true; last = pos(e); c.setPointerCapture(e.pointerId); e.preventDefault(); });
-  c.addEventListener('pointermove', e => {
-    if (!drawing) return;
-    const p = pos(e);
-    ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
-    last = p; OB.drawn = true;
-  });
+  c.addEventListener('pointerdown', e => { drawing = true; OB.ink.push([pos(e)]); c.setPointerCapture(e.pointerId); e.preventDefault(); });
+  c.addEventListener('pointermove', e => { if (!drawing) return; OB.ink[OB.ink.length - 1].push(pos(e)); redraw(); obErr('obSig', ''); });
   const stop = () => { drawing = false; };
   c.addEventListener('pointerup', stop); c.addEventListener('pointercancel', stop);
 }
+function obClearSig() { OB.ink = []; OB._redrawSig && OB._redrawSig(); }
+function obUndoSig() { OB.ink.pop(); OB._redrawSig && OB._redrawSig(); }
 
-function obClearSig() {
-  const c = document.getElementById('obSig');
-  if (!c) return;
-  c.getContext('2d').clearRect(0, 0, c.width, c.height);
-  OB.drawn = false;
+// ── Sign and submit (NDA or starter sheet) ──
+async function obSubmitDoc(key, btn) {
+  const signed_name = obEl('obSignName').value.trim();
+  let bad = false;
+  if (!OB.reads[key]) { showToast('Scroll to the end of the document first', 'info'); return; }
+  if (signed_name.length < 3) { obErr('obSignName', 'Type your full name'); bad = true; }
+  if (!OB.ink.length) { obErr('obSig', 'Draw your signature in the box'); bad = true; }
+  const agree = obEl('obAgree').checked;
+  if (!agree) { obEl('e-obAgree').textContent = 'Tick the box to confirm'; bad = true; } else obEl('e-obAgree').textContent = '';
+
+  let payload = { signed_name, agree, signature: null };
+  if (key === 'starter') {
+    if (OB.mode === 'upload') {
+      if (!OB.completedFile) { obEl('obDoneErr').textContent = 'Choose your completed starter sheet to upload'; bad = true; }
+    } else {
+      const missing = _obPdf.info.fields.filter(f => f.required && !f.readOnly && !String(OB.values[f.name] == null ? '' : OB.values[f.name]).trim() && OB.values[f.name] !== true);
+      if (missing.length) {
+        missing.forEach(f => document.querySelectorAll('.ob-f').forEach(el => { if (el.title === f.name.replace(/[_.]+/g, ' ')) el.classList.add('has-error'); }));
+        showToast(missing.length + ' required box' + (missing.length === 1 ? ' is' : 'es are') + ' still empty (shown in red)', 'error'); bad = true;
+      }
+    }
+  }
+  if (bad) return;
+
+  btn.disabled = true; btn.classList.add('is-busy');
+  try {
+    // The drawn signature as a PNG
+    const sig = obEl('obSig');
+    payload.signature = sig.toDataURL('image/png');
+    if (key === 'starter') {
+      if (OB.mode === 'upload') Object.assign(payload, await obPrepareFile(OB.completedFile, 2.5));
+      else payload.values = OB.values;
+    }
+    const res = await fetch(key === 'nda' ? '/api/employee/onboarding/sign' : '/api/employee/onboarding/starter', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Could not save your signature');
+    await obAfterStep();
+  } catch (e) {
+    showToast(e.message, 'error');
+    btn.disabled = false; btn.classList.remove('is-busy');
+  }
 }
 
-async function obSign(btn) {
-  const signed_name = document.getElementById('obSignName').value.trim();
-  if (signed_name.length < 3) return showToast('Type your full name', 'error');
-  if (!OB.drawn) return showToast('Draw your signature in the box', 'error');
-  if (!document.getElementById('obAgree').checked) return showToast('Tick the box to confirm you agree', 'error');
-  btn.disabled = true;
-  const signature = document.getElementById('obSig').toDataURL('image/png');
-  const res = await fetch('/api/employee/onboarding/sign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ signed_name, signature, agree: true }) }).catch(() => null);
-  const data = res ? await res.json().catch(() => ({})) : {};
-  btn.disabled = false;
-  if (!res || !res.ok) return showToast(data.error || 'Could not save your signature', 'error');
-  await obRefresh();
-  if (OB.data.completed) return obFinish();
-  // Something earlier is still missing (e.g. cleared by an admin): go back to it
-  OB.step = !OB.data.steps.details ? 1 : !OB.data.steps.id ? 2 : 3;
-  showToast('One more step needs finishing first', 'info');
-  obRender();
+// ── All done ──
+function obDone() {
+  const d = OB.data;
+  const items = obKeys().map(k => '<li><span class="ob-tick-sm">' + OB_ICON.check + '</span>' + OB_STEP[k].label + '</li>').join('');
+  const links = [d.signed.nda ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/nda?download=1">Your signed NDA</a>' : '',
+                 d.signed.starter ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/starter?download=1">Your starter sheet</a>' : ''].join('');
+  obEl('obBody').innerHTML =
+    '<div class="ob-done"><div class="ob-tick"><svg viewBox="0 0 52 52"><circle cx="26" cy="26" r="24" fill="none" stroke="currentColor" stroke-width="3"/><path d="M15 27l8 8 14-16" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>' +
+    '<h2>You are all set, ' + esc(obFirstName()) + '</h2><p>Everything has been saved to your employee file.</p>' +
+    '<ul class="ob-summary">' + items + '</ul>' + (links ? '<div class="ob-links">' + links + '</div>' : '') +
+    '<button class="btn btn-primary ob-primary" onclick="obFinish()">Go to my portal</button></div>';
 }
 
 function obFinish() {
-  document.getElementById('obBody').innerHTML = '<div class="ob-done"><div class="ob-tick">✓</div><h2>All done</h2><p>Thanks, ' + esc(obFirstName()) + '. Taking you to your portal…</p></div>';
-  setTimeout(() => {
-    document.getElementById('obOverlay')?.remove();
-    showToast('Welcome aboard!', 'success');
-    if (OB.resolve) OB.resolve();
-  }, 1200);
+  obClose();
+  document.getElementById('obBanner')?.remove();
+  showToast('Welcome aboard!', 'success');
+  const done = OB.resolve; OB.resolve = null;
+  if (done) done();
+  else if (typeof loadEmployeeProfile === 'function' && document.getElementById('page-profile')?.classList.contains('active')) loadEmployeeProfile();
+}
+
+// ── "Complete your profile" banner for people who already had a login ──
+function obShowBanner() {
+  if (document.getElementById('obBanner') || sessionStorage.getItem('obBannerHidden')) return;
+  const main = document.querySelector('.page')?.parentElement;
+  if (!main) return;
+  const b = document.createElement('div');
+  b.id = 'obBanner';
+  b.className = 'ob-banner';
+  b.innerHTML = '<span class="ob-banner-icon">' + OB_ICON.user + '</span>' +
+    '<div class="ob-banner-text"><b>Please complete your profile</b><span>Add your details, upload your ID and sign your documents. It only takes a few minutes.</span></div>' +
+    '<button class="btn btn-primary btn-sm" onclick="startOnboarding()">Complete now</button>' +
+    '<button class="ob-banner-x" aria-label="Hide for now" onclick="try{sessionStorage.setItem(\'obBannerHidden\',\'1\')}catch(e){};document.getElementById(\'obBanner\').remove()">×</button>';
+  main.insertBefore(b, main.firstChild);
+}
+
+// A card on My Profile: progress, a way back into the checklist, and the person's signed copies
+function onboardingCard(ob) {
+  const keys = ['details', 'id', ...(ob.needs_starter ? ['starter'] : []), 'nda'];
+  const done = keys.filter(k => ob.steps[k]).length;
+  const labels = { details: 'Your details', id: 'ID', starter: 'Starter sheet', nda: 'NDA' };
+  const pct = Math.round(done / keys.length * 100);
+  return '<div class="card" style="padding:24px;margin-top:16px">' +
+    '<div style="font:700 15px/1 var(--font-sans);color:var(--text);margin-bottom:6px">Profile checklist</div>' +
+    '<div class="ob-prof-bar"><span style="width:' + pct + '%"></span></div>' +
+    '<ul class="ob-prof-list">' + keys.map(k => '<li class="' + (ob.steps[k] ? 'is-done' : '') + '"><span>' + (ob.steps[k] ? '✓' : '○') + '</span>' + labels[k] + '</li>').join('') + '</ul>' +
+    (done < keys.length
+      ? '<button class="btn btn-primary" style="margin-top:14px" onclick="startOnboarding()">Complete my profile</button>'
+      : '<div style="color:var(--positive);font:600 13px/1.4 var(--font-sans);margin-top:12px">Everything is complete.</div>') +
+    ((ob.signed.nda || ob.signed.starter) ? '<div class="ob-links" style="margin-top:14px">' +
+      (ob.signed.nda ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/nda?download=1">Download my signed NDA</a>' : '') +
+      (ob.signed.starter ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/starter?download=1">Download my starter sheet</a>' : '') + '</div>' : '') +
+  '</div>';
 }
 
 // ─── EMPLOYEE DIRECTORY (staff portal) ────────────────────────────────────────

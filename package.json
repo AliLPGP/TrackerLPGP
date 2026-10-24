@@ -20,6 +20,7 @@
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.2",
     "nodemailer": "^8.0.7",
+    "pdf-lib": "^1.17.1",
     "pizzip": "^3.2.0"
   }
 }
