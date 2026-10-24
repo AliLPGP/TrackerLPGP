@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node test/bridge.test.js && node test/salary.test.js"
+    "test": "node test/bridge.test.js && node test/salary.test.js && node test/pdf.test.js"
   },
   "engines": {
     "node": ">=18.0.0"
@@ -20,6 +20,7 @@
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.2",
     "nodemailer": "^8.0.7",
+    "pdf-lib": "^1.17.1",
     "pizzip": "^3.2.0"
   }
 }

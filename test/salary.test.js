@@ -31,6 +31,19 @@ assert.strictEqual(
   3 * 2000 + 3 * 3000
 );
 
+// The salary in force on a day, and the bands a year is built from
+const { salaryOnDate, payBands } = require('../salary-periods');
+const promo = [h('2026-04-12', 30000, 1), h('2026-11-01', 33000, 2)];
+assert.strictEqual(salaryOnDate(promo, '2026-10-31', 1), 30000);
+assert.strictEqual(salaryOnDate(promo, '2026-11-01', 1), 33000);
+assert.strictEqual(salaryOnDate(promo, '2026-01-01', 1), 30000); // before the first row: the first salary
+assert.strictEqual(salaryOnDate([h('2026-11-01', 33000, 1)], '2026-05-01', 28000), 28000); // one row: no timeline, current salary
+assert.deepStrictEqual(payBands({ history: promo, year: 2026, startDate: '2026-04-12' }), [
+  { from: '2026-04-12', to: '2026-10-31', annual: 30000, monthly: 2500 },
+  { from: '2026-11-01', to: '2026-12-31', annual: 33000, monthly: 2750 },
+]);
+assert.deepStrictEqual(payBands({ history: [h('2024-01-01', 30000, 1), h('2025-06-01', 33000, 2)], year: 2026 }), []); // raise was last year
+
 console.log('salary tests passed');
 
 // ── Bank holidays and working-day counting ──

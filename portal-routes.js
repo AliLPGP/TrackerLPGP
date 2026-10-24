@@ -2,7 +2,9 @@
 
 const crypto = require('crypto');
 const express = require('express');
+const { PDFDocument } = require('pdf-lib');
 const { builtInHolidays, regionFor, splitWorkingDays, addDays } = require('./holidays');
+const { readFormFields, fillForm, imageToPdf, appendSignaturePage } = require('./pdf-sign');
 
 /**
  * Everything the staff portal needs beyond the original day-off buttons.
@@ -18,6 +20,7 @@ const { builtInHolidays, regionFor, splitWorkingDays, addDays } = require('./hol
  */
 
 const MAX_FILE_BYTES = 3 * 1024 * 1024; // Vercel caps a request body at 4.5 MB and base64 adds a third
+const MAX_COMPLETED_BYTES = 2.5 * 1024 * 1024; // a completed form travels with a signature in one request
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const REGIONS = ['ALL', 'GB', 'AE', 'PH'];
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -306,28 +309,71 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
 
   const onboardingRow = async id => (await q('SELECT *, date_of_birth::TEXT AS dob_text FROM employee_onboarding WHERE employee_id = ?', [id])).rows[0] || null;
 
-  function onboardingState(row, emp) {
+  // The company files staff are asked to read and sign (see onboarding_templates)
+  const TEMPLATE_KEYS = ['nda', 'starter'];
+  async function templateMeta() {
+    const { rows } = await q('SELECT key, file_name, file_size, uploaded_by, updated_at FROM onboarding_templates');
+    const out = { nda: null, starter: null };
+    rows.forEach(r => { out[r.key] = { file_name: r.file_name, file_size: r.file_size, uploaded_by: r.uploaded_by, updated_at: r.updated_at }; });
+    return out;
+  }
+  async function templateBytes(key) {
+    const { rows } = await q('SELECT file_data FROM onboarding_templates WHERE key = ?', [key]);
+    return rows[0] ? Buffer.from(rows[0].file_data, 'base64') : null;
+  }
+
+  // steps.starter is null when it does not apply (self-employed staff, or no starter sheet uploaded)
+  function onboardingState(row, emp, tpl = { nda: null, starter: null }) {
+    const needsStarter = emp.employment_type === 'payroll' && !!tpl.starter;
     const steps = {
       details: !!(row && row.dob_text && String(row.address || '').trim() && String(emp.phone || '').trim()),
       id: !!(row && row.id_doc_name),
+      starter: needsStarter ? !!(row && row.starter_done_at) : null,
       nda: !!(row && row.nda_signed_at),
     };
     const completed = !!(row && row.completed_at);
-    return { steps, completed, required: !!(row && row.required) && !completed };
+    return { steps, completed, needs_starter: needsStarter, required: !!(row && row.required) && !completed };
   }
+  const allStepsDone = st => st.steps.details && st.steps.id && st.steps.starter !== false && st.steps.nda;
 
-  // Once all three steps are in, stamp it complete and tell the admin
+  // Once every step is in, stamp it complete and tell the admin
   async function finishIfDone(empId) {
     const emp = await getEmployee(empId);
     const row = await onboardingRow(empId);
-    const st = onboardingState(row, emp);
-    if (st.completed || !(st.steps.details && st.steps.id && st.steps.nda)) return st.completed;
+    const st = onboardingState(row, emp, await templateMeta());
+    if (st.completed || !allStepsDone(st)) return st.completed;
     await q('UPDATE employee_onboarding SET completed_at = NOW(), updated_at = NOW() WHERE employee_id = ? AND completed_at IS NULL', [empId]);
     if (notifyAdmin) {
       notifyAdmin(`${emp.name} completed onboarding`,
-        `<p><strong>${esc(emp.name)}</strong> has entered their details, uploaded ID and signed the NDA.</p><p>Open their profile in the tracker to review.</p>`);
+        `<p><strong>${esc(emp.name)}</strong> has entered their details, uploaded ID${st.needs_starter ? ', completed the starter sheet' : ''} and signed the NDA.</p><p>The signed documents are in their file in the tracker.</p>`);
     }
     return true;
+  }
+
+  // A PDF stored on the employee's file; returns its id
+  async function storeEmployeeDoc(empId, docType, fileName, bytes, uploadedBy) {
+    const buf = Buffer.from(bytes);
+    const { rows } = await q(
+      `INSERT INTO employee_documents (employee_id, doc_type, file_name, file_data, file_size, uploaded_by)
+       VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+      [empId, docType, safeName(fileName, 'document.pdf'), buf.toString('base64'), buf.length, uploadedBy]);
+    return rows[0].id;
+  }
+
+  // The name, drawn signature and agreement every signing step needs
+  function readSigning(b) {
+    const name = String((b && b.signed_name) || '').trim().slice(0, 120);
+    if (name.length < 3) return { error: 'Type your full name to sign' };
+    if (!b || b.agree !== true) return { error: 'Tick the box to confirm you agree' };
+    let signature = null;
+    if (b.signature) {
+      // Only a plain PNG data URL is accepted, so it is safe to put straight into a page or PDF later
+      if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(b.signature) || b.signature.length > 300000) {
+        return { error: 'The drawn signature could not be read, please draw it again' };
+      }
+      signature = b.signature;
+    }
+    return { name, signature };
   }
 
   router.get('/employee/onboarding', requireAuth, staffOnly, async (req, res) => {
@@ -335,7 +381,19 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       const emp = await getEmployee(req.user.employee_id);
       if (!emp) return res.status(404).json({ error: 'Not found' });
       const row = await onboardingRow(emp.id);
-      const st = onboardingState(row, emp);
+      const tpl = await templateMeta();
+      const st = onboardingState(row, emp, tpl);
+
+      // Someone who already had a login is not forced through onboarding; they get a
+      // one-off notification asking them to complete their profile (the portal also shows a banner)
+      if (!st.required && !st.completed && !(row && row.prompted_at)) {
+        await q(
+          `INSERT INTO employee_onboarding (employee_id, prompted_at) VALUES (?, NOW())
+           ON CONFLICT (employee_id) DO UPDATE SET prompted_at = NOW()`, [emp.id]);
+        await q('INSERT INTO emp_notifications (employee_id, message, type) VALUES (?, ?, ?)',
+          [emp.id, 'Please complete your profile: add your details, upload your ID and sign your documents. It only takes a few minutes.', 'info']);
+      }
+
       res.json({
         ...st,
         details: {
@@ -346,6 +404,11 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
           emergency_contact_phone: row ? row.emergency_contact_phone : '',
         },
         id_doc: row && row.id_doc_name ? { type: row.id_doc_type, name: row.id_doc_name } : null,
+        documents: {
+          nda: tpl.nda ? { mode: 'pdf', file_name: tpl.nda.file_name } : { mode: 'text' },
+          starter: st.needs_starter ? { file_name: tpl.starter.file_name } : null,
+        },
+        signed: { nda: !!(row && row.nda_doc_id), starter: !!(row && row.starter_doc_id) },
         nda: {
           text: row && row.nda_signed_at && row.nda_text ? row.nda_text : await ndaText(),
           signed_name: row ? row.nda_signed_name : null,
@@ -402,28 +465,142 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
 
   router.post('/employee/onboarding/sign', requireAuth, staffOnly, async (req, res) => {
     try {
-      const b = req.body || {};
-      const name = String(b.signed_name || '').trim().slice(0, 120);
-      if (name.length < 3) return res.status(400).json({ error: 'Type your full name to sign' });
-      if (b.agree !== true) return res.status(400).json({ error: 'Tick the box to confirm you agree' });
-      let signature = null;
-      if (b.signature) {
-        // Only a plain PNG data URL is stored, so it is safe to put straight into a page later
-        if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(b.signature) || b.signature.length > 300000) {
-          return res.status(400).json({ error: 'The drawn signature could not be read, please draw it again' });
-        }
-        signature = b.signature;
-      }
+      const sig = readSigning(req.body);
+      if (sig.error) return res.status(400).json({ error: sig.error });
       const empId = req.user.employee_id;
-      const text = await ndaText();
+      const emp = await getEmployee(empId);
+      const signedAt = new Date();
+      // If an NDA file has been uploaded, they sign that file: it is kept with a signature page
+      // on their record. Otherwise they sign the NDA wording.
+      const pdf = await templateBytes('nda');
+      let docId = null, text = null;
+      if (pdf) {
+        const signed = await appendSignaturePage(pdf, { title: 'Non-disclosure agreement', signerName: sig.name, signaturePng: sig.signature, signedAt });
+        docId = await storeEmployeeDoc(empId, 'nda', `NDA (signed) - ${emp.name}.pdf`, signed, `${emp.name} (portal)`);
+      } else {
+        text = await ndaText();
+      }
       await q(
-        `INSERT INTO employee_onboarding (employee_id, nda_text, nda_signed_name, nda_signature, nda_signed_at)
-         VALUES (?, ?, ?, ?, NOW())
+        `INSERT INTO employee_onboarding (employee_id, nda_text, nda_signed_name, nda_signature, nda_signed_at, nda_doc_id)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT (employee_id) DO UPDATE SET nda_text = EXCLUDED.nda_text, nda_signed_name = EXCLUDED.nda_signed_name,
-           nda_signature = EXCLUDED.nda_signature, nda_signed_at = NOW(), updated_at = NOW()`,
-        [empId, text, name, signature]);
+           nda_signature = EXCLUDED.nda_signature, nda_signed_at = EXCLUDED.nda_signed_at, nda_doc_id = EXCLUDED.nda_doc_id, updated_at = NOW()`,
+        [empId, text, sig.name, sig.signature, signedAt.toISOString(), docId]);
       const completed = await finishIfDone(empId);
       res.json({ ok: true, completed });
+    } catch (e) { fail(res, e); }
+  });
+
+  // The starter sheet: where its fillable fields are, so the browser can lay inputs over each page
+  router.get('/employee/onboarding/starter/fields', requireAuth, staffOnly, async (req, res) => {
+    try {
+      const bytes = await templateBytes('starter');
+      if (!bytes) return res.status(404).json({ error: 'No starter sheet has been set up' });
+      res.json(await readFormFields(bytes));
+    } catch (e) { fail(res, e); }
+  });
+
+  // Complete the starter sheet: either answers for its fillable fields, or their own completed copy
+  // (a PDF or a photo). Either way it is signed and filed on their record.
+  router.post('/employee/onboarding/starter', requireAuth, staffOnly, async (req, res) => {
+    try {
+      const b = req.body || {};
+      const sig = readSigning(b);
+      if (sig.error) return res.status(400).json({ error: sig.error });
+      const empId = req.user.employee_id;
+      const emp = await getEmployee(empId);
+      const tpl = await templateMeta();
+      if (emp.employment_type !== 'payroll' || !tpl.starter) return res.status(400).json({ error: 'There is no starter sheet for you to complete' });
+
+      let base;
+      if (b.file_data) {
+        const kind = sniff(b.file_data);
+        if (!kind) return res.status(400).json({ error: 'Upload a PDF, JPG or PNG' });
+        if (byteLength(b.file_data) > MAX_COMPLETED_BYTES) return res.status(413).json({ error: 'The file must be under 2.5 MB' });
+        const raw = Buffer.from(b.file_data, 'base64');
+        base = kind.ext === 'pdf' ? raw : await imageToPdf(raw, kind.ext);
+      } else {
+        const template = await templateBytes('starter');
+        const info = await readFormFields(template);
+        if (!info.fillable) return res.status(400).json({ error: 'This starter sheet cannot be filled in on screen. Upload your completed copy instead.' });
+        base = await fillForm(template, b.values && typeof b.values === 'object' ? b.values : {});
+      }
+      const signedAt = new Date();
+      const signed = await appendSignaturePage(base, { title: 'Starter sheet', signerName: sig.name, signaturePng: sig.signature, signedAt });
+      const docId = await storeEmployeeDoc(empId, 'starter_form', `Starter sheet - ${emp.name}.pdf`, signed, `${emp.name} (portal)`);
+      await q(
+        `INSERT INTO employee_onboarding (employee_id, starter_done_at, starter_doc_id) VALUES (?, ?, ?)
+         ON CONFLICT (employee_id) DO UPDATE SET starter_done_at = EXCLUDED.starter_done_at, starter_doc_id = EXCLUDED.starter_doc_id, updated_at = NOW()`,
+        [empId, signedAt.toISOString(), docId]);
+      const completed = await finishIfDone(empId);
+      res.json({ ok: true, completed });
+    } catch (e) { fail(res, e); }
+  });
+
+  // A member of staff can always get their own signed copies back
+  router.get('/employee/onboarding/signed/:which', requireAuth, staffOnly, async (req, res) => {
+    try {
+      const col = req.params.which === 'nda' ? 'nda_doc_id' : req.params.which === 'starter' ? 'starter_doc_id' : null;
+      if (!col) return res.status(404).json({ error: 'Not found' });
+      const row = await onboardingRow(req.user.employee_id);
+      if (!row || !row[col]) return res.status(404).json({ error: 'Not signed yet' });
+      const { rows } = await q('SELECT file_name, file_data FROM employee_documents WHERE id = ? AND employee_id = ?', [row[col], req.user.employee_id]);
+      if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `${req.query.download ? 'attachment' : 'inline'}; filename="${safeName(rows[0].file_name, 'signed.pdf')}"`);
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.send(Buffer.from(rows[0].file_data, 'base64'));
+    } catch (e) { fail(res, e); }
+  });
+
+  // ── Admin: the NDA and starter sheet files ──
+  router.get('/onboarding/templates', requireAuth, requireAdmin, async (req, res) => {
+    try { res.json(await templateMeta()); } catch (e) { fail(res, e); }
+  });
+
+  router.post('/onboarding/templates/:key', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const key = req.params.key;
+      if (!TEMPLATE_KEYS.includes(key)) return res.status(404).json({ error: 'Unknown file' });
+      const { file_name, file_data } = req.body || {};
+      if (!file_data) return res.status(400).json({ error: 'file_data required' });
+      const kind = sniff(file_data);
+      if (!kind || kind.ext !== 'pdf') return res.status(400).json({ error: 'Only PDF files can be uploaded' });
+      const size = byteLength(file_data);
+      if (size > MAX_FILE_BYTES) return res.status(413).json({ error: 'The PDF must be under 3 MB' });
+      const bytes = Buffer.from(file_data, 'base64');
+      let pages;
+      try { pages = (await PDFDocument.load(bytes)).getPageCount(); }
+      catch { return res.status(400).json({ error: 'That PDF could not be read. If it is password protected, remove the password and try again.' }); }
+      const info = key === 'starter' ? await readFormFields(bytes).catch(() => ({ fillable: false, fields: [] })) : null;
+      await q(
+        `INSERT INTO onboarding_templates (key, file_name, file_data, file_size, uploaded_by, updated_at)
+         VALUES (?, ?, ?, ?, ?, NOW())
+         ON CONFLICT (key) DO UPDATE SET file_name = EXCLUDED.file_name, file_data = EXCLUDED.file_data,
+           file_size = EXCLUDED.file_size, uploaded_by = EXCLUDED.uploaded_by, updated_at = NOW()`,
+        [key, safeName(file_name, `${key}.pdf`), file_data, size, req.admin.username || null]);
+      res.json({ ok: true, pages, fillable: info ? !!info.fillable : undefined, fields: info ? info.fields.length : undefined });
+    } catch (e) { fail(res, e); }
+  });
+
+  router.delete('/onboarding/templates/:key', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      if (!TEMPLATE_KEYS.includes(req.params.key)) return res.status(404).json({ error: 'Unknown file' });
+      await q('DELETE FROM onboarding_templates WHERE key = ?', [req.params.key]);
+      res.json({ ok: true });
+    } catch (e) { fail(res, e); }
+  });
+
+  // Staff read these in the wizard, so any signed-in user may fetch them
+  router.get('/onboarding/templates/:key/file', requireAuth, async (req, res) => {
+    try {
+      if (!TEMPLATE_KEYS.includes(req.params.key)) return res.status(404).json({ error: 'Unknown file' });
+      const { rows } = await q('SELECT file_name, file_data FROM onboarding_templates WHERE key = ?', [req.params.key]);
+      if (!rows[0]) return res.status(404).json({ error: 'Not set up' });
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="${safeName(rows[0].file_name, 'document.pdf')}"`);
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.send(Buffer.from(rows[0].file_data, 'base64'));
     } catch (e) { fail(res, e); }
   });
 
@@ -448,14 +625,15 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       if (!emp) return res.status(404).json({ error: 'Not found' });
       const row = await onboardingRow(emp.id);
       res.json({
-        ...onboardingState(row, emp),
+        ...onboardingState(row, emp, await templateMeta()),
         started: !!row,
         date_of_birth: row ? row.dob_text : null,
         address: row ? row.address : '',
         emergency_contact_name: row ? row.emergency_contact_name : '',
         emergency_contact_phone: row ? row.emergency_contact_phone : '',
         id_doc: row && row.id_doc_name ? { type: row.id_doc_type, name: row.id_doc_name, uploaded_at: row.id_uploaded_at } : null,
-        nda: row && row.nda_signed_at ? { signed_name: row.nda_signed_name, signed_at: row.nda_signed_at } : null,
+        nda: row && row.nda_signed_at ? { signed_name: row.nda_signed_name, signed_at: row.nda_signed_at, doc_id: row.nda_doc_id || null } : null,
+        starter: row && row.starter_done_at ? { signed_at: row.starter_done_at, doc_id: row.starter_doc_id || null } : null,
         completed_at: row ? row.completed_at : null,
       });
     } catch (e) { fail(res, e); }
@@ -480,6 +658,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       const emp = await getEmployee(req.params.id);
       const row = emp && await onboardingRow(emp.id);
       if (!row || !row.nda_signed_at) return res.status(404).send('This person has not signed the NDA yet.');
+      if (row.nda_doc_id) return res.redirect(`/api/employee-documents/${row.nda_doc_id}`);
       const when = new Date(row.nda_signed_at).toLocaleString('en-GB', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Europe/London' });
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.setHeader('Cache-Control', 'private, no-store');
@@ -504,7 +683,8 @@ ${row.nda_signature ? `<img alt="Signature" src="${row.nda_signature}">` : ''}
       await q(
         `INSERT INTO employee_onboarding (employee_id, required) VALUES (?, true)
          ON CONFLICT (employee_id) DO UPDATE SET required = true, completed_at = NULL,
-           nda_signed_at = NULL, nda_signed_name = NULL, nda_signature = NULL, nda_text = NULL, updated_at = NOW()`,
+           nda_signed_at = NULL, nda_signed_name = NULL, nda_signature = NULL, nda_text = NULL, nda_doc_id = NULL,
+           starter_done_at = NULL, starter_doc_id = NULL, updated_at = NOW()`,
         [emp.id]);
       res.json({ ok: true });
     } catch (e) { fail(res, e); }
@@ -533,6 +713,7 @@ ${row.nda_signature ? `<img alt="Signature" src="${row.nda_signature}">` : ''}
       if (size > MAX_FILE_BYTES) return res.status(413).json({ error: 'PDF must be under 3 MB' });
       const emp = await getEmployee(req.params.id);
       if (!emp) return res.status(404).json({ error: 'Employee not found' });
+      if (emp.employment_type !== 'payroll') return res.status(400).json({ error: 'Payslips are only for payroll staff' });
       const { rows } = await q(
         `INSERT INTO employee_payslips (employee_id, pay_year, pay_month, file_name, file_data, file_size, uploaded_by)
          VALUES (?, ?, ?, ?, ?, ?, ?)

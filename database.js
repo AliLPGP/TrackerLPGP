@@ -487,6 +487,23 @@ async function runMigrations() {
     )
   `);
 
+  // Company files the onboarding wizard shows and has staff sign: 'nda' (everyone) and
+  // 'starter' (the starter sheet payroll staff fill in). Signed copies go in employee_documents.
+  await sql(`
+    CREATE TABLE IF NOT EXISTS onboarding_templates (
+      key TEXT PRIMARY KEY,
+      file_name TEXT NOT NULL,
+      file_data TEXT NOT NULL,
+      file_size INT NOT NULL DEFAULT 0,
+      uploaded_by TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await sql(`ALTER TABLE employee_onboarding ADD COLUMN IF NOT EXISTS starter_done_at TIMESTAMPTZ`);
+  await sql(`ALTER TABLE employee_onboarding ADD COLUMN IF NOT EXISTS starter_doc_id INT`);
+  await sql(`ALTER TABLE employee_onboarding ADD COLUMN IF NOT EXISTS nda_doc_id INT`);
+  await sql(`ALTER TABLE employee_onboarding ADD COLUMN IF NOT EXISTS prompted_at TIMESTAMPTZ`);
+
   // One payslip PDF per person per month, uploaded by an admin
   await sql(`
     CREATE TABLE IF NOT EXISTS employee_payslips (
