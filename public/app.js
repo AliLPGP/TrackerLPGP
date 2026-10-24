@@ -5408,13 +5408,19 @@ function renderPortfolioGrid() {
       `<input class="port-search" id="portSearch" style="width:260px" placeholder="Search events, cities, teams" oninput="portFilterCards(this.value)" value="${esc(_portSearch)}">` +
       `<span style="flex:1"></span>` +
       `<button class="btn btn-ghost btn-sm" onclick="togglePortfolioProgramme()">${_portShowProgramme ? 'Hide' : 'Show'} 2027 programme</button>` +
+      `<button class="btn btn-ghost btn-sm" onclick="openPortTeamModal(null)">+ New team</button>` +
       `<button class="btn btn-primary btn-sm" onclick="openPortfolioModal()">+ Add Event</button>` +
     `</div>`;
 
   const programmeHtml = _portShowProgramme ? renderProgrammePanel() : renderProgrammeNotice();
 
+  const teamsWithoutEvents = _portTeams.filter(t => !portfolioData.some(e => portGroupKey(e.producer) === t.key));
   if (!filtered.length) {
-    grid.innerHTML = toolbarHtml + programmeHtml;
+    const teamsHtml = teamsWithoutEvents.length
+      ? `<section class="pf-list"><div class="pf-list-hd"><h2 class="pf-panel-title">Teams</h2><span class="pf-panel-aside">${teamsWithoutEvents.length} new team${teamsWithoutEvents.length === 1 ? '' : 's'}</span></div>` +
+        teamsWithoutEvents.map(t => `<div class="pf-group" data-producer="${esc(t.name.toLowerCase())}"><div class="pf-group-hd"><span class="pf-group-name">${esc(t.name)}</span><span class="pf-group-n">New team · no events yet</span></div>${renderGroupTeam(t.name)}<div class="pf-group-empty">Add an event and choose this team as its producer group. <button type="button" class="btn btn-ghost btn-sm" onclick="openPortfolioModal(null, ${esc(JSON.stringify(t.name))})">+ Add event</button></div></div>`).join('') + `</section>`
+      : '';
+    grid.innerHTML = toolbarHtml + programmeHtml + teamsHtml;
     empty.classList.remove('hidden');
     return;
   }
@@ -5511,6 +5517,11 @@ function renderPortfolioGrid() {
     if (!a) return 1; if (!b) return -1;
     return producerRank(a) - producerRank(b) || a.localeCompare(b);
   });
+  // Teams with no events anywhere yet (just created) still get a place in the list
+  const listedKeys = new Set(producers.map(portGroupKey));
+  const newTeams = _portTeams
+    .filter(t => !listedKeys.has(t.key) && !portfolioData.some(e => portGroupKey(e.producer) === t.key))
+    .sort((a, b) => a.name.localeCompare(b.name));
   // Dated first, soonest first; a month with the day TBC keeps its month;
   // no date at all goes last.
   const byDate = (a, b) => {
@@ -5542,6 +5553,15 @@ function renderPortfolioGrid() {
           ${evs.map(e => renderPortfolioEventCard(e, rowScale)).join('')}
         </div>`;
       }).join('')}
+      ${newTeams.map(t => `<div class="pf-group" data-producer="${esc(t.name.toLowerCase())}">
+          <div class="pf-group-hd">
+            <span class="pf-group-name">${esc(t.name)}</span>
+            <span class="pf-group-n">New team · no events yet</span>
+          </div>
+          ${renderGroupTeam(t.name)}
+          <div class="pf-group-empty">Add an event and choose this team as its producer group.
+            <button type="button" class="btn btn-ghost btn-sm" onclick="openPortfolioModal(null, ${esc(JSON.stringify(t.name))})">+ Add event</button></div>
+        </div>`).join('')}
     </section>`;
 
   grid.innerHTML = toolbarHtml + heroHtml + kpiHtml + seriesHtml + programmeHtml + listHtml;
@@ -5566,6 +5586,7 @@ const PORT_TEAM_ROLES = [
   { key: 'delegates',   label: 'Delegates',   dept: /delegat/i },
 ];
 const PORT_TEAM_OUTSIDE = 'outside';
+const PORT_TEAM_NEW = '__new__';
 const portGroupKey = name => String(name || '').trim().replace(/\s+/g, ' ').toUpperCase();
 
 function portTeamFor(groupName) {
@@ -5620,10 +5641,12 @@ function portTeamFillPicker(role, team) {
   sel.innerHTML = '<option value="">Nobody yet</option>' +
     (inDept.length ? `<optgroup label="${esc(deptNames)} team">${inDept.map(opt).join('')}</optgroup>` : '') +
     (rest.length ? `<optgroup label="${inDept.length ? 'Everyone else' : 'Staff'}">${rest.map(opt).join('')}</optgroup>` : '') +
+    `<option value="${PORT_TEAM_NEW}">+ Add a new staff member…</option>` +
     `<option value="${PORT_TEAM_OUTSIDE}">Someone outside the company…</option>`;
   if (savedId) sel.value = String(savedId);
   else if (savedName) sel.value = PORT_TEAM_OUTSIDE;
   else sel.value = '';
+  sel.dataset.prev = sel.value;
   other.value = savedId ? '' : savedName;
   other.classList.toggle('hidden', sel.value !== PORT_TEAM_OUTSIDE);
 }
@@ -5631,6 +5654,13 @@ function portTeamFillPicker(role, team) {
 function portTeamPick(roleKey) {
   const sel = document.getElementById(`portTeam_${roleKey}_sel`);
   const other = document.getElementById(`portTeam_${roleKey}`);
+  if (sel.value === PORT_TEAM_NEW) {
+    // Hand over to the add-staff form; keep the previous choice until someone is added
+    sel.value = sel.dataset.prev || '';
+    openPortStaffModal(roleKey);
+    return;
+  }
+  sel.dataset.prev = sel.value;
   const outside = sel.value === PORT_TEAM_OUTSIDE;
   other.classList.toggle('hidden', !outside);
   if (outside) other.focus();
@@ -5638,13 +5668,19 @@ function portTeamPick(roleKey) {
 }
 
 async function openPortTeamModal(groupName) {
-  const t = portTeamFor(groupName) || {};
-  const n = portfolioData.filter(e => portGroupKey(e.producer) === portGroupKey(groupName)).length;
-  document.getElementById('portTeamSeries').value = groupName;
-  document.getElementById('portTeamTitle').textContent = `${groupName} team`;
-  document.getElementById('portTeamSub').textContent = `${n} event${n === 1 ? '' : 's'} in this group`;
+  const creating = !groupName;
+  const t = creating ? {} : (portTeamFor(groupName) || {});
+  const n = creating ? 0 : portfolioData.filter(e => portGroupKey(e.producer) === portGroupKey(groupName)).length;
+  document.getElementById('portTeamSeries').value = creating ? '' : groupName;
+  document.getElementById('portTeamTitle').textContent = creating ? 'New team' : `${groupName} team`;
+  document.getElementById('portTeamSub').textContent = creating
+    ? 'Pick who is on it. The name fills in from the producer and co-producer.'
+    : `${n} event${n === 1 ? '' : 's'} in this group`;
+  document.getElementById('portTeamSave').textContent = creating ? 'Create team' : 'Save team';
+  // A team with no events can be removed (a typo, or one that was never used)
+  document.getElementById('portTeamRemove').classList.toggle('hidden', creating || n > 0 || !portTeamFor(groupName));
   const nameEl = document.getElementById('portTeamName');
-  nameEl.value = groupName;
+  nameEl.value = creating ? '' : groupName;
   delete nameEl.dataset.touched;
   document.getElementById('portTeamNameHint').textContent = '';
   try {
@@ -5678,7 +5714,7 @@ function portTeamAutoName() {
   }
   const hint = document.getElementById('portTeamNameHint');
   const n = portfolioData.filter(e => portGroupKey(e.producer) === portGroupKey(old)).length;
-  hint.textContent = portGroupKey(nameEl.value) && portGroupKey(nameEl.value) !== portGroupKey(old)
+  hint.textContent = old && portGroupKey(nameEl.value) && portGroupKey(nameEl.value) !== portGroupKey(old)
     ? `Renames ${old} to ${nameEl.value.trim()} on ${n} event${n === 1 ? '' : 's'}.` : '';
 }
 
@@ -5687,6 +5723,7 @@ async function savePortTeam() {
   const name = document.getElementById('portTeamName').value.trim();
   if (!name) { showToast('Give the group a name', 'error'); return; }
   const body = { old_name: oldName, name };
+  if (!oldName) body.create = true;
   for (const r of PORT_TEAM_ROLES) {
     const v = document.getElementById(`portTeam_${r.key}_sel`).value;
     if (v === PORT_TEAM_OUTSIDE) {
@@ -5704,11 +5741,86 @@ async function savePortTeam() {
   const saved = await res.json();
   _portTeams = _portTeams.filter(t => t.key !== saved.key && t.key !== portGroupKey(oldName)).concat(saved);
   closeModal('portTeamModal');
-  if (saved.renamed_from) {
+  if (body.create) {
+    showToast(`Team ${saved.name} created. Add events to it from Add Event.`, 'success');
+  } else if (saved.renamed_from) {
     portfolioData.forEach(e => { if (portGroupKey(e.producer) === portGroupKey(oldName)) e.producer = saved.name; });
     showToast(`Team saved · events moved to ${saved.name}`, 'success');
   } else showToast('Team saved', 'success');
   renderPortfolioGrid();
+}
+
+async function removePortTeam() {
+  const name = document.getElementById('portTeamSeries').value;
+  if (!name || !await showConfirm(`Remove the team ${name}? It has no events.`)) return;
+  const res = await fetch('/api/producer-teams/' + encodeURIComponent(portGroupKey(name)), { method: 'DELETE' }).catch(() => null);
+  const data = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { showToast(data.error || 'Could not remove the team', 'error'); return; }
+  _portTeams = _portTeams.filter(t => t.key !== portGroupKey(name));
+  closeModal('portTeamModal');
+  showToast('Team removed', 'success');
+  renderPortfolioGrid();
+}
+
+// ── Add a new staff member from the team picker ──
+function openPortStaffModal(roleKey) {
+  const role = PORT_TEAM_ROLES.find(r => r.key === roleKey);
+  document.getElementById('portStaffRole').value = roleKey;
+  document.getElementById('portStaffSub').textContent = `They will be picked as ${role.label.toLowerCase()} for this team.`;
+  ['portStaffName', 'portStaffTitle', 'portStaffEmail', 'portStaffSalary'].forEach(id => { document.getElementById(id).value = ''; });
+  // Suggest the department this role usually sits in, from the departments already in use
+  const depts = [...new Set(_portTeamStaff.map(e => (e.department || '').trim()).filter(Boolean))].sort();
+  document.getElementById('portStaffDepts').innerHTML = depts.map(d => `<option value="${esc(d)}">`).join('');
+  document.getElementById('portStaffDept').value = depts.find(d => role.dept.test(d)) || '';
+  document.getElementById('portStaffType').value = 'payroll';
+  document.getElementById('portStaffStart').value = today();
+  // Managers do not see pay, so they are not asked for it
+  document.getElementById('portStaffSalaryWrap').classList.toggle('hidden', !(currentUser && currentUser.role === 'admin'));
+  openModal('portStaffModal');
+  document.getElementById('portStaffName').focus();
+}
+
+async function savePortStaff() {
+  const name = document.getElementById('portStaffName').value.trim();
+  if (!name) { showToast('Enter their name', 'error'); return; }
+  const roleKey = document.getElementById('portStaffRole').value;
+  if (_portTeamStaff.some(e => e.active && e.name.trim().toLowerCase() === name.toLowerCase())
+      && !await showConfirm(`There is already someone called ${name} on staff. Add another?`)) return;
+  const btn = document.getElementById('portStaffSave');
+  btn.disabled = true;
+  const body = {
+    name,
+    job_title: document.getElementById('portStaffTitle').value.trim(),
+    department: document.getElementById('portStaffDept').value.trim(),
+    email: document.getElementById('portStaffEmail').value.trim(),
+    employment_type: document.getElementById('portStaffType').value,
+    start_date: document.getElementById('portStaffStart').value || null,
+    annual_salary: parseFloat(document.getElementById('portStaffSalary').value) || 0,
+    currency: 'GBP',
+  };
+  const res = await fetch('/api/employees', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null);
+  const data = res ? await res.json().catch(() => ({})) : {};
+  btn.disabled = false;
+  if (!res || !res.ok || !data.id) { showToast(data.error || 'Could not add them', 'error'); return; }
+
+  _portTeamStaff.push({ id: data.id, name, active: 1, department: body.department, job_title: body.job_title, employment_type: body.employment_type });
+  _portTeamStaff.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  // Refill every picker with the new person in it, keeping what was already chosen
+  const keep = Object.fromEntries(PORT_TEAM_ROLES.map(r => [r.key, {
+    sel: document.getElementById(`portTeam_${r.key}_sel`).value, other: document.getElementById(`portTeam_${r.key}`).value }]));
+  PORT_TEAM_ROLES.forEach(r => {
+    portTeamFillPicker(r, {});
+    const sel = document.getElementById(`portTeam_${r.key}_sel`), other = document.getElementById(`portTeam_${r.key}`);
+    const want = r.key === roleKey ? String(data.id) : keep[r.key].sel;
+    if ([...sel.options].some(o => o.value === want)) sel.value = want;
+    sel.dataset.prev = sel.value;
+    other.value = keep[r.key].other;
+    other.classList.toggle('hidden', sel.value !== PORT_TEAM_OUTSIDE);
+  });
+  portTeamAutoName();
+  closeModal('portStaffModal');
+  loadEmployees().catch(() => {});
+  showToast(`${name} added to staff. Finish their details in Employees when ready.`, 'success');
 }
 
 // ── An employee's producer teams, for their record ──
@@ -6153,7 +6265,7 @@ function portDateChanged() {
       : (date.value ? `Shown as "${preview}".` : '');
 }
 
-function openPortfolioModal(id) {
+function openPortfolioModal(id, presetProducer) {
   document.getElementById('portEditId').value = id || '';
   document.getElementById('portfolioModalTitle').textContent = id ? 'Edit Event' : 'Add Event';
   const producerSel = document.getElementById('portProducer');
@@ -6167,6 +6279,7 @@ function openPortfolioModal(id) {
   document.getElementById('portDate').value     = ev && ev.event_date ? String(ev.event_date).slice(0, 10) : '';
   document.getElementById('portDateTbc').value  = ev ? (ev.date_tbc || '') : '';
   producerSel.value = evKey ? ([...producerSel.options].find(o => portGroupKey(o.value) === evKey)?.value || '') : '';
+  if (!id && presetProducer) producerSel.value = [...producerSel.options].find(o => portGroupKey(o.value) === portGroupKey(presetProducer))?.value || '';
   document.getElementById('portYear').value     = ev ? (ev.programme_year || '') : (_portYearFilter !== 'all' ? _portYearFilter : '');
   document.getElementById('portLocation').value = ev ? (ev.location || '') : '';
   document.getElementById('portNotes').value    = ev ? (ev.notes || '') : '';

@@ -2196,6 +2196,14 @@ app.put('/api/producer-teams', requireAuth, requireAdminOrManager, async (req, r
     if (!key) return res.status(400).json({ error: 'Give the group a name' });
     const oldKey = producerKey(req.body.old_name) || key;
 
+    // Creating a new team must never silently overwrite an existing one
+    if (req.body.create) {
+      const { rows: taken } = await q(
+        `SELECT 1 FROM producer_teams WHERE key=? UNION ALL
+         SELECT 1 FROM portfolio_events WHERE UPPER(TRIM(producer))=? LIMIT 1`, [key, key]);
+      if (taken.length) return res.status(409).json({ error: `There is already a team called ${name}` });
+    }
+
     const ids = [], names = [];
     for (const r of PRODUCER_TEAM_ROLES) {
       const id = parseInt(req.body[`${r}_id`], 10);
@@ -2228,6 +2236,17 @@ app.put('/api/producer-teams', requireAuth, requireAdminOrManager, async (req, r
     );
     const { rows } = await q(`${PRODUCER_TEAM_SELECT} WHERE t.key=?`, [key]);
     res.json({ ...rows[0], renamed_from: oldKey !== key ? req.body.old_name : null });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Remove a team that has no events (a typo, or one that was never used).
+app.delete('/api/producer-teams/:key', requireAuth, requireAdminOrManager, async (req, res) => {
+  try {
+    const key = producerKey(decodeURIComponent(req.params.key));
+    const { rows: used } = await q('SELECT 1 FROM portfolio_events WHERE UPPER(TRIM(producer))=? LIMIT 1', [key]);
+    if (used.length) return res.status(409).json({ error: 'This team still has events. Move or delete them first.' });
+    await q('DELETE FROM producer_teams WHERE key=?', [key]);
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

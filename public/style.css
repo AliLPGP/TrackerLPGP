@@ -7552,3 +7552,6 @@ textarea.form-control { resize: vertical; }
 .hotel-stat-cards { grid-template-columns: repeat(3, 1fr); }
 @media (max-width: 700px) { .hotel-stat-cards { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 480px) { .hotel-stat-cards { grid-template-columns: 1fr; } }
+
+.pf-group-empty { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 14px 16px; margin-top: 8px; border: 1.5px dashed var(--border-bright); border-radius: 12px; color: var(--muted); font: 400 13px/1.5 var(--font-sans); }
+#portStaffModal .pt-body > .form-group { margin-bottom: 14px; }
