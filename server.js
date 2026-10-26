@@ -3340,12 +3340,19 @@ app.post('/api/generate-invoice', requireAuth, requireAdminOrManager, async (req
       benefits = [], additional_notes = ''
     } = req.body;
     const benefitsArr = Array.isArray(benefits) ? benefits : String(benefits).split('\n').map(s => s.trim()).filter(Boolean);
+    // Each package is a "Package name:" line with its bullet points under it.
+    // Older callers send one flat benefits list under package_name.
+    const clean = v => String(v == null ? '' : v).trim();
+    const packages = Array.isArray(req.body.packages)
+      ? req.body.packages.map(p => ({ title: clean(p && p.title), items: (Array.isArray(p && p.items) ? p.items : []).map(clean).filter(Boolean) }))
+          .filter(p => p.title || p.items.length)
+      : (package_name || benefitsArr.length ? [{ title: clean(package_name), items: benefitsArr.map(clean).filter(Boolean) }] : []);
     // The template wraps the "Additional Comments:" label and its value in a
     // paragraph loop — an empty array drops the whole section from the document.
     const notesText = String(additional_notes || '').trim();
     doc.render({ contact_name, company_name, address, email, invoice_number, date,
       event_name, package_name, amount_ex_vat, vat_amount, total_due, client_name,
-      benefits: benefitsArr, additional_notes: notesText,
+      packages, additional_notes: notesText,
       notes_block: notesText ? [notesText] : [] });
     // No VAT: leave the VAT row out of the totals entirely.
     if (!(parseFloat(String(vat_amount).replace(/[^0-9.]/g, '')) > 0)) dropInvoiceRow(doc.getZip(), 'VAT 20%');

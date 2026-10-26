@@ -1137,7 +1137,30 @@ async function openEmployeeProfile(empId) {
       <div class="ep-tiles" id="epTiles"><div class="ep-loading">Loading…</div></div>
     </section>
 
-    ${isAdmin ? `<section class="ep-sec ep-sec--sign">
+    ${isAdmin ? `<section class="ep-sec">
+      <div class="ep-sec-head">
+        <div><h3>Warnings <span class="ep-count" id="epWarnCount"></span></h3><p class="ep-sec-note">They see each warning and its reason in their portal, and get a notification when one is added.</p></div>
+        <button class="btn btn-sm" onclick="epToggleWarningForm(true)">Add warning</button>
+      </div>
+      <div id="epWarnForm" class="ep-warn-form hidden">
+        <div class="ep-warn-row">
+          <select id="epWarnLevel" class="ep-doc-type" aria-label="Warning type">
+            <option value="verbal">Verbal warning</option>
+            <option value="written" selected>Written warning</option>
+            <option value="final">Final written warning</option>
+          </select>
+          <input type="date" id="epWarnDate" class="ep-doc-type" value="${new Date().toISOString().slice(0, 10)}" aria-label="Date issued">
+        </div>
+        <textarea id="epWarnReason" rows="3" maxlength="2000" placeholder="Reason, e.g. Late to work three times in October without notice"></textarea>
+        <div class="ep-warn-row ep-warn-actions">
+          <button class="btn btn-ghost btn-sm" onclick="epToggleWarningForm(false)">Cancel</button>
+          <button class="btn btn-primary btn-sm" onclick="epAddWarning(${emp.id})">Save warning</button>
+        </div>
+      </div>
+      <div id="epWarnings" class="ep-list"><div class="ep-loading">Loading…</div></div>
+    </section>
+
+    <section class="ep-sec ep-sec--sign">
       <div class="ep-sec-head">
         <div><h3>Contract to sign</h3><p class="ep-sec-note">Upload a new contract here and it appears in their onboarding for them to read and sign. The signed copy is filed below automatically.</p></div>
       </div>
@@ -1206,7 +1229,7 @@ async function openEmployeeProfile(empId) {
   if (payEl) payEl.innerHTML = pays.length
     ? pays.slice(0, 6).map(p => `<div class="ep-row"><span>${MONTHS[Number(p.payment_month)]} ${p.payment_year}${p.notes ? `<small>${esc(p.notes)}</small>` : ''}</span><strong>${fmtMoney(p.amount, p.currency || emp.currency)}</strong></div>`).join('')
     : '<div class="ep-empty">No payments recorded.</div>';
-  if (isAdmin) { loadEmpContract(empId); loadEmpDocs(empId); loadEmpOnboarding(empId); if (emp.employment_type === 'payroll') loadEmpPayslips(empId); }
+  if (isAdmin) { loadEmpWarnings(empId); loadEmpContract(empId); loadEmpDocs(empId); loadEmpOnboarding(empId); if (emp.employment_type === 'payroll') loadEmpPayslips(empId); }
   if (canManage) {
     loadEmpPortfolioRoles(empId, 'epPortfolio');
     loadEmpEvents(empId, 'epEvents');
@@ -1534,6 +1557,61 @@ async function saveNdaText(reset) {
   if (!res || !res.ok) { showToast('Could not save', 'error'); return; }
   showToast(reset ? 'Reset to the default wording' : 'NDA wording saved', 'success');
   closeModal('ndaEditModal');
+}
+
+// ── Warnings (admin) ──
+const WARNING_LABEL = { verbal: 'Verbal warning', written: 'Written warning', final: 'Final written warning' };
+
+async function loadEmpWarnings(empId) {
+  const box = document.getElementById('epWarnings');
+  if (!box) return;
+  try {
+    const res = await fetch(`/api/employees/${empId}/warnings`);
+    if (!res.ok) throw new Error();
+    const list = await res.json();
+    if (_profileEmpId !== empId) return;
+    const count = document.getElementById('epWarnCount');
+    if (count) count.textContent = list.length ? String(list.length) : '';
+    box.innerHTML = list.length ? list.map(w => `<div class="ep-row ep-warn">
+        <span><b>${esc(WARNING_LABEL[w.level] || 'Warning')}</b> · ${fmtDateShort(w.issued_on)}
+          <small class="ep-warn-reason">${esc(w.reason)}</small>${w.issued_by ? `<small>Added by ${esc(w.issued_by)}</small>` : ''}</span>
+        <button class="btn btn-ghost btn-sm ep-danger" onclick="epDeleteWarning(${empId},${w.id})">Remove</button>
+      </div>`).join('')
+      : '<div class="ep-empty">No warnings.</div>';
+  } catch { box.innerHTML = '<div class="ep-empty">Could not load warnings.</div>'; }
+}
+
+function epToggleWarningForm(show) {
+  const f = document.getElementById('epWarnForm');
+  if (!f) return;
+  f.classList.toggle('hidden', !show);
+  if (show) document.getElementById('epWarnReason').focus();
+  else { document.getElementById('epWarnReason').value = ''; document.getElementById('epWarnLevel').value = 'written'; }
+}
+
+async function epAddWarning(empId) {
+  const reason = document.getElementById('epWarnReason').value.trim();
+  if (!reason) { showToast('Give the reason for the warning', 'error'); return; }
+  const res = await fetch(`/api/employees/${empId}/warnings`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason, level: document.getElementById('epWarnLevel').value, issued_on: document.getElementById('epWarnDate').value }),
+  }).catch(() => null);
+  if (!res || !res.ok) {
+    const err = res ? await res.json().catch(() => ({})) : {};
+    showToast(err.error || 'Could not save the warning', 'error');
+    return;
+  }
+  showToast('Warning added. They have been notified.', 'success');
+  epToggleWarningForm(false);
+  loadEmpWarnings(empId);
+}
+
+async function epDeleteWarning(empId, id) {
+  if (!await showConfirm('Remove this warning? It disappears from their portal too.')) return;
+  const res = await fetch(`/api/warnings/${id}`, { method: 'DELETE' }).catch(() => null);
+  if (!res || !res.ok) { showToast('Could not remove', 'error'); return; }
+  showToast('Warning removed', 'success');
+  loadEmpWarnings(empId);
 }
 
 async function loadEmpPayslips(empId) {
@@ -7495,8 +7573,8 @@ function openEmpNotificationsModal(notifs) {
   const existing = document.getElementById('empNotifModal');
   if (existing) existing.remove();
 
-  const TYPE_COLOR = { approved: 'var(--positive)', declined: 'var(--negative)', info: 'var(--primary)' };
-  const TYPE_ICON  = { approved: '✓', declined: '✕', info: 'ℹ' };
+  const TYPE_COLOR = { approved: 'var(--positive)', declined: 'var(--negative)', info: 'var(--primary)', warning: 'var(--warning)' };
+  const TYPE_ICON  = { approved: '✓', declined: '✕', info: 'ℹ', warning: '!' };
   const rows = notifs.length
     ? notifs.map(n => {
         const d = new Date(n.created_at).toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'});
@@ -7518,7 +7596,8 @@ function openEmpNotificationsModal(notifs) {
 
   const modal = document.createElement('div');
   modal.id = 'empNotifModal';
-  modal.className = 'modal-overlay';
+  // .open is what makes an overlay visible; without it the click looked dead
+  modal.className = 'modal-overlay open';
   modal.innerHTML =
     '<div class="modal" style="max-width:440px">' +
       '<div class="modal-header"><span class="modal-title">Notifications</span>' +
@@ -7538,11 +7617,13 @@ async function loadEmployeeDashboard(user) {
   el.innerHTML = '<div class="skeleton" style="height:200px;border-radius:16px"></div>';
 
   try {
-    const [profileRes, remindersRes, salaryRes] = await Promise.all([
+    const [profileRes, remindersRes, salaryRes, warnRes] = await Promise.all([
       fetch('/api/employee/profile'),
       fetch('/api/employee/reminders'),
-      fetch('/api/employee/salary')
+      fetch('/api/employee/salary'),
+      fetch('/api/employee/warnings').catch(() => null)
     ]);
+    const warnings  = warnRes && warnRes.ok ? await warnRes.json() : [];
     const profile   = profileRes.ok   ? await profileRes.json()   : {};
     const reminders = remindersRes.ok  ? await remindersRes.json() : [];
     const sal       = salaryRes.ok    ? await salaryRes.json()    : null;
@@ -7802,6 +7883,8 @@ async function loadEmployeeDashboard(user) {
           '<div style="padding:4px 18px 14px">' + remindersCardHtml() + '</div>' +
         '</div>' +
       '</div>' +
+      // Warnings on their record, the same card as on My Profile (only when there are any)
+      myWarningsCard(warnings) +
       salHtml;
 
     // Hide the other dashboard panels
@@ -7828,9 +7911,10 @@ async function loadEmployeeProfile() {
   if (!el) return;
   el.innerHTML = '<div class="skeleton" style="height:300px;border-radius:16px"></div>';
   try {
-    const [res, obRes] = await Promise.all([fetch('/api/employee/profile'), fetch('/api/employee/onboarding').catch(() => null)]);
+    const [res, obRes, warnRes] = await Promise.all([fetch('/api/employee/profile'), fetch('/api/employee/onboarding').catch(() => null), fetch('/api/employee/warnings').catch(() => null)]);
     const p = res.ok ? await res.json() : {};
     const ob = obRes && obRes.ok ? await obRes.json() : null;
+    const warnings = warnRes && warnRes.ok ? await warnRes.json() : [];
     const initials = (p.name || '?').split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
     const detail = (label, val) =>
       '<div style="display:flex;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--border);font:500 13px/1.3 var(--font-sans)">' +
@@ -7874,10 +7958,27 @@ async function loadEmployeeProfile() {
           '<button class="btn btn-primary" style="width:100%" onclick="changeMyPin(' + (p.has_pin ? 'true' : 'false') + ')">Update PIN</button>' +
         '</div>' +
       '</div>' +
+      myWarningsCard(warnings) +
       (ob ? onboardingCard(ob) + personalDetailsCard(ob) : '');
   } catch (e) {
     el.innerHTML = '<div class="alert alert-error">Failed to load profile: ' + e.message + '</div>';
   }
+}
+
+// Warnings on their record, newest first. Shown only once there is one.
+function myWarningsCard(list) {
+  if (!list || !list.length) return '';
+  const n = list.length;
+  return '<div class="card my-warnings" style="padding:24px;margin-top:16px">' +
+    '<div class="my-warnings-hd"><div style="font:700 15px/1 var(--font-sans);color:var(--text)">Warnings</div>' +
+      '<span class="my-warnings-count">' + n + ' warning' + (n === 1 ? '' : 's') + '</span></div>' +
+    '<div style="font:500 12px/1.5 var(--font-mono);color:var(--muted);margin:6px 0 10px">If you have questions about a warning, speak to your manager.</div>' +
+    list.map(w =>
+      '<div class="my-warning">' +
+        '<div class="my-warning-top"><b>' + esc(WARNING_LABEL[w.level] || 'Warning') + '</b><span>' + esc(fmtDateShort(w.issued_on)) + '</span></div>' +
+        '<div class="my-warning-reason">' + esc(w.reason) + '</div>' +
+      '</div>').join('') +
+  '</div>';
 }
 
 // Date of birth, address and emergency contact: shared with onboarding, editable any time
@@ -12296,12 +12397,18 @@ function igCollectPayload() {
   // Total Cost line, not beside each event
   const eventLines = evs.map(e => e.name);
 
-  // Benefits: a block per event — "Event — Package" header followed by its bullets
-  const benefits = [];
+  // Packages: "Event Partner:" with its bullet points underneath. Events on the
+  // same package with the same details share one block; the events are only
+  // named beside a package when the invoice has more than one, so each block
+  // says which events it covers.
+  const groups = [];
   evs.filter(e => e.pkg || e.benefits.length).forEach(e => {
-    if (benefits.length) benefits.push('');
-    benefits.push(e.pkg ? `${e.name} — ${e.pkg}` : e.name);
-    benefits.push(...e.benefits);
+    const g = groups.find(x => x.pkg === e.pkg && x.benefits.join('\n') === e.benefits.join('\n'));
+    if (g) g.names.push(e.name); else groups.push({ pkg: e.pkg, benefits: e.benefits, names: [e.name] });
+  });
+  const packages = groups.map(g => {
+    const label = g.pkg || 'Package';
+    return { title: groups.length > 1 ? `${label} (${g.names.join(', ')}):` : `${label}:`, items: g.benefits };
   });
 
   return {
@@ -12319,7 +12426,7 @@ function igCollectPayload() {
     total_due:      document.getElementById('igTotalDue').value.trim() || document.getElementById('igAmountExVat').value.trim(),
     // The agreement is signed in the company's name, so the signature line uses it.
     client_name:    document.getElementById('igCompany').value.trim(),
-    benefits,
+    packages,
     additional_notes: document.getElementById('igAdditionalNotes').value.trim(),
     paid:           document.getElementById('igPaid').checked,
     paid_date:      igUkDate(document.getElementById('igPaidDate').value),
@@ -12331,9 +12438,6 @@ function igCollectPayload() {
 // that will be sent to it, so details can be checked before generating.
 function previewInvoice() {
   const p = igCollectPayload();
-  const benefits = p.benefits.map(b =>
-    b === '' ? '<div class="ig-benefit-gap"></div>' : `<div class="ig-benefit">${esc(b)}</div>`
-  ).join('');
   const amt = esc(p.amount_ex_vat || '—');
 
   // Each page carries the template's diagonal header (logo top right) and
@@ -12400,8 +12504,9 @@ function previewInvoice() {
       <div class="ig-sec-hd">Sponsorship &amp; Benefits</div>
       <div class="ig-events-lbl">Events:</div>
       <ul class="ig-events">${p.event_name ? p.event_name.split('\n').filter(Boolean).map(l => `<li>${esc(l)}</li>`).join('') : '<li>—</li>'}</ul>
-      ${p.benefits.length
-        ? `<ul class="ig-benefits">${p.benefits.map(b => b === '' ? '<li class="ig-gap-li"></li>' : `<li>${esc(b)}</li>`).join('')}</ul>`
+      ${p.packages.length
+        ? p.packages.map(g => `<div class="ig-pkg-title">${esc(g.title)}</div>` +
+            (g.items.length ? `<ul class="ig-benefits">${g.items.map(b => `<li>${esc(b)}</li>`).join('')}</ul>` : '')).join('')
         : '<div class="ig-muted">No package details listed</div>'}
       <div class="ig-total-cost">Total Cost - £${amt} plus VAT</div>
       ${p.additional_notes
@@ -12412,14 +12517,18 @@ function previewInvoice() {
     ${foot}
   </div>`;
 
+  // The full Terms & Conditions, word for word as in invoice_template.docx
+  // (test/invoice-terms.test.js fails if the two drift apart).
   const page3 = `<div class="ig-page">
     ${head}
     <div class="ig-body ig-body--doc">
       <div class="ig-agree-title">LPGP Connect Limited Terms &amp; Conditions</div>
       <ol class="ig-tc">
-        <li><div>Scope of Agreement</div><p>These are the conditions of the contract between you, the Sponsoring Client and LPGP Connect Limited. The above package includes the benefits to each event you are solicitated to (listed above). This agreement constitutes the entire agreement between LPGP Connect Limited and you.</p></li>
-        <li><div>Cancellations</div><p>Subject to the terms hereof, in the event of your cancellation 100% of the Total Fee is payable and non-refundable unless otherwise agreed to by LPGP Connect Limited. All cancellation requests must be submitted to us in writing…</p></li>
-        <li><div>Force Majeure</div><p>3.1) In the event that a party is prevented, hindered or delayed in or from performing any of its obligations under this agreement for any reason beyond its reasonable control… <em>(full text appears in the generated document)</em></p></li>
+        <li><div>Scope of Agreement</div><p>These are the conditions of the contract between you, the Sponsoring Client and LPGP Connect Limited. The above package includes the benefits to each event you are solicitated to (listed above)</p><p>This agreement constitutes the entire agreement between LPGP Connect Limited and you</p></li>
+        <li><div>Cancellations</div><p>Subject to the terms hereof, in the event of your cancellation 100% of the Total Fee is payable and non-refundable unless otherwise agreed to by LPGP Connect Limited. All cancellation requests must be submitted to us in writing. If we agree to your cancellation then all cancellation fees, if any, are payable immediately after the acceptance of your cancellation in writing by us. Note, that your package/price reflects scheduled in-person events. If such events are not held in person, you have the right to cancel its attendance and receive a full refund for amounts paid or the agreed upon allocation of amounts paid with respect to any specific cancelled event.</p></li>
+        <li><div>Force Majeure</div>
+          <p class="ig-tc-sub"><span>3.1)</span>In the event that a party is prevented, hindered or delayed in or from performing any of its obligations under this agreement (the “Affected Party”) for any reason beyond its reasonable control, including without limitation by acts of God, flood, drought, earthquake or other natural disaster, epidemic or pandemic or any other widespread disease, terrorist attack, civil war, civil commotion or riots, war, threat of or preparation for war, armed conflict, imposition of sanctions, embargo, or breaking off of diplomatic relations, nuclear, chemical or biological contamination or sonic boom, any law or any action taken by a government or public authority, including without limitation imposing an export or import restriction, quota or prohibition, or failing to grant a necessary license or consent, collapse of buildings, fire, explosion or accident (“Force Majeure Event”), the Affected Party shall not be in breach of this agreement.</p>
+          <p class="ig-tc-sub"><span>3.2)</span>If the Force Majeure Event prevents, hinders or delays the Affected Party’s performance of its obligations for a continuous period of more than 365 days, the other party not affected by the Force Majeure Event may terminate this agreement by giving written notice to the Affected Party at the end of that period, and such party shall be entitled to a full refund of the fees paid to the Affected Party under this agreement.  Client may cancel its attendance at any specific event as a result of a Force Majeure Event, and Client shall be entitled to either attend another event within a one-year period of such cancelled event, or a full refund of the fees paid with respect to such event promptly after any such cancellation.</p></li>
       </ol>
       <div class="ig-sig">
         <div class="ig-sig-name">${esc(p.client_name || '—')}</div>
