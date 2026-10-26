@@ -52,6 +52,18 @@ function createProgrammeRouter({ q, requireAuth, requireAdminOrManager }) {
     return { date: target.date, tbc: target.tbc };
   }
 
+  // A linked row against the current calendar: the name and date it should carry,
+  // and whether it differs. A row that already holds a real day inside a month the
+  // calendar only calls TBC keeps that day (see keptDate).
+  function staleness(canon, row) {
+    const want = keptDate({ date: canon.date, tbc: canon.tbc }, row);
+    const have = { date: isoDate(row.event_date), tbc: row.date_tbc || '' };
+    const changes = {};
+    if ((row.name || '') !== canon.name) changes.name = { from: row.name || '', to: canon.name };
+    if (have.date !== want.date || have.tbc !== (want.tbc || '')) changes.date = { from: have, to: { date: want.date, tbc: want.tbc || '' } };
+    return Object.keys(changes).length ? changes : null;
+  }
+
   async function loadRows() {
     const { rows } = await q(`
       SELECT pe.id, pe.name, to_char(pe.event_date, 'YYYY-MM-DD') AS event_date, pe.location, pe.notes, pe.producer,
@@ -67,7 +79,8 @@ function createProgrammeRouter({ q, requireAuth, requireAdminOrManager }) {
   router.get('/2027', ...guards, async (_req, res) => {
     try {
       const rows = await loadRows();
-      const items = programme.reconcile(rows);
+      const items = programme.reconcile(rows).map((it) => (
+        it.status === 'linked' ? { ...it, out_of_date: staleness(it, it.row) } : it));
       res.json({
         year: programme.PROGRAMME_YEAR,
         producers: programme.PRODUCERS,
@@ -78,6 +91,7 @@ function createProgrammeRouter({ q, requireAuth, requireAdminOrManager }) {
           suggested: items.filter((i) => i.status === 'suggested').length,
           missing: items.filter((i) => i.status === 'missing').length,
           duplicates: items.filter((i) => i.status === 'linked' && i.duplicate).length,
+          out_of_date: items.filter((i) => i.out_of_date).length,
         },
         items,
       });
@@ -232,6 +246,29 @@ function createProgrammeRouter({ q, requireAuth, requireAdminOrManager }) {
       );
       if (!rows.length) return res.status(404).json({ error: 'That row is not linked to the programme' });
       res.json({ ok: true, id: rows[0].id });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Bring linked events in line with the current calendar: their name and date only.
+  // Producer, location, notes and every deal allocation are left exactly as they are.
+  router.post('/2027/sync', ...guards, async (_req, res) => {
+    try {
+      const rows = await loadRows();
+      const updated = [];
+      for (const it of programme.reconcile(rows)) {
+        if (it.status !== 'linked') continue;
+        const changes = staleness(it, it.row);
+        if (!changes) continue;
+        const want = keptDate({ date: it.date, tbc: it.tbc }, it.row);
+        const { rows: done } = await q(
+          `UPDATE portfolio_events SET name = ?, event_date = ?, date_tbc = ?
+           WHERE id = ? AND programme_key = ? RETURNING id`,
+          [it.name, want.date, want.tbc || '', it.row.id, it.programme_key]);
+        if (done.length) updated.push({ key: it.key, id: it.row.id, changes });
+      }
+      res.json({ ok: true, updated });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }

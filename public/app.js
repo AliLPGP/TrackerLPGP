@@ -6226,6 +6226,7 @@ function renderProgrammePanel() {
   const data = p.data;
   const c = data.counts || { linked: 0, suggested: 0, missing: 0, duplicates: 0 };
   const dups = c.duplicates || 0;
+  const stale = c.out_of_date || 0;
   const seriesShort = (id) => (data.series && data.series[id] && data.series[id].short) || (PORT_SERIES_MAP[id] && PORT_SERIES_MAP[id].short) || id;
   const statusLine =
     `<p class="pf-prog-status">` +
@@ -6233,6 +6234,7 @@ function renderProgrammePanel() {
       `<span class="pf-prog-dot pf-prog-dot--suggested"></span><b>${c.suggested}</b> matched, awaiting your confirmation &nbsp;·&nbsp; ` +
       `<span class="pf-prog-dot pf-prog-dot--missing"></span><b>${c.missing}</b> to create` +
       (dups ? ` &nbsp;·&nbsp; <span class="pf-prog-dot pf-prog-dot--suggested"></span><b>${dups}</b> older row${dups === 1 ? '' : 's'} look${dups === 1 ? 's' : ''} like ${dups === 1 ? 'a linked event' : 'linked events'}` : '') +
+      (stale ? ` &nbsp;·&nbsp; <b>${stale}</b> linked event${stale === 1 ? '' : 's'} behind the latest calendar` : '') +
     `</p>`;
 
   const decisionCell = (it) => {
@@ -6240,8 +6242,14 @@ function renderProgrammePanel() {
     const opt = (v, label) => `<option value="${v}"${d === v ? ' selected' : ''}>${label}</option>`;
     if (it.status === 'linked') {
       const r = it.row || {};
-      let html = `<span class="pf-prog-linked">Linked to #${r.id} · <b>${esc(r.name || '')}</b>` +
-        ` <button class="pf-prog-unlink" onclick="unlinkProgrammeRow(${parseInt(r.id, 10) || 0}, ${JSON.stringify(String(r.name || ''))})" title="Undo this link. The event, its date and its deals stay exactly as they are; it just stops counting as this programme entry.">Unlink</button></span>`;
+      const od = it.out_of_date;
+      const fmtD = (x) => fmtEventDate({ event_date: x.date, date_tbc: x.tbc, programme_year: data.year || 2027 }, { long: true });
+      const pending = od ? [
+        od.date ? `date ${esc(fmtD(od.date.from))} \u2192 ${esc(fmtD(od.date.to))}` : '',
+        od.name ? 'name updates to the calendar' : '',
+      ].filter(Boolean).join(' · ') : '';
+      let html = `<span class="pf-prog-linked">${pending ? `Linked · <span class="pf-prog-pending">will update: ${pending}</span>` : 'Linked'}` +
+        ` <button class="pf-prog-unlink" onclick="unlinkProgrammeRow(${parseInt(r.id, 10) || 0}, ${JSON.stringify(String(it.name || ''))})" title="Undo this link. The event, its date and its deals stay exactly as they are; it just stops counting as this programme entry.">Unlink</button></span>`;
       // An older row under its shorthand name, still sitting beside the
       // linked one. Merging moves its deals here and removes it.
       if (it.duplicate) {
@@ -6272,7 +6280,11 @@ function renderProgrammePanel() {
       opt('create', 'Create') + opt('skip', 'Skip') + `</select>`;
   };
 
-  const rows = (data.items || []).map(it => {
+  // By date through the year; month-only (day TBC) after the dated events in that
+  // month, and anything with no date at all last.
+  const sortKey = (it) => (it.date || '9999-12-31') + (it.tbc === 'day' ? 'z' : it.tbc === 'date' ? 'zz' : '');
+  const sorted = (data.items || []).slice().sort((a, b) => sortKey(a).localeCompare(sortKey(b)) || String(a.name).localeCompare(String(b.name)));
+  const rows = sorted.map(it => {
     const sid = it.series;
     const s = PORT_SERIES_MAP[sid];
     const chip = s
@@ -6300,11 +6312,27 @@ function renderProgrammePanel() {
     </table></div>
     <div class="pf-prog-actions">
       <span class="pf-prog-status" id="pfApplyStatus">${programmeTallyText(renames, creates, merges)}</span>
+      ${stale ? `<button class="btn btn-ghost btn-sm" onclick="syncProgramme2027(${stale})" title="Sets each linked event's name and date to the calendar. Producer, location, notes and deals are not touched.">Update ${stale} linked event${stale === 1 ? '' : 's'} to the new calendar</button>` : ''}
       ${matches ? `<button class="btn btn-ghost btn-sm" onclick="acceptAllSuggestedRenames()" title="Sets every matched event to Yes: renames for unlinked events, merges for older rows beside linked ones. You can still change any row before applying.">Accept all ${matches} match${matches === 1 ? '' : 'es'}</button>` : ''}
       <button class="btn btn-primary btn-sm" id="pfApplyBtn" onclick="applyProgramme2027()"${(n === 0 || undecided > 0) ? ' disabled' : ''}>${undecided ? `Choose for ${undecided} matched event${undecided === 1 ? '' : 's'} first` : `Apply ${n} decision${n === 1 ? '' : 's'}`}</button>
     </div>
     ${notRunning.length ? `<p class="pf-prog-foot">Not running in 2027: ${notRunning.map(esc).join(', ')}. Listed so nobody re-creates ${notRunning.length === 1 ? 'it' : 'them'} by hand.</p>` : ''}
   </section>`;
+}
+
+/** Bring linked events' names and dates in line with the current calendar. */
+async function syncProgramme2027(n) {
+  if (!confirm(`Update ${n} linked event${n === 1 ? '' : 's'} to the latest calendar?\n\nOnly the event name and date change. Producer, location, notes and deals stay as they are.`)) return;
+  try {
+    const res = await fetch('/api/programme/2027/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) { showToast(out.error || 'Could not update', 'error'); return; }
+    const k = (out.updated || []).length;
+    showToast(k ? `Updated ${k} event${k === 1 ? '' : 's'} to the calendar` : 'Already up to date', 'success');
+  } catch (e) {
+    showToast('Could not update: ' + e.message, 'error');
+  }
+  await loadPortfolio();
 }
 
 /** Undo a confirmed link. Clears the programme key only; nothing else moves. */

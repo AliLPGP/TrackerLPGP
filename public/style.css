@@ -4475,6 +4475,7 @@ tbody tr:last-child td { border-bottom: none; }
 .pf-prog-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .pf-prog-linked { color: var(--muted); }
 .pf-prog-linked b { font-weight: 500; color: var(--text); }
+.pf-prog-pending { color: var(--warning, #b7791f); }
 .pf-prog-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
 .pf-prog-actions .pf-prog-status { margin-right: auto; }
 .pf-prog-foot { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); font: 400 11px/1.5 var(--font-sans); color: var(--dim); }

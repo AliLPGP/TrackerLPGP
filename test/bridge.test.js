@@ -506,7 +506,8 @@ const server = app.listen(0, async () => {
   check('the shorthand Miami row is the created event\'s duplicate', prog.items.find((i) => i.key === 'cfo-pm-miami').duplicate?.id === 31);
   const miami = (await decide([{ key: 'cfo-pm-miami', action: 'merge', row_id: 31 }])).results[0];
   const miamiRow = DB.events.find((e) => e.id === createdMiami.id);
-  check('merge keeps the real day the list only calls TBC', miami.outcome === 'merged' && miamiRow.event_date === '2027-05-05' && miamiRow.date_tbc === '', JSON.stringify(miamiRow));
+  // The calendar now confirms 6 May, so the confirmed day wins over the older row's 5 May
+  check('merge takes the calendar\'s confirmed day', miami.outcome === 'merged' && miamiRow.event_date === '2027-05-06' && miamiRow.date_tbc === '', JSON.stringify(miamiRow));
   check('...and its deal came with it', Number(DB.allocations.find((a) => a.deal_id === 4).event_id) === createdMiami.id);
 
   const guards = await decide([
