@@ -5280,6 +5280,7 @@ const PORT_SERIES = [
   { id: 'operational-fund',   code: '03', name: 'Operational Fund Summit Series',       short: 'Operational Fund',   chart: 7 },
   { id: 'operating-partners', code: '04', name: 'Operating Partners Conference Series', short: 'Operating Partners', chart: 5 },
   { id: 'data-tech',          code: '05', name: 'Data & Technology Forum Series',       short: 'Data & Technology',  chart: 6 },
+  { id: 'sports-investing',   code: '06', name: 'Sports Investing Forum Series',        short: 'Sports Investing',   chart: 4 },
 ];
 // Ids stored by earlier versions all fold into the one CFO/COO series.
 const PORT_LEGACY_SERIES = { 'cfo-private-markets': 'cfo-coo', 'cfo-pe-debt': 'cfo-coo', 'cfo-pe': 'cfo-coo' };
@@ -5304,11 +5305,12 @@ function portGuessSeries(eventName) {
   // Debt -- is the one CFO/COO series, and the word decides before the
   // "private debt" rule can claim a CFO/COO Private Debt event for fundraising.
   if (/\bcfo\b/.test(n) || /\bcoo\b/.test(n)) return 'cfo-coo';
-  if (n.includes('private debt') || n.includes('sports investing')) return 'private-debt';
+  if (n.includes('sports')) return 'sports-investing';
+  if (n.includes('private debt')) return 'private-debt';
   // tracker shorthand
   if (/\bops\b/.test(n)) return 'operating-partners';
   if (/\bdata\s*tech\b/.test(n)) return 'data-tech';
-  if (/\bpd\b/.test(n) || n.includes('fundraising') || n.includes('sports')) return 'private-debt';
+  if (/\bpd\b/.test(n) || n.includes('fundraising')) return 'private-debt';
   // cities hosting exactly one 2027 event
   if (n.includes('berlin')) return 'private-debt';
   if (n.includes('lux')) return 'operational-fund';

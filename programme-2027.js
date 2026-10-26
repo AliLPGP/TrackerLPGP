@@ -41,6 +41,7 @@ const SERIES = {
   'operational-fund':   { code: '03', name: 'Operational Fund Summit Series',       short: 'Operational Fund',    chart: 7 },
   'operating-partners': { code: '04', name: 'Operating Partners Conference Series', short: 'Operating Partners',  chart: 5 },
   'data-tech':          { code: '05', name: 'Data & Technology Forum Series',       short: 'Data & Technology',   chart: 6 },
+  'sports-investing':   { code: '06', name: 'Sports Investing Forum Series',        short: 'Sports Investing',    chart: 4 },
 };
 
 // Ids that earlier versions of both apps stored. They all fold into the one
@@ -59,8 +60,8 @@ const EVENTS = [
   { key: 'dt-new-york',         name: '3rd Annual AI, Data & Technology in Private Markets New York',         producer: 'Gio & Karam',   series: 'data-tech',           location: 'New York, USA',       date: '2027-05-20', tbc: '' },
   { key: 'ops-west-coast',      name: '3rd Annual Operating Partners West Coast - Los Angeles',               producer: 'Gio & Karam',   series: 'operating-partners',  location: 'Los Angeles, USA',    date: '2027-09-23', tbc: '' },
   { key: 'dt-london',           name: '3rd Annual AI, Data & Technology in Private Markets London',           producer: 'Gio & Karam',   series: 'data-tech',           location: 'London, UK',          date: '2027-10-07', tbc: '' },
-  { key: 'sports-london',       name: '2nd Annual Sports Investing Forum London',                             producer: 'Gio & Karam',   series: 'private-debt',        location: 'London, UK',          date: '2027-09-22',         tbc: '' },
-  { key: 'sports-new-york',     name: 'Sports Investing Forum New York',                                      producer: 'Gio & Karam',   series: 'private-debt',        location: 'New York, USA',       date: '2027-04-14',         tbc: '' },
+  { key: 'sports-london',       name: '2nd Annual Sports Investing Forum London',                             producer: 'Gio & Karam',   series: 'sports-investing',    location: 'London, UK',          date: '2027-09-22',         tbc: '' },
+  { key: 'sports-new-york',     name: 'Sports Investing Forum New York',                                      producer: 'Gio & Karam',   series: 'sports-investing',    location: 'New York, USA',       date: '2027-04-14',         tbc: '' },
 
   // Tara & Maryam -- 5
   { key: 'dt-europe',           name: 'AI, Data & Technology in Private Markets Europe - Amsterdam',          producer: 'Tara & Maryam', series: 'data-tech',           location: 'Amsterdam, Netherlands', date: '2027-04-22', tbc: '' },
@@ -137,7 +138,8 @@ const CITY_ALIASES = {
 const SERIES_ALIASES = {
   'operating-partners': ['operating partners', 'ops', 'op summit'],
   'data-tech':          ['data', 'tech', 'ai'],
-  'private-debt':       ['private debt', 'pd', 'sports'],
+  'private-debt':       ['private debt', 'pd'],
+  'sports-investing':   ['sports'],
   'cfo-coo':            ['cfo', 'coo', 'private markets'],
   'operational-fund':   ['operational fund', 'ofs', 'lux'],
 };
