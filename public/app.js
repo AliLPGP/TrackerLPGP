@@ -1137,9 +1137,16 @@ async function openEmployeeProfile(empId) {
       <div class="ep-tiles" id="epTiles"><div class="ep-loading">Loading…</div></div>
     </section>
 
-    ${isAdmin ? `<section class="ep-sec">
+    ${isAdmin ? `<section class="ep-sec ep-sec--sign">
       <div class="ep-sec-head">
-        <h3>Documents</h3>
+        <div><h3>Contract to sign</h3><p class="ep-sec-note">Upload a new contract here and it appears in their onboarding for them to read and sign. The signed copy is filed below automatically.</p></div>
+      </div>
+      <div id="epContract"><div class="ep-loading">Loading…</div></div>
+    </section>
+
+    <section class="ep-sec">
+      <div class="ep-sec-head">
+        <div><h3>Documents on file</h3><p class="ep-sec-note">Files you already have, such as signed contracts. Staff are not asked to sign these.</p></div>
         <div class="ep-doc-add">
           <select id="epDocType" class="ep-doc-type" aria-label="Document type">
             ${docTypeOptions()}
@@ -1200,7 +1207,7 @@ async function openEmployeeProfile(empId) {
   if (payEl) payEl.innerHTML = pays.length
     ? pays.slice(0, 6).map(p => `<div class="ep-row"><span>${MONTHS[Number(p.payment_month)]} ${p.payment_year}${p.notes ? `<small>${esc(p.notes)}</small>` : ''}</span><strong>${fmtMoney(p.amount, p.currency || emp.currency)}</strong></div>`).join('')
     : '<div class="ep-empty">No payments recorded.</div>';
-  if (isAdmin) { loadEmpDocs(empId); loadEmpOnboarding(empId); if (emp.employment_type === 'payroll') loadEmpPayslips(empId); }
+  if (isAdmin) { loadEmpContract(empId); loadEmpDocs(empId); loadEmpOnboarding(empId); if (emp.employment_type === 'payroll') loadEmpPayslips(empId); }
   if (canManage) {
     loadEmpPortfolioRoles(empId, 'epPortfolio');
     loadEmpEvents(empId, 'epEvents');
@@ -1208,9 +1215,11 @@ async function openEmployeeProfile(empId) {
 }
 
 // Starter forms, contracts and other PDFs kept on the profile (admin only).
-const EMP_DOC_TYPES = { starter_form: 'Starter form', contract: 'Contract', id: 'ID / right to work', nda: 'NDA (signed)', other: 'Other' };
+const EMP_DOC_TYPES = { starter_form: 'Starter form', contract: 'Contract (already signed)', id: 'ID / right to work', nda: 'Agreement (signed in portal)', contract_signed: 'Contract (signed in portal)', other: 'Other' };
+// Types the portal files itself when someone signs; not offered for manual uploads
+const PORTAL_DOC_TYPES = ['nda', 'contract_signed'];
 
-const docTypeOptions = () => Object.entries(EMP_DOC_TYPES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
+const docTypeOptions = () => Object.entries(EMP_DOC_TYPES).filter(([k]) => !PORTAL_DOC_TYPES.includes(k)).map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
 const docKb = b => b < 1048576 ? Math.max(1, Math.round(b / 1024)) + ' KB' : (b / 1048576).toFixed(1) + ' MB';
 
 // boxId: the element to fill (profile panel or edit modal). stillOpen: bail if the
@@ -1319,6 +1328,63 @@ async function empModalUploadDoc(input) {
   }
 }
 
+// ── Contract to sign (admin) ──
+// A contract sent for signing is a different thing from a document already on file:
+// it waits here until they sign it in their onboarding, then the signed copy is filed.
+async function loadEmpContract(empId) {
+  const box = document.getElementById('epContract');
+  if (!box) return;
+  try {
+    const res = await fetch(`/api/employees/${empId}/contracts`);
+    if (!res.ok) throw new Error();
+    const list = await res.json();
+    if (_profileEmpId !== empId) return;
+    const cur = list[0];
+    const day = d => fmtDateShort(String(d).slice(0, 10));
+    const upload = label => `<label class="btn btn-sm${cur && !cur.signed_at ? '' : ' btn-primary'}">${label}<input type="file" accept=".pdf,application/pdf" hidden onchange="epUploadContract(${empId},this)"></label>`;
+    let html;
+    if (!cur) {
+      html = `<div class="ep-empty">No contract sent for signing.</div><div class="ep-actions" style="padding:10px 0 0;border:none">${upload('Upload contract to sign')}</div>`;
+    } else if (!cur.signed_at) {
+      html = `<div class="ep-row ep-contract-wait"><span><a class="ep-doc-link" href="/api/contracts/${cur.id}/file" target="_blank" rel="noopener">${esc(cur.file_name)}</a>
+          <small>Sent ${day(cur.created_at)} · waiting for their signature</small></span><span class="ep-status ep-status--wait">Awaiting signature</span></div>
+        <div class="ep-actions" style="padding:10px 0 0;border:none">${upload('Replace with a new version')}
+          <button class="btn btn-ghost btn-sm ep-danger" onclick="epWithdrawContract(${empId},${cur.id})">Withdraw</button></div>`;
+    } else {
+      html = `<div class="ep-row"><span>${esc(cur.file_name)}<small>Signed by ${esc(cur.signed_name || '')} · ${day(cur.signed_at)}</small></span>
+          ${cur.signed_doc_id ? `<a class="btn btn-ghost btn-sm" href="/api/employee-documents/${cur.signed_doc_id}" target="_blank" rel="noopener">View signed copy</a>` : ''}</div>
+        <div class="ep-actions" style="padding:10px 0 0;border:none">${upload('Send a new contract to sign')}</div>`;
+    }
+    const older = list.slice(1).filter(c => c.signed_at);
+    if (older.length) html += `<details class="ep-older"><summary>${older.length} earlier signed contract${older.length === 1 ? '' : 's'}</summary>` +
+      older.map(c => `<div class="ep-row"><span>${esc(c.file_name)}<small>Signed ${day(c.signed_at)}</small></span>${c.signed_doc_id ? `<a class="btn btn-ghost btn-sm" href="/api/employee-documents/${c.signed_doc_id}" target="_blank" rel="noopener">View</a>` : ''}</div>`).join('') + '</details>';
+    box.innerHTML = html;
+  } catch { box.innerHTML = '<div class="ep-empty">Could not load the contract.</div>'; }
+}
+
+async function epUploadContract(empId, input) {
+  const file = input.files[0];
+  input.value = '';
+  const doc = await readPdfFile(file);
+  if (!doc) return;
+  const res = await fetch(`/api/employees/${empId}/contracts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(doc) }).catch(() => null);
+  const data = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { showToast(data.error || 'Upload failed', 'error'); return; }
+  showToast(data.replaced ? 'Contract replaced. They will sign the new version.' : 'Contract sent. It is now in their onboarding to sign.', 'success');
+  loadEmpContract(empId);
+  loadEmpOnboarding(empId);
+}
+
+async function epWithdrawContract(empId, id) {
+  if (!await showConfirm('Withdraw this contract? It will be removed from their onboarding.')) return;
+  const res = await fetch(`/api/contracts/${id}`, { method: 'DELETE' }).catch(() => null);
+  const data = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { showToast(data.error || 'Could not withdraw it', 'error'); return; }
+  showToast('Contract withdrawn', 'success');
+  loadEmpContract(empId);
+  loadEmpOnboarding(empId);
+}
+
 // ── Probation, onboarding and payslips on the profile panel (admin only) ──
 function probationDetailHtml(emp) {
   if (emp.probation_review_done_at) return `Review done ${fmtDateShort(emp.probation_review_done_at)}`;
@@ -1348,10 +1414,11 @@ async function loadEmpOnboarding(empId) {
     if (!res.ok) throw new Error();
     const o = await res.json();
     if (_profileEmpId !== empId) return;
-    const done = ['details', 'id', 'nda'].filter(k => o.steps[k]).length;
+    const applicable = Object.keys(o.steps).filter(k => o.steps[k] !== null);
+    const done = applicable.filter(k => o.steps[k]).length;
     const status = o.completed ? `<span class="ep-status ep-status--on">Completed ${fmtDateShort(String(o.completed_at).slice(0, 10))}</span>`
-      : o.required ? `<span class="ep-status ep-status--wait">Waiting for them · ${done}/3 done</span>`
-      : done ? `<span class="ep-status">${done}/3 filled in</span>` : '<span class="ep-status">Not required</span>';
+      : o.required ? `<span class="ep-status ep-status--wait">Waiting for them · ${done}/${applicable.length} done</span>`
+      : done ? `<span class="ep-status">${done}/${applicable.length} filled in</span>` : '<span class="ep-status">Not required</span>';
     const detail = (label, value, wide) => `<div class="ep-detail"${wide ? ' style="grid-column:1/-1"' : ''}><span>${label}</span><strong style="white-space:pre-line">${value || '<em>—</em>'}</strong></div>`;
     box.innerHTML = `
       <div class="ep-row"><span>Status<small>${emp.portal_pin || emp.has_pin ? 'They are sent through this the first time they sign in with a new PIN.' : 'No portal login yet. It starts when you give them a PIN.'}</small></span>${status}</div>
@@ -1362,9 +1429,10 @@ async function loadEmpOnboarding(empId) {
       </div>
       <div class="ep-row"><span>${o.id_doc ? esc(ID_TYPE_LABEL[o.id_doc.type] || 'ID document') : 'ID document'}<small>${o.id_doc ? esc(o.id_doc.name) : 'Not uploaded'}</small></span>
         ${o.id_doc ? `<a class="btn btn-ghost btn-sm" href="/api/employees/${empId}/onboarding/id" target="_blank" rel="noopener">View</a>` : ''}</div>
+      ${o.steps.contract !== null ? `<div class="ep-row"><span>Contract<small>${o.steps.contract ? 'Signed in the portal' : 'Waiting for their signature'}</small></span></div>` : ''}
       ${o.needs_starter ? `<div class="ep-row"><span>Starter sheet<small>${o.starter ? `Completed and signed · ${fmtDateShort(String(o.starter.signed_at).slice(0, 10))}` : 'Not completed'}</small></span>
         ${o.starter && o.starter.doc_id ? `<a class="btn btn-ghost btn-sm" href="/api/employee-documents/${o.starter.doc_id}" target="_blank" rel="noopener">View signed copy</a>` : ''}</div>` : ''}
-      <div class="ep-row"><span>NDA<small>${o.nda ? `Signed by ${esc(o.nda.signed_name)} · ${fmtDateShort(String(o.nda.signed_at).slice(0, 10))}` : 'Not signed'}</small></span>
+      <div class="ep-row"><span>Team member agreement<small>${o.nda ? `Signed by ${esc(o.nda.signed_name)} · ${fmtDateShort(String(o.nda.signed_at).slice(0, 10))}` : 'Not signed'}</small></span>
         ${o.nda ? `<a class="btn btn-ghost btn-sm" href="${o.nda.doc_id ? '/api/employee-documents/' + o.nda.doc_id : '/api/employees/' + empId + '/onboarding/nda'}" target="_blank" rel="noopener">View signed copy</a>` : ''}</div>` : ''}
       <div class="ep-actions" style="padding:12px 0 0;border:none">
         <button class="btn btn-sm" onclick="epRequireOnboarding(${empId})">${o.completed ? 'Make them onboard again' : 'Require onboarding at next login'}</button>
@@ -1383,7 +1451,7 @@ async function epRequireOnboarding(empId) {
 
 // ── Onboarding files: the company's own NDA and starter sheet (admin) ──
 const OB_FILES = {
-  nda: { title: 'NDA', who: 'Everyone signs this', empty: 'Upload your NDA as a PDF. Staff read it in the platform and sign it; a signed copy goes on their employee file.' },
+  nda: { title: 'Team member agreement', who: 'Everyone signs this first: employees and contractors', empty: 'Upload the agreement as a PDF. Staff read it in the platform and sign it; a signed copy goes on their employee file.' },
   starter: { title: 'Starter sheet', who: 'Payroll staff only', empty: 'Upload the starter sheet payroll staff need to complete. If it has fillable fields they can fill it in on screen; otherwise they download it, complete it and upload it back.' },
 };
 
@@ -1406,12 +1474,12 @@ async function openOnboardingFiles() {
       <div class="obf-head"><div><h3>${o.title}</h3><small>${o.who}</small></div>
         ${f ? '<span class="ep-status ep-status--on">In use</span>' : '<span class="ep-status">Not set</span>'}</div>
       ${f ? `<div class="obf-file"><span class="ob-pdf-badge">PDF</span>
-          <div><strong>${esc(f.file_name)}</strong><small>${kb(f.file_size)} · updated ${fmtDateShort(String(f.updated_at).slice(0, 10))}${f.uploaded_by ? ' by ' + esc(f.uploaded_by) : ''}</small></div></div>`
+          <div><strong>${esc(f.file_name)}</strong><small>${f.builtin ? 'The standard agreement, worded for employees and contractors alike' : `${kb(f.file_size)} · updated ${fmtDateShort(String(f.updated_at).slice(0, 10))}${f.uploaded_by ? ' by ' + esc(f.uploaded_by) : ''}`}</small></div></div>`
         : `<p class="obf-empty">${o.empty}</p>`}
       <div class="obf-actions">
         ${f ? `<a class="btn btn-ghost btn-sm" href="/api/onboarding/templates/${key}/file" target="_blank" rel="noopener">View</a>` : ''}
-        <label class="btn btn-sm">${f ? 'Replace PDF' : 'Upload PDF'}<input type="file" accept=".pdf,application/pdf" hidden onchange="uploadOnboardingFile('${key}', this)"></label>
-        ${f ? `<button class="btn btn-ghost btn-sm ep-danger" onclick="removeOnboardingFile('${key}')">Remove</button>` : ''}
+        <label class="btn btn-sm">${f ? 'Upload a new version' : 'Upload PDF'}<input type="file" accept=".pdf,application/pdf" hidden onchange="uploadOnboardingFile('${key}', this)"></label>
+        ${f && !f.builtin ? `<button class="btn btn-ghost btn-sm ep-danger" onclick="removeOnboardingFile('${key}')">${key === 'nda' ? 'Go back to the standard agreement' : 'Remove'}</button>` : ''}
       </div>
       <div class="obf-note" id="obfNote-${key}"></div>
     </div>`;
@@ -1420,7 +1488,7 @@ async function openOnboardingFiles() {
     <div class="modal-header"><h2>Onboarding files</h2><button class="modal-close" onclick="closeModal('obFilesModal')">✕</button></div>
     <p style="font-size:0.82rem;color:var(--muted);margin:0 0 14px">These are shown to staff in the onboarding screen. They read each one in full, then sign, and the signed PDF is stored on their employee file. PDFs up to 3 MB.</p>
     ${slot('nda')}${slot('starter')}
-    <div class="obf-foot">No NDA file uploaded? Staff sign the written NDA wording instead. <button type="button" class="ob-link" onclick="closeModal('obFilesModal');openNdaEditor()">Edit that wording</button></div>
+    <div class="obf-foot">A new version applies to everyone who signs from now on. Copies people already signed stay on their files unchanged; to have someone sign the new version, open their profile and choose "Make them onboard again".</div>
   </div>`;
   openModal('obFilesModal');
 }
@@ -1446,7 +1514,9 @@ async function uploadOnboardingFile(key, input) {
 }
 
 async function removeOnboardingFile(key) {
-  if (!await showConfirm(`Remove the ${OB_FILES[key].title} file? Documents people already signed stay on their files.`)) return;
+  if (!await showConfirm(key === 'nda'
+    ? 'Go back to the standard team member agreement? Copies people already signed stay on their files.'
+    : `Remove the ${OB_FILES[key].title} file? Documents people already signed stay on their files.`)) return;
   const res = await fetch('/api/onboarding/templates/' + key, { method: 'DELETE' }).catch(() => null);
   if (!res || !res.ok) { showToast('Could not remove it', 'error'); return; }
   showToast('Removed', 'success');
@@ -7824,10 +7894,11 @@ async function loadEmployeePayslips() {
 // someone who already had a login gets a banner and can open it, do part, and
 // come back later. Progress is saved at every step.
 //
-// Steps: your details -> ID -> starter sheet (payroll staff, if one has been set up)
-// -> NDA. The starter sheet and NDA are the company's own PDFs, shown here page by
-// page; the person reads to the end, fills in (starter sheet) and signs, and a signed
-// copy is stored on their employee file.
+// Steps: the team member agreement (IP, confidentiality, non-compete) -> your details
+// -> starter sheet (payroll staff, if one has been set up) -> ID, last. The agreement is
+// signed before anything is uploaded. It and the starter sheet are PDFs shown here page
+// by page; the person reads to the end, fills in (starter sheet) and signs, and a
+// signed copy is stored on their employee file.
 const OB = { data: null, key: 'details', resolve: null, closable: false, ink: [], values: {}, reads: {}, mode: 'fill', completedFile: null };
 
 const OB_ICON = {
@@ -7843,10 +7914,11 @@ const OB_STEP = {
   details: { label: 'Your details', icon: 'user' },
   id: { label: 'ID', icon: 'id' },
   starter: { label: 'Starter sheet', icon: 'doc' },
-  nda: { label: 'NDA', icon: 'pen' },
+  nda: { label: 'Agreement', icon: 'pen' },
+  contract: { label: 'Contract', icon: 'doc' },
 };
 
-const obKeys = () => ['details', 'id', ...(OB.data.needs_starter ? ['starter'] : []), 'nda'];
+const obKeys = () => ['nda', ...(OB.data.documents.contract ? ['contract'] : []), 'details', ...(OB.data.needs_starter ? ['starter'] : []), 'id'];
 const obIsDone = k => !!OB.data.steps[k];
 const obFirstOpen = () => obKeys().find(k => !obIsDone(k)) || null;
 const obFirstName = () => String(((window.currentUser || {}).name || '').split(' ')[0] || 'there');
@@ -7940,7 +8012,7 @@ function obGo(key) {
   const body = obEl('obBody');
   body.classList.remove('ob-in'); void body.offsetWidth; body.classList.add('ob-in');
   obEl('obOverlay').querySelector('.ob-card').scrollIntoView({ block: 'start' });
-  ({ details: obStepDetails, id: obStepId, starter: obStepDoc, nda: obStepDoc, done: obDone })[key](key);
+  ({ details: obStepDetails, id: obStepId, starter: obStepDoc, nda: obStepDoc, contract: obStepDoc, done: obDone })[key](key);
 }
 
 // Tiny helpers for inline validation
@@ -7974,7 +8046,7 @@ function obStepDetails() {
       obField('obEcName', 'Their name', '<input id="obEcName" class="form-control" type="text" maxlength="100" value="' + esc(d.emergency_contact_name || '') + '">') +
       obField('obEcPhone', 'Their phone number', '<input id="obEcPhone" class="form-control" type="tel" inputmode="tel" maxlength="40" value="' + esc(d.emergency_contact_phone || '') + '">') +
     '</div>' +
-    '<div class="ob-actions"><button class="btn btn-primary ob-primary" id="obNext" onclick="obSaveDetails(this)">Save and continue</button></div>';
+    '<div class="ob-actions"><button class="btn btn-ghost" onclick="obGo(\'' + obKeys()[obKeys().indexOf('details') - 1] + '\')">Back</button><button class="btn btn-primary ob-primary" id="obNext" onclick="obSaveDetails(this)">Save and continue</button></div>';
   obClearOnInput(['obDob', 'obPhone', 'obAddress']);
 }
 
@@ -8062,7 +8134,7 @@ function obStepId() {
   const cur = OB.data.id_doc;
   obEl('obBody').innerHTML =
     '<h2>' + OB_ICON.id + ' Proof of ID</h2>' +
-    '<p class="ob-help">Upload a clear photo or scan of your passport or driving licence. It is stored securely on your employee file.</p>' +
+    '<p class="ob-help">Last step. Upload a clear photo or scan of your passport or driving licence. It is stored securely on your employee file.</p>' +
     (cur ? '<div class="ob-ok">' + OB_ICON.check + '<span>Already uploaded: ' + esc(cur.name) + '. Add a new one only if you want to replace it.</span></div>' : '') +
     '<div class="ob-choice" role="radiogroup" aria-label="Type of ID">' +
       '<label class="ob-card-opt"><input type="radio" name="obIdType" value="passport" checked><span>' + OB_ICON.doc + '<b>Passport</b></span></label>' +
@@ -8073,8 +8145,8 @@ function obStepId() {
       '<div class="ob-drop-preview"></div></label>' +
     '<div class="ob-err" id="obIdErr"></div>' +
     '<div class="ob-actions">' +
-      '<button class="btn btn-ghost" onclick="obGo(\'details\')">Back</button>' +
-      (cur ? '<button class="btn btn-ghost" onclick="obGo(\'' + obKeys()[obKeys().indexOf('id') + 1] + '\')">Keep this one</button>' : '') +
+      '<button class="btn btn-ghost" onclick="obGo(\'' + obKeys()[obKeys().indexOf('id') - 1] + '\')">Back</button>' +
+      (cur ? '<button class="btn btn-ghost" onclick="obGo(obFirstOpen() || \'done\')">Keep this one</button>' : '') +
       '<button class="btn btn-primary ob-primary" id="obIdBtn" onclick="obUploadId(this)" disabled>Upload and continue</button></div>';
   obDropZone('obIdDrop', () => { obEl('obIdBtn').disabled = false; obEl('obIdErr').textContent = ''; });
 }
@@ -8113,16 +8185,23 @@ function loadPdfJs() {
 }
 
 const OB_DOC = {
-  nda: { url: '/api/onboarding/templates/nda/file', title: 'Non-disclosure agreement', icon: 'pen',
-         help: 'Please read the whole agreement. Scroll to the end to unlock signing.', cta: 'Sign the NDA' },
+  nda: { url: '/api/onboarding/templates/nda/file', title: 'Team member agreement', icon: 'pen',
+         help: 'Everyone who joins the team signs this first: it covers intellectual property, confidentiality and non-compete. Read it to the end to unlock signing.', cta: 'Sign the agreement' },
   starter: { url: '/api/onboarding/templates/starter/file', title: 'Starter sheet', icon: 'doc',
          help: 'Your payroll details. Fill in the highlighted boxes, read to the end, then sign.', cta: 'Sign and submit' },
 };
 let _obPdf = { key: null, doc: null, info: null };
 
+// The contract is per person, so its address comes from their onboarding state
+function obDocMeta(key) {
+  if (key !== 'contract') return OB_DOC[key];
+  return { url: '/api/contracts/' + OB.data.documents.contract.id + '/file', title: 'Your contract', icon: 'doc',
+           help: 'This is the contract prepared for you. Read it to the end to unlock signing; you can download your signed copy afterwards.', cta: 'Sign my contract' };
+}
+
 // Steps 3 and 4: read (and fill in) a company document, then sign it
 async function obStepDoc(key) {
-  const meta = OB_DOC[key];
+  const meta = obDocMeta(key);
   const textMode = key === 'nda' && OB.data.documents.nda.mode === 'text';
   const prev = obKeys()[obKeys().indexOf(key) - 1];
   obEl('obBody').innerHTML =
@@ -8143,8 +8222,8 @@ async function obStepDoc(key) {
       obField('obSignName', 'Type your full name', '<input id="obSignName" class="form-control" type="text" maxlength="120" autocomplete="name" value="' + esc((window.currentUser || {}).name || '') + '">') +
       '<div class="ob-field" id="f-obSig"><label>Draw your signature <span class="ob-sigtools"><button type="button" class="ob-link" onclick="obUndoSig()">Undo</button><button type="button" class="ob-link" onclick="obClearSig()">Clear</button></span></label>' +
         '<canvas id="obSig" class="ob-sig" height="150"></canvas><div class="ob-err" id="e-obSig"></div><small>Use your finger or mouse.</small></div>' +
-      '<label class="ob-agree" id="f-obAgree"><input id="obAgree" type="checkbox"> <span>I have read and agree to this ' + (key === 'nda' ? 'agreement' : 'declaration') + '.</span></label><div class="ob-err" id="e-obAgree"></div>' +
-      '<div class="ob-actions"><button class="btn btn-ghost" onclick="obGo(\'' + (prev || 'id') + '\')">Back</button>' +
+      '<label class="ob-agree" id="f-obAgree"><input id="obAgree" type="checkbox"> <span>I have read and agree to this ' + ({ nda: 'agreement', contract: 'contract' }[key] || 'declaration') + '.</span></label><div class="ob-err" id="e-obAgree"></div>' +
+      '<div class="ob-actions">' + (prev ? '<button class="btn btn-ghost" onclick="obGo(\'' + prev + '\')">Back</button>' : '') +
       '<button class="btn btn-primary ob-primary" id="obSignBtn" onclick="obSubmitDoc(\'' + key + '\', this)">' + meta.cta + '</button></div>' +
     '</div>';
   obInitSig();
@@ -8366,7 +8445,7 @@ async function obSubmitDoc(key, btn) {
       if (OB.mode === 'upload') Object.assign(payload, await obPrepareFile(OB.completedFile, 2.5));
       else payload.values = OB.values;
     }
-    const res = await fetch(key === 'nda' ? '/api/employee/onboarding/sign' : '/api/employee/onboarding/starter', {
+    const res = await fetch({ nda: '/api/employee/onboarding/sign', contract: '/api/employee/onboarding/contract', starter: '/api/employee/onboarding/starter' }[key], {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'Could not save your signature');
@@ -8381,7 +8460,8 @@ async function obSubmitDoc(key, btn) {
 function obDone() {
   const d = OB.data;
   const items = obKeys().map(k => '<li><span class="ob-tick-sm">' + OB_ICON.check + '</span>' + OB_STEP[k].label + '</li>').join('');
-  const links = [d.signed.nda ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/nda?download=1">Your signed NDA</a>' : '',
+  const links = [d.signed.nda ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/nda?download=1">Your signed agreement</a>' : '',
+                 d.signed.contract ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/contract?download=1">Your signed contract</a>' : '',
                  d.signed.starter ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/starter?download=1">Your starter sheet</a>' : ''].join('');
   obEl('obBody').innerHTML =
     '<div class="ob-done"><div class="ob-tick"><svg viewBox="0 0 52 52"><circle cx="26" cy="26" r="24" fill="none" stroke="currentColor" stroke-width="3"/><path d="M15 27l8 8 14-16" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>' +
@@ -8408,7 +8488,7 @@ function obShowBanner() {
   b.id = 'obBanner';
   b.className = 'ob-banner';
   b.innerHTML = '<span class="ob-banner-icon">' + OB_ICON.user + '</span>' +
-    '<div class="ob-banner-text"><b>Please complete your profile</b><span>Add your details, upload your ID and sign your documents. It only takes a few minutes.</span></div>' +
+    '<div class="ob-banner-text"><b>Please complete your profile</b><span>Sign the team member agreement, add your details and upload your ID. It only takes a few minutes.</span></div>' +
     '<button class="btn btn-primary btn-sm" onclick="startOnboarding()">Complete now</button>' +
     '<button class="ob-banner-x" aria-label="Hide for now" onclick="try{sessionStorage.setItem(\'obBannerHidden\',\'1\')}catch(e){};document.getElementById(\'obBanner\').remove()">×</button>';
   main.insertBefore(b, main.firstChild);
@@ -8416,9 +8496,9 @@ function obShowBanner() {
 
 // A card on My Profile: progress, a way back into the checklist, and the person's signed copies
 function onboardingCard(ob) {
-  const keys = ['details', 'id', ...(ob.needs_starter ? ['starter'] : []), 'nda'];
+  const keys = ['nda', ...(ob.documents && ob.documents.contract ? ['contract'] : []), 'details', ...(ob.needs_starter ? ['starter'] : []), 'id'];
   const done = keys.filter(k => ob.steps[k]).length;
-  const labels = { details: 'Your details', id: 'ID', starter: 'Starter sheet', nda: 'NDA' };
+  const labels = { details: 'Your details', id: 'ID', starter: 'Starter sheet', nda: 'Team member agreement', contract: 'Contract' };
   const pct = Math.round(done / keys.length * 100);
   return '<div class="card" style="padding:24px;margin-top:16px">' +
     '<div style="font:700 15px/1 var(--font-sans);color:var(--text);margin-bottom:6px">Profile checklist</div>' +
@@ -8427,8 +8507,9 @@ function onboardingCard(ob) {
     (done < keys.length
       ? '<button class="btn btn-primary" style="margin-top:14px" onclick="startOnboarding()">Complete my profile</button>'
       : '<div style="color:var(--positive);font:600 13px/1.4 var(--font-sans);margin-top:12px">Everything is complete.</div>') +
-    ((ob.signed.nda || ob.signed.starter) ? '<div class="ob-links" style="margin-top:14px">' +
-      (ob.signed.nda ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/nda?download=1">Download my signed NDA</a>' : '') +
+    ((ob.signed.nda || ob.signed.starter || ob.signed.contract) ? '<div class="ob-links" style="margin-top:14px">' +
+      (ob.signed.contract ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/contract?download=1">Download my signed contract</a>' : '') +
+      (ob.signed.nda ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/nda?download=1">Download my signed agreement</a>' : '') +
       (ob.signed.starter ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/starter?download=1">Download my starter sheet</a>' : '') + '</div>' : '') +
   '</div>';
 }

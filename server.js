@@ -1683,7 +1683,7 @@ app.delete('/api/employee-notes/:id', requireAuth, async (req, res) => {
 // contracts carry salary terms. Vercel caps a request body at 4.5 MB, so the
 // file itself is held to 3 MB once base64 has added its third.
 
-const EMP_DOC_TYPES = ['starter_form', 'contract', 'id', 'nda', 'other'];
+const EMP_DOC_TYPES = ['starter_form', 'contract', 'id', 'nda', 'contract_signed', 'other'];
 const EMP_DOC_MAX_BYTES = 3 * 1024 * 1024;
 
 app.get('/api/employees/:id/documents', requireAuth, requireAdmin, async (req, res) => {

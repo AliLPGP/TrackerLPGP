@@ -504,6 +504,24 @@ async function runMigrations() {
   await sql(`ALTER TABLE employee_onboarding ADD COLUMN IF NOT EXISTS nda_doc_id INT`);
   await sql(`ALTER TABLE employee_onboarding ADD COLUMN IF NOT EXISTS prompted_at TIMESTAMPTZ`);
 
+  // A contract an admin uploads for one person to sign in their onboarding. Kept apart from
+  // employee_documents (files already on record): this is something waiting for a signature.
+  // The signed result is filed in employee_documents and linked back by signed_doc_id.
+  await sql(`
+    CREATE TABLE IF NOT EXISTS employee_contracts (
+      id SERIAL PRIMARY KEY,
+      employee_id INT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL,
+      file_data TEXT NOT NULL,
+      file_size INT NOT NULL DEFAULT 0,
+      uploaded_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      signed_at TIMESTAMPTZ,
+      signed_name TEXT,
+      signed_doc_id INT
+    )
+  `);
+
   // One payslip PDF per person per month, uploaded by an admin
   await sql(`
     CREATE TABLE IF NOT EXISTS employee_payslips (
