@@ -6506,7 +6506,7 @@ let dealsData = [];
 let _dealInv1 = null;
 let _dealInv2 = null;
 let _dealPackageMode = false;
-let _dealPackages = {}; // { [eventId]: { amount, label } }
+let _dealPackages = {}; // { [eventId]: { amount, label, details } }
 let _dealQFilter = 'all';
 let _dealYearFilter = 'all';
 let _dealEventFilter = '';
@@ -9784,6 +9784,7 @@ async function openDealModal(id, defaultStage) {
   document.getElementById('dealSplitPreview').classList.remove('hidden');
   document.getElementById('dealPackageSingle').classList.remove('hidden');
   document.getElementById('dealPackageLabel').value = '';
+  document.getElementById('dealPackageDetails').value = '';
   const pkgBtn = document.getElementById('dealPackageToggleBtn');
   if (pkgBtn) { pkgBtn.textContent = 'Custom Package Split'; pkgBtn.classList.remove('active'); }
 
@@ -9826,12 +9827,13 @@ async function openDealModal(id, defaultStage) {
     _selectedEvIds = Array.isArray(d.events) ? d.events.map(e => e.event_id).filter(Boolean) : [];
     // One package on an even split fills the Package field; anything else
     // (different packages, or uneven amounts) restores custom package mode.
-    if (Array.isArray(d.events) && d.events.some(e => e.package_label)) {
+    if (Array.isArray(d.events) && d.events.some(e => e.package_label || e.package_details)) {
       if (dealIsSinglePackage(d)) {
-        document.getElementById('dealPackageLabel').value = d.events[0].package_label;
+        document.getElementById('dealPackageLabel').value = d.events[0].package_label || '';
+        document.getElementById('dealPackageDetails').value = d.events[0].package_details || '';
       } else {
         _dealPackageMode = true;
-        d.events.forEach(e => { _dealPackages[e.event_id] = { amount: e.allocated_amount, label: e.package_label || '' }; });
+        d.events.forEach(e => { _dealPackages[e.event_id] = { amount: e.allocated_amount, label: e.package_label || '', details: e.package_details || '' }; });
       }
     }
     if (d.invoice1_name) document.getElementById('dealInv1Preview').textContent = `Current: ${d.invoice1_name}`;
@@ -10168,8 +10170,9 @@ function dealIsSinglePackage(d) {
   const evs = d.events || [];
   if (!evs.length) return false;
   const label = evs[0].package_label || '';
+  const details = evs[0].package_details || '';
   const share = dealEvenShare(d.amount, evs.length);
-  return evs.every(e => (e.package_label || '') === label
+  return evs.every(e => (e.package_label || '') === label && (e.package_details || '') === details
     && Math.abs((parseFloat(e.allocated_amount) || 0) - share) < 0.01);
 }
 
@@ -10204,12 +10207,14 @@ function toggleDealPackageMode() {
     // Start each event from what an even split would give it, and carry the
     // single package across, so only the events that differ need touching.
     const label = singleInput.value.trim();
+    const details = document.getElementById('dealPackageDetails').value.trim();
     const checked = document.querySelectorAll('#dealEventsCheckboxes input[type="checkbox"]:checked');
     const share = dealEvenShare(document.getElementById('dealAmount').value, checked.length);
     checked.forEach(cb => {
       const evId = parseInt(cb.value);
       if (!_dealPackages[evId]) _dealPackages[evId] = {};
       if (label && !_dealPackages[evId].label) _dealPackages[evId].label = label;
+      if (details && !_dealPackages[evId].details) _dealPackages[evId].details = details;
       if ((_dealPackages[evId].amount == null || _dealPackages[evId].amount === '') && share > 0) _dealPackages[evId].amount = share;
     });
     btn.textContent = 'Use Even Split';
@@ -10222,6 +10227,8 @@ function toggleDealPackageMode() {
     // Back to one package: keep it when every event had the same one.
     const labels = [...new Set(Object.values(_dealPackages).map(p => (p.label || '').trim()).filter(Boolean))];
     if (labels.length === 1) singleInput.value = labels[0];
+    const detailSets = [...new Set(Object.values(_dealPackages).map(p => (p.details || '').trim()).filter(Boolean))];
+    if (detailSets.length === 1) document.getElementById('dealPackageDetails').value = detailSets[0];
     btn.textContent = 'Custom Package Split';
     btn.classList.remove('active');
     rows.classList.add('hidden');
@@ -10244,14 +10251,16 @@ function renderDealPackageRows() {
     const evId = parseInt(cb.value);
     const label = cb.closest('label')?.querySelector('span')?.textContent || '';
     const existing = _dealPackages[evId] || {};
-    return `<div class="deal-package-row">
+    return `<div class="deal-package-item"><div class="deal-package-row">
       <span class="dpr-name" title="${esc(label)}">${esc(label)}</span>
       <input type="text" placeholder="Package e.g. Exhibitor" value="${esc(existing.label || '')}"
         style="width:150px" oninput="dealPackageEdit(${evId},'label',this.value)">
       <span style="font:600 12px/1 var(--font-mono);color:var(--muted)">${sym}</span>
       <input type="number" min="0" step="0.01" placeholder="0.00" value="${existing.amount != null ? existing.amount : ''}"
         style="width:100px" oninput="dealPackageEdit(${evId},'amount',this.value)">
-    </div>`;
+    </div>
+    <textarea class="dpr-details" rows="2" placeholder="Package details for this event, one per line (goes on the invoice)"
+      oninput="dealPackageEdit(${evId},'details',this.value)">${esc(existing.details || '')}</textarea></div>`;
   }).join('');
   const total = Object.values(_dealPackages).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
   const dealAmount = parseFloat(document.getElementById('dealAmount').value) || 0;
@@ -10328,14 +10337,16 @@ async function saveDeal() {
     body.event_packages = event_ids.map(evId => ({
       event_id: evId,
       amount: parseFloat(_dealPackages[evId]?.amount) || 0,
-      package_label: (_dealPackages[evId]?.label || '').trim()
+      package_label: (_dealPackages[evId]?.label || '').trim(),
+      package_details: (_dealPackages[evId]?.details || '').trim()
     }));
   } else {
-    // An even split still carries the package name, on every linked event.
+    // An even split still carries the package name and details, on every linked event.
     const label = document.getElementById('dealPackageLabel').value.trim();
-    if (label && event_ids.length) {
+    const details = document.getElementById('dealPackageDetails').value.trim();
+    if (event_ids.length) {
       const share = dealEvenShare(amount, event_ids.length);
-      body.event_packages = event_ids.map(evId => ({ event_id: evId, amount: share, package_label: label }));
+      body.event_packages = event_ids.map(evId => ({ event_id: evId, amount: share, package_label: label, package_details: details }));
     }
   }
   if (_dealInv1) { body.invoice1_name = _dealInv1.name; body.invoice1_data = _dealInv1.data; }
@@ -12255,7 +12266,7 @@ function openInvoiceGenModal(dealId) {
   if (linked.length) {
     linked.forEach(e => {
       const alloc = parseFloat(e.allocated_amount) || 0;
-      igAddEventRow(e.event_name, e.package_label || '', alloc > 0 ? sym + fmt(alloc) : '', '');
+      igAddEventRow(e.event_name, e.package_label || '', alloc > 0 ? sym + fmt(alloc) : '', e.package_details || '');
     });
   } else {
     igAddEventRow();

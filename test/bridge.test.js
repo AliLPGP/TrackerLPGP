@@ -77,6 +77,9 @@ async function q(sql, params = []) {
     }
     return { rows: [] };
   }
+  if (/^\s*SELECT event_id, package_details FROM deal_events/i.test(sql)) {
+    return { rows: DB.allocations.filter((a) => a.deal_id === Number(params[0]) && a.package_details) };
+  }
   if (/^\s*DELETE FROM deal_events/i.test(sql)) {
     const [deal_id] = params;
     DB.allocations = DB.allocations.filter((a) => a.deal_id !== deal_id);

@@ -102,6 +102,8 @@ async function runLateMigrations() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`,
     `ALTER TABLE deal_events ADD COLUMN IF NOT EXISTS package_label TEXT NOT NULL DEFAULT ''`,
+    // What the package includes for that event, one item per line; pre-fills the invoice
+    `ALTER TABLE deal_events ADD COLUMN IF NOT EXISTS package_details TEXT NOT NULL DEFAULT ''`,
     // One-time cleanup: 'Bank' was a junk default the modal used to apply to every deal
     `UPDATE deals SET bank='' WHERE bank='Bank'`,
     `ALTER TABLE company_expenses ADD COLUMN IF NOT EXISTS vat_amount NUMERIC(12,2)`,
@@ -2279,7 +2281,7 @@ app.get('/api/deals', requireAuth, requireAdminOrManager, async (req, res) => {
   try {
     const { rows: deals } = await q(`
       SELECT d.*, se.name AS sales_name,
-        COALESCE(json_agg(json_build_object('event_id',de.event_id,'event_name',pe.name,'allocated_amount',de.allocated_amount,'package_label',de.package_label))
+        COALESCE(json_agg(json_build_object('event_id',de.event_id,'event_name',pe.name,'allocated_amount',de.allocated_amount,'package_label',de.package_label,'package_details',de.package_details))
           FILTER (WHERE de.event_id IS NOT NULL), '[]') AS events
       FROM deals d
       LEFT JOIN employees se ON se.id = d.sales_employee_id
@@ -2352,20 +2354,31 @@ app.get('/api/deals/last-invoice', requireAuth, requireAdminOrManager, async (re
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Each linked event's package details as they stand, read before a deal's
+// allocations are replaced.
+async function dealPackageDetails(dealId) {
+  const { rows } = await q("SELECT event_id, package_details FROM deal_events WHERE deal_id=? AND package_details <> ''", [dealId]);
+  return Object.fromEntries(rows.map(r => [r.event_id, r.package_details]));
+}
+
 // Inserts deal_events rows for a deal, either an even split across event_ids
-// or a custom per-event allocation (event_packages: [{event_id, amount, package_label}])
-async function insertDealEvents(dealId, amount, event_ids, event_packages) {
+// or a custom per-event allocation (event_packages: [{event_id, amount, package_label, package_details}]).
+// `previous` ({event_id: details}) keeps each event's package details when the
+// caller (staff portal, sales CRM) doesn't send them, so re-saving never wipes them.
+const cleanPackageDetails = v => String(v == null ? '' : v).replace(/\r/g, '').trim().slice(0, 4000);
+async function insertDealEvents(dealId, amount, event_ids, event_packages, previous = {}) {
+  const detailsFor = (p, eid) => (p && typeof p.package_details === 'string') ? cleanPackageDetails(p.package_details) : (previous[eid] || '');
   if (Array.isArray(event_packages) && event_packages.length > 0) {
     for (const p of event_packages) {
       if (!p.event_id) continue;
-      await q('INSERT INTO deal_events (deal_id, event_id, allocated_amount, package_label) VALUES (?,?,?,?)',
-        [dealId, p.event_id, parseFloat(p.amount) || 0, p.package_label || '']);
+      await q('INSERT INTO deal_events (deal_id, event_id, allocated_amount, package_label, package_details) VALUES (?,?,?,?,?)',
+        [dealId, p.event_id, parseFloat(p.amount) || 0, p.package_label || '', detailsFor(p, p.event_id)]);
     }
   } else if (Array.isArray(event_ids) && event_ids.length > 0) {
     const perEvent = parseFloat((parseFloat(amount) / event_ids.length).toFixed(2));
     for (const eid of event_ids) {
-      await q('INSERT INTO deal_events (deal_id, event_id, allocated_amount) VALUES (?,?,?)',
-        [dealId, eid, perEvent]);
+      await q('INSERT INTO deal_events (deal_id, event_id, allocated_amount, package_details) VALUES (?,?,?,?)',
+        [dealId, eid, perEvent, detailsFor(null, eid)]);
     }
   }
 }
@@ -2460,8 +2473,9 @@ app.put('/api/deals/:id', requireAuth, requireAdminOrManager, async (req, res) =
     );
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     if (Array.isArray(event_ids) || Array.isArray(event_packages)) {
+      const previous = await dealPackageDetails(req.params.id);
       await q('DELETE FROM deal_events WHERE deal_id=?', [req.params.id]);
-      await insertDealEvents(req.params.id, amount, event_ids, event_packages);
+      await insertDealEvents(req.params.id, amount, event_ids, event_packages, previous);
     }
     if ('sales_employee_id' in req.body) await setDealSalesPerson(req.params.id, req.body.sales_employee_id);
     res.json(rows[0]);
@@ -2688,7 +2702,7 @@ function myDealShape(d) {
 async function myDealsFor(empId, dealId) {
   const { rows } = await q(`
     SELECT d.*,
-      COALESCE(json_agg(json_build_object('event_id',de.event_id,'event_name',pe.name,'allocated_amount',de.allocated_amount,'package_label',de.package_label))
+      COALESCE(json_agg(json_build_object('event_id',de.event_id,'event_name',pe.name,'allocated_amount',de.allocated_amount,'package_label',de.package_label,'package_details',de.package_details))
         FILTER (WHERE de.event_id IS NOT NULL), '[]') AS events
     FROM deals d
     LEFT JOIN deal_events de ON de.deal_id = d.id
@@ -2792,8 +2806,9 @@ app.put('/api/my-deals/:id', requireAuth, async (req, res) => {
       [v.company, v.company, v.contact_name, v.amount, v.currency, v.tax_vat, v.notes, v.deal_month,
        Number.isInteger(v.fiscal_year) ? v.fiscal_year : null, cur.id, empId]
     );
+    const previous = await dealPackageDetails(cur.id);
     await q('DELETE FROM deal_events WHERE deal_id=?', [cur.id]);
-    await insertDealEvents(cur.id, v.amount, null, v.event_packages);
+    await insertDealEvents(cur.id, v.amount, null, v.event_packages, previous);
     res.json((await myDealsFor(empId, cur.id))[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
