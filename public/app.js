@@ -12393,12 +12393,18 @@ function igCollectPayload() {
   // Total Cost line, not beside each event
   const eventLines = evs.map(e => e.name);
 
-  // Benefits: a block per event — "Event — Package" header followed by its bullets
-  const benefits = [];
+  // Packages: "Event Partner:" with its bullet points underneath. Events on the
+  // same package with the same details share one block; the events are only
+  // named beside a package when the invoice has more than one, so each block
+  // says which events it covers.
+  const groups = [];
   evs.filter(e => e.pkg || e.benefits.length).forEach(e => {
-    if (benefits.length) benefits.push('');
-    benefits.push(e.pkg ? `${e.name} — ${e.pkg}` : e.name);
-    benefits.push(...e.benefits);
+    const g = groups.find(x => x.pkg === e.pkg && x.benefits.join('\n') === e.benefits.join('\n'));
+    if (g) g.names.push(e.name); else groups.push({ pkg: e.pkg, benefits: e.benefits, names: [e.name] });
+  });
+  const packages = groups.map(g => {
+    const label = g.pkg || 'Package';
+    return { title: groups.length > 1 ? `${label} (${g.names.join(', ')}):` : `${label}:`, items: g.benefits };
   });
 
   return {
@@ -12416,7 +12422,7 @@ function igCollectPayload() {
     total_due:      document.getElementById('igTotalDue').value.trim() || document.getElementById('igAmountExVat').value.trim(),
     // The agreement is signed in the company's name, so the signature line uses it.
     client_name:    document.getElementById('igCompany').value.trim(),
-    benefits,
+    packages,
     additional_notes: document.getElementById('igAdditionalNotes').value.trim(),
     paid:           document.getElementById('igPaid').checked,
     paid_date:      igUkDate(document.getElementById('igPaidDate').value),
@@ -12428,9 +12434,6 @@ function igCollectPayload() {
 // that will be sent to it, so details can be checked before generating.
 function previewInvoice() {
   const p = igCollectPayload();
-  const benefits = p.benefits.map(b =>
-    b === '' ? '<div class="ig-benefit-gap"></div>' : `<div class="ig-benefit">${esc(b)}</div>`
-  ).join('');
   const amt = esc(p.amount_ex_vat || '—');
 
   // Each page carries the template's diagonal header (logo top right) and
@@ -12497,8 +12500,9 @@ function previewInvoice() {
       <div class="ig-sec-hd">Sponsorship &amp; Benefits</div>
       <div class="ig-events-lbl">Events:</div>
       <ul class="ig-events">${p.event_name ? p.event_name.split('\n').filter(Boolean).map(l => `<li>${esc(l)}</li>`).join('') : '<li>—</li>'}</ul>
-      ${p.benefits.length
-        ? `<ul class="ig-benefits">${p.benefits.map(b => b === '' ? '<li class="ig-gap-li"></li>' : `<li>${esc(b)}</li>`).join('')}</ul>`
+      ${p.packages.length
+        ? p.packages.map(g => `<div class="ig-pkg-title">${esc(g.title)}</div>` +
+            (g.items.length ? `<ul class="ig-benefits">${g.items.map(b => `<li>${esc(b)}</li>`).join('')}</ul>` : '')).join('')
         : '<div class="ig-muted">No package details listed</div>'}
       <div class="ig-total-cost">Total Cost - £${amt} plus VAT</div>
       ${p.additional_notes
@@ -12509,14 +12513,18 @@ function previewInvoice() {
     ${foot}
   </div>`;
 
+  // The full Terms & Conditions, word for word as in invoice_template.docx
+  // (test/invoice-terms.test.js fails if the two drift apart).
   const page3 = `<div class="ig-page">
     ${head}
     <div class="ig-body ig-body--doc">
       <div class="ig-agree-title">LPGP Connect Limited Terms &amp; Conditions</div>
       <ol class="ig-tc">
-        <li><div>Scope of Agreement</div><p>These are the conditions of the contract between you, the Sponsoring Client and LPGP Connect Limited. The above package includes the benefits to each event you are solicitated to (listed above). This agreement constitutes the entire agreement between LPGP Connect Limited and you.</p></li>
-        <li><div>Cancellations</div><p>Subject to the terms hereof, in the event of your cancellation 100% of the Total Fee is payable and non-refundable unless otherwise agreed to by LPGP Connect Limited. All cancellation requests must be submitted to us in writing…</p></li>
-        <li><div>Force Majeure</div><p>3.1) In the event that a party is prevented, hindered or delayed in or from performing any of its obligations under this agreement for any reason beyond its reasonable control… <em>(full text appears in the generated document)</em></p></li>
+        <li><div>Scope of Agreement</div><p>These are the conditions of the contract between you, the Sponsoring Client and LPGP Connect Limited. The above package includes the benefits to each event you are solicitated to (listed above)</p><p>This agreement constitutes the entire agreement between LPGP Connect Limited and you</p></li>
+        <li><div>Cancellations</div><p>Subject to the terms hereof, in the event of your cancellation 100% of the Total Fee is payable and non-refundable unless otherwise agreed to by LPGP Connect Limited. All cancellation requests must be submitted to us in writing. If we agree to your cancellation then all cancellation fees, if any, are payable immediately after the acceptance of your cancellation in writing by us. Note, that your package/price reflects scheduled in-person events. If such events are not held in person, you have the right to cancel its attendance and receive a full refund for amounts paid or the agreed upon allocation of amounts paid with respect to any specific cancelled event.</p></li>
+        <li><div>Force Majeure</div>
+          <p class="ig-tc-sub"><span>3.1)</span>In the event that a party is prevented, hindered or delayed in or from performing any of its obligations under this agreement (the “Affected Party”) for any reason beyond its reasonable control, including without limitation by acts of God, flood, drought, earthquake or other natural disaster, epidemic or pandemic or any other widespread disease, terrorist attack, civil war, civil commotion or riots, war, threat of or preparation for war, armed conflict, imposition of sanctions, embargo, or breaking off of diplomatic relations, nuclear, chemical or biological contamination or sonic boom, any law or any action taken by a government or public authority, including without limitation imposing an export or import restriction, quota or prohibition, or failing to grant a necessary license or consent, collapse of buildings, fire, explosion or accident (“Force Majeure Event”), the Affected Party shall not be in breach of this agreement.</p>
+          <p class="ig-tc-sub"><span>3.2)</span>If the Force Majeure Event prevents, hinders or delays the Affected Party’s performance of its obligations for a continuous period of more than 365 days, the other party not affected by the Force Majeure Event may terminate this agreement by giving written notice to the Affected Party at the end of that period, and such party shall be entitled to a full refund of the fees paid to the Affected Party under this agreement.  Client may cancel its attendance at any specific event as a result of a Force Majeure Event, and Client shall be entitled to either attend another event within a one-year period of such cancelled event, or a full refund of the fees paid with respect to such event promptly after any such cancellation.</p></li>
       </ol>
       <div class="ig-sig">
         <div class="ig-sig-name">${esc(p.client_name || '—')}</div>
