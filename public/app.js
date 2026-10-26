@@ -1158,7 +1158,6 @@ async function openEmployeeProfile(empId) {
     </section>` : ''}
 
     ${isAdmin ? `<section class="ep-sec">
-      <div class="ep-sec-head"><h3>Onboarding</h3></div>
       <div id="epOnboarding"><div class="ep-loading">Loading…</div></div>
     </section>
     ${emp.employment_type === 'payroll' ? `<section class="ep-sec">
@@ -1351,13 +1350,9 @@ async function loadEmpContract(empId) {
         <div class="ep-actions" style="padding:10px 0 0;border:none">${upload('Replace with a new version')}
           <button class="btn btn-ghost btn-sm ep-danger" onclick="epWithdrawContract(${empId},${cur.id})">Withdraw</button></div>`;
     } else {
-      html = `<div class="ep-row"><span>${esc(cur.file_name)}<small>Signed by ${esc(cur.signed_name || '')} · ${day(cur.signed_at)}</small></span>
-          ${cur.signed_doc_id ? `<a class="btn btn-ghost btn-sm" href="/api/employee-documents/${cur.signed_doc_id}" target="_blank" rel="noopener">View signed copy</a>` : ''}</div>
+      html = `<div class="ep-row"><span>${esc(cur.file_name)}<small>Signed by ${esc(cur.signed_name || '')} · ${day(cur.signed_at)} · the signed copy is under Documents on file</small></span></div>
         <div class="ep-actions" style="padding:10px 0 0;border:none">${upload('Send a new contract to sign')}</div>`;
     }
-    const older = list.slice(1).filter(c => c.signed_at);
-    if (older.length) html += `<details class="ep-older"><summary>${older.length} earlier signed contract${older.length === 1 ? '' : 's'}</summary>` +
-      older.map(c => `<div class="ep-row"><span>${esc(c.file_name)}<small>Signed ${day(c.signed_at)}</small></span>${c.signed_doc_id ? `<a class="btn btn-ghost btn-sm" href="/api/employee-documents/${c.signed_doc_id}" target="_blank" rel="noopener">View</a>` : ''}</div>`).join('') + '</details>';
     box.innerHTML = html;
   } catch { box.innerHTML = '<div class="ep-empty">Could not load the contract.</div>'; }
 }
@@ -1420,33 +1415,20 @@ async function loadEmpOnboarding(empId) {
       : o.required ? `<span class="ep-status ep-status--wait">Waiting for them · ${done}/${applicable.length} done</span>`
       : done ? `<span class="ep-status">${done}/${applicable.length} filled in</span>` : '<span class="ep-status">Not required</span>';
     const detail = (label, value, wide) => `<div class="ep-detail"${wide ? ' style="grid-column:1/-1"' : ''}><span>${label}</span><strong style="white-space:pre-line">${value || '<em>—</em>'}</strong></div>`;
-    box.innerHTML = `
-      <div class="ep-row"><span>Status<small>${emp.portal_pin || emp.has_pin ? 'They are sent through this the first time they sign in with a new PIN.' : 'No portal login yet. It starts when you give them a PIN.'}</small></span>${status}</div>
+    // Collapsed by default: what they entered at onboarding, plus their ID. Signed documents
+    // are listed once, under Documents on file.
+    box.innerHTML = `<details class="ep-pd">
+      <summary><h3>Personal details</h3>${status}</summary>
       ${o.started ? `<div class="ep-details" style="margin:12px 0">
         ${detail('Date of birth', o.date_of_birth ? fmtDateShort(o.date_of_birth) : '')}
         ${detail('Emergency contact', [o.emergency_contact_name, o.emergency_contact_phone].filter(Boolean).map(esc).join(' · '))}
         ${detail('Address', esc(o.address), true)}
       </div>
       <div class="ep-row"><span>${o.id_doc ? esc(ID_TYPE_LABEL[o.id_doc.type] || 'ID document') : 'ID document'}<small>${o.id_doc ? esc(o.id_doc.name) : 'Not uploaded'}</small></span>
-        ${o.id_doc ? `<a class="btn btn-ghost btn-sm" href="/api/employees/${empId}/onboarding/id" target="_blank" rel="noopener">View</a>` : ''}</div>
-      ${o.steps.contract !== null ? `<div class="ep-row"><span>Contract<small>${o.steps.contract ? 'Signed in the portal' : 'Waiting for their signature'}</small></span></div>` : ''}
-      ${o.needs_starter ? `<div class="ep-row"><span>Starter sheet<small>${o.starter ? `Completed and signed · ${fmtDateShort(String(o.starter.signed_at).slice(0, 10))}` : 'Not completed'}</small></span>
-        ${o.starter && o.starter.doc_id ? `<a class="btn btn-ghost btn-sm" href="/api/employee-documents/${o.starter.doc_id}" target="_blank" rel="noopener">View signed copy</a>` : ''}</div>` : ''}
-      <div class="ep-row"><span>Team member agreement<small>${o.nda ? `Signed by ${esc(o.nda.signed_name)} · ${fmtDateShort(String(o.nda.signed_at).slice(0, 10))}` : 'Not signed'}</small></span>
-        ${o.nda ? `<a class="btn btn-ghost btn-sm" href="${o.nda.doc_id ? '/api/employee-documents/' + o.nda.doc_id : '/api/employees/' + empId + '/onboarding/nda'}" target="_blank" rel="noopener">View signed copy</a>` : ''}</div>` : ''}
-      <div class="ep-actions" style="padding:12px 0 0;border:none">
-        <button class="btn btn-sm" onclick="epRequireOnboarding(${empId})">${o.completed ? 'Make them onboard again' : 'Require onboarding at next login'}</button>
-        <button class="btn btn-ghost btn-sm" onclick="closeEmployeeProfile();openOnboardingFiles()">Onboarding files</button>
-      </div>`;
+        ${o.id_doc ? `<a class="btn btn-ghost btn-sm" href="/api/employees/${empId}/onboarding/id" target="_blank" rel="noopener">View</a>` : ''}</div>`
+      : `<div class="ep-empty" style="margin-top:10px">${emp.portal_pin || emp.has_pin ? 'Nothing entered yet. They are asked to complete their profile when they sign in.' : 'No portal login yet.'}</div>`}
+    </details>`;
   } catch { box.innerHTML = '<div class="ep-empty">Could not load onboarding.</div>'; }
-}
-
-async function epRequireOnboarding(empId) {
-  if (!await showConfirm('They will have to go through onboarding the next time they sign in, and sign the NDA again. Continue?')) return;
-  const res = await fetch(`/api/employees/${empId}/onboarding/require`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => null);
-  if (!res || !res.ok) { showToast('Could not update', 'error'); return; }
-  showToast('They will be asked to onboard at next login', 'success');
-  loadEmpOnboarding(empId);
 }
 
 // ── Onboarding files: the company's own NDA and starter sheet (admin) ──
