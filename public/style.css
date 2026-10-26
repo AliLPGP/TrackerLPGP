@@ -7560,5 +7560,10 @@ textarea.form-control { resize: vertical; }
 .ep-sec-note { margin: 2px 0 0; font: 400 12px/1.4 var(--font-sans); color: var(--muted); max-width: 420px; }
 .ep-sec--sign { background: var(--accent-soft); }
 .ep-contract-wait .ep-doc-link { font-weight: 600; }
-.ep-older { margin-top: 10px; font: 400 12.5px/1.4 var(--font-sans); color: var(--muted); }
-.ep-older summary { cursor: pointer; }
+
+/* Profile: personal details folded away */
+.ep-pd > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; list-style: none; }
+.ep-pd > summary::-webkit-details-marker { display: none; }
+.ep-pd > summary h3 { margin: 0; display: flex; align-items: center; gap: 8px; }
+.ep-pd > summary h3::before { content: '›'; display: inline-block; color: var(--muted); transition: transform .2s; }
+.ep-pd[open] > summary h3::before { transform: rotate(90deg); }
