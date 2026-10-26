@@ -1917,7 +1917,9 @@
         <div id="dealPackageSingle" class="deal-package-single dm-field">
           <label for="dealPackageLabel">Package</label>
           <input type="text" id="dealPackageLabel" placeholder="e.g. Exhibitor, Speaker, Delegate tickets" maxlength="120">
-          <div class="deal-package-single-hint">Applies to every linked event. For a different package or amount per event, use Custom Package Split.</div>
+          <label for="dealPackageDetails" class="deal-package-details-lbl">Package details <span class="dm-opt">one per line · goes on the invoice</span></label>
+          <textarea id="dealPackageDetails" rows="3" placeholder="e.g.&#10;Speaker on a Panel (subject to availability)&#10;2 delegate passes"></textarea>
+          <div class="deal-package-single-hint">The package and details apply to every linked event. For a different package or amount per event, use Custom Package Split.</div>
         </div>
         <div id="dealPackageRows" class="hidden dm-package-rows"></div>
       </section>

@@ -267,7 +267,7 @@ function parseDate(v) {
  * @param {object} deps
  * @param {(sql: string, params?: any[]) => Promise<{rows: any[]}>} deps.q
  * @param {() => Promise<void>} deps.ensureDb
- * @param {(dealId: number, amount: any, eventIds: any, packages: any) => Promise<void>} [deps.insertDealEvents]
+ * @param {(dealId: number, amount: any, eventIds: any, packages: any, previous?: Record<number, string>) => Promise<void>} [deps.insertDealEvents]
  *   The tracker's own allocation writer, passed in so there is exactly one
  *   implementation of "how a deal's money is split across events".
  */
@@ -642,10 +642,10 @@ function createBridgeRouter({ q, ensureDb, insertDealEvents }) {
     return missing.length ? `Unknown event id(s): ${missing.join(', ')}` : null;
   }
 
-  async function writeAllocations(dealId, fields) {
+  async function writeAllocations(dealId, fields, previous) {
     if (!fields.event_packages && !fields.event_ids) return;
     if (typeof insertDealEvents === 'function') {
-      await insertDealEvents(dealId, fields.amount, fields.event_ids, fields.event_packages);
+      await insertDealEvents(dealId, fields.amount, fields.event_ids, fields.event_packages, previous);
       return;
     }
     // Fallback for a router constructed without the tracker's own writer.
@@ -762,8 +762,10 @@ function createBridgeRouter({ q, ensureDb, insertDealEvents }) {
       // Allocations are replaced wholesale, and only when the caller sent some
       // — omitting them leaves the existing split untouched.
       if (f.event_packages || f.event_ids) {
+        // Package details are written in the tracker, not the CRM: keep them.
+        const { rows: kept } = await q("SELECT event_id, package_details FROM deal_events WHERE deal_id = ? AND package_details <> ''", [id]);
         await q('DELETE FROM deal_events WHERE deal_id = ?', [id]);
-        await writeAllocations(id, f);
+        await writeAllocations(id, f, Object.fromEntries(kept.map((r) => [r.event_id, r.package_details])));
       }
 
       const { rows: updated } = await q(`${DEAL_SELECT} WHERE d.id = ? GROUP BY d.id`, [id]);

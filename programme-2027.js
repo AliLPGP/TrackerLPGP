@@ -4,7 +4,8 @@
  * The confirmed 2027 programme.
  *
  * Source: "Events by Producer", the producer allocation for next year's
- * calendar, updated 28 September 2026. 25 events across 5 producer teams.
+ * calendar (28 September 2026), with dates and names from the Event Calendar
+ * of 26 October 2026. 25 events across 5 producer teams.
  * This is the list a deal is allocated against and the list the sales CRM
  * reads over the bridge; it is transcribed here once and nowhere else.
  *
@@ -40,6 +41,7 @@ const SERIES = {
   'operational-fund':   { code: '03', name: 'Operational Fund Summit Series',       short: 'Operational Fund',    chart: 7 },
   'operating-partners': { code: '04', name: 'Operating Partners Conference Series', short: 'Operating Partners',  chart: 5 },
   'data-tech':          { code: '05', name: 'Data & Technology Forum Series',       short: 'Data & Technology',   chart: 6 },
+  'sports-investing':   { code: '06', name: 'Sports Investing Forum Series',        short: 'Sports Investing',    chart: 4 },
 };
 
 // Ids that earlier versions of both apps stored. They all fold into the one
@@ -56,37 +58,37 @@ const EVENTS = [
   // Gio & Karam -- 6
   { key: 'ops-miami',           name: '2nd Annual Operating Partners Miami',                                  producer: 'Gio & Karam',   series: 'operating-partners',  location: 'Miami, USA',          date: '2027-02-25', tbc: '' },
   { key: 'dt-new-york',         name: '3rd Annual AI, Data & Technology in Private Markets New York',         producer: 'Gio & Karam',   series: 'data-tech',           location: 'New York, USA',       date: '2027-05-20', tbc: '' },
-  { key: 'ops-west-coast',      name: '3rd Annual Operating Partners West Coast - Los Angeles',               producer: 'Gio & Karam',   series: 'operating-partners',  location: 'Los Angeles, USA',    date: '2027-09-01', tbc: 'day' },
-  { key: 'dt-london',           name: '3rd Annual AI, Data & Technology in Private Markets London',           producer: 'Gio & Karam',   series: 'data-tech',           location: 'London, UK',          date: '2027-10-06', tbc: '' },
-  { key: 'sports-london',       name: '2nd Annual Sports Investing Forum London',                             producer: 'Gio & Karam',   series: 'private-debt',        location: 'London, UK',          date: null,         tbc: 'date' },
-  { key: 'sports-new-york',     name: 'Sports Investing Forum New York',                                      producer: 'Gio & Karam',   series: 'private-debt',        location: 'New York, USA',       date: null,         tbc: 'date' },
+  { key: 'ops-west-coast',      name: '3rd Annual Operating Partners West Coast - Los Angeles',               producer: 'Gio & Karam',   series: 'operating-partners',  location: 'Los Angeles, USA',    date: '2027-09-23', tbc: '' },
+  { key: 'dt-london',           name: '3rd Annual AI, Data & Technology in Private Markets London',           producer: 'Gio & Karam',   series: 'data-tech',           location: 'London, UK',          date: '2027-10-07', tbc: '' },
+  { key: 'sports-london',       name: '2nd Annual Sports Investing Forum London',                             producer: 'Gio & Karam',   series: 'sports-investing',    location: 'London, UK',          date: '2027-09-22',         tbc: '' },
+  { key: 'sports-new-york',     name: 'Sports Investing Forum New York',                                      producer: 'Gio & Karam',   series: 'sports-investing',    location: 'New York, USA',       date: '2027-04-14',         tbc: '' },
 
   // Tara & Maryam -- 5
-  { key: 'dt-europe',           name: 'AI, Data & Technology in Private Markets Europe - Amsterdam',          producer: 'Tara & Maryam', series: 'data-tech',           location: 'Amsterdam, Netherlands', date: '2027-04-15', tbc: '' },
+  { key: 'dt-europe',           name: 'AI, Data & Technology in Private Markets Europe - Amsterdam',          producer: 'Tara & Maryam', series: 'data-tech',           location: 'Amsterdam, Netherlands', date: '2027-04-22', tbc: '' },
   { key: 'ops-new-york',        name: '3rd Annual Operating Partners New York',                               producer: 'Tara & Maryam', series: 'operating-partners',  location: 'New York, USA',       date: '2027-05-19', tbc: '' },
-  { key: 'dt-west-coast',       name: 'AI, Data & Technology in Private Markets West Coast - San Francisco',  producer: 'Tara & Maryam', series: 'data-tech',           location: 'San Francisco, USA',  date: '2027-06-24', tbc: '' },
+  { key: 'dt-west-coast',       name: 'AI, Data & Technology in Private Markets West Coast - San Francisco',  producer: 'Tara & Maryam', series: 'data-tech',           location: 'San Francisco, USA',  date: '2027-05-04', tbc: '' },
   { key: 'ops-europe',          name: 'Operating Partners Europe - London',                                   producer: 'Tara & Maryam', series: 'operating-partners',  location: 'London, UK',          date: '2027-10-06', tbc: '' },
   { key: 'ops-retreat',         name: 'Operating Partners Retreat',                                           producer: 'Tara & Maryam', series: 'operating-partners',  location: '',                    date: '2027-11-01', tbc: 'day' },
 
   // Fidak -- 5
-  { key: 'cfo-pm-miami',        name: '4th Annual CFO/COO Private Markets Miami',                             producer: 'Fidak',         series: 'cfo-coo', location: 'Miami, USA',          date: '2027-05-01', tbc: 'day' },
-  { key: 'cfo-pd-london',       name: '9th Annual CFO/COO Private Debt London',                               producer: 'Fidak',         series: 'cfo-coo',                location: 'London, UK',          date: '2027-07-01', tbc: 'day' },
-  { key: 'cfo-pm-los-angeles',  name: '4th Annual CFO/COO Private Markets Los Angeles',                       producer: 'Fidak',         series: 'cfo-coo', location: 'Los Angeles, USA',    date: '2027-10-01', tbc: 'day' },
-  { key: 'cfo-pm-chicago',      name: '9th Annual CFO/COO Private Markets Chicago',                           producer: 'Fidak',         series: 'cfo-coo', location: 'Chicago, USA',        date: '2027-10-01', tbc: 'day' },
-  { key: 'cfo-pd-new-york',     name: '8th Annual CFO/COO Private Debt New York',                             producer: 'Fidak',         series: 'cfo-coo',                location: 'New York, USA',       date: '2027-11-01', tbc: 'day' },
+  { key: 'cfo-pm-miami',        name: '4th Annual CFO/COO Private Markets Miami',                             producer: 'Fidak',         series: 'cfo-coo', location: 'Miami, USA',          date: '2027-05-06', tbc: '' },
+  { key: 'cfo-pd-london',       name: '9th Annual CFO/COO Private Debt London',                               producer: 'Fidak',         series: 'cfo-coo',                location: 'London, UK',          date: '2027-07-01', tbc: '' },
+  { key: 'cfo-pm-los-angeles',  name: '4th Annual CFO/COO Private Markets Los Angeles',                       producer: 'Fidak',         series: 'cfo-coo', location: 'Los Angeles, USA',    date: '2027-10-27', tbc: '' },
+  { key: 'cfo-pm-chicago',      name: '9th Annual CFO/COO Private Markets Chicago',                           producer: 'Fidak',         series: 'cfo-coo', location: 'Chicago, USA',        date: '2027-10-14', tbc: '' },
+  { key: 'cfo-pd-new-york',     name: '8th Annual CFO/COO Private Debt New York',                             producer: 'Fidak',         series: 'cfo-coo',                location: 'New York, USA',       date: '2027-11-09', tbc: '' },
 
   // Santos -- 5
   { key: 'cfo-pm-switzerland',  name: '4th Annual CFO/COO Private Markets Switzerland',                       producer: 'Santos',        series: 'cfo-coo', location: 'Switzerland',         date: '2027-03-18', tbc: '' },
-  { key: 'cfo-pm-san-francisco',name: '5th Annual CFO/COO Private Markets San Francisco',                     producer: 'Santos',        series: 'cfo-coo', location: 'San Francisco, USA',  date: '2027-06-01', tbc: 'day' },
-  { key: 'cfo-pe-london',       name: '9th Annual CFO/COO Private Equity London',                             producer: 'Santos',        series: 'cfo-coo',                location: 'London, UK',          date: '2027-07-01', tbc: 'day' },
-  { key: 'cfo-pe-new-york',     name: '8th Annual CFO/COO Private Equity New York',                           producer: 'Santos',        series: 'cfo-coo',                location: 'New York, USA',       date: '2027-11-01', tbc: 'day' },
-  { key: 'ofs-luxembourg',      name: 'Operational Fund Summit Luxembourg',                                   producer: 'Santos',        series: 'operational-fund',    location: 'Luxembourg',          date: '2027-11-01', tbc: 'day' },
+  { key: 'cfo-pm-san-francisco',name: '5th Annual CFO/COO Private Markets San Francisco',                     producer: 'Santos',        series: 'cfo-coo', location: 'San Francisco, USA',  date: '2027-06-24', tbc: '' },
+  { key: 'cfo-pe-london',       name: '9th Annual CFO/COO Private Equity London',                             producer: 'Santos',        series: 'cfo-coo',                location: 'London, UK',          date: '2027-07-01', tbc: '' },
+  { key: 'cfo-pe-new-york',     name: '8th Annual CFO/COO Private Equity New York',                           producer: 'Santos',        series: 'cfo-coo',                location: 'New York, USA',       date: '2027-11-09', tbc: '' },
+  { key: 'ofs-luxembourg',      name: '5th Operational Fund Summit Luxembourg',                               producer: 'Santos',        series: 'operational-fund',    location: 'Luxembourg',          date: '2027-11-17', tbc: '' },
 
   // Arj & Leena -- 4
   { key: 'pd-berlin',           name: '11th Annual Private Debt Berlin',                                      producer: 'Arj & Leena',   series: 'private-debt',        location: 'Berlin, Germany',     date: '2027-03-18', tbc: '' },
-  { key: 'pd-new-york',         name: '13th Annual Private Debt New York',                                    producer: 'Arj & Leena',   series: 'private-debt',        location: 'New York, USA',       date: '2027-04-01', tbc: 'day' },
-  { key: 'pd-london',           name: '13th Annual Private Debt London',                                      producer: 'Arj & Leena',   series: 'private-debt',        location: 'London, UK',          date: '2027-09-01', tbc: 'day' },
-  { key: 'pd-chicago',          name: '12th Annual Private Debt Chicago',                                     producer: 'Arj & Leena',   series: 'private-debt',        location: 'Chicago, USA',        date: '2027-10-01', tbc: 'day' },
+  { key: 'pd-new-york',         name: '13th Annual Private Debt New York',                                    producer: 'Arj & Leena',   series: 'private-debt',        location: 'New York, USA',       date: '2027-04-15', tbc: '' },
+  { key: 'pd-london',           name: '13th Annual Private Debt London',                                      producer: 'Arj & Leena',   series: 'private-debt',        location: 'London, UK',          date: '2027-09-23', tbc: '' },
+  { key: 'pd-chicago',          name: '12th Annual Private Debt Chicago',                                     producer: 'Arj & Leena',   series: 'private-debt',        location: 'Chicago, USA',        date: '2027-10-13', tbc: '' },
 ];
 
 /** Not in next year's programme. Listed so nobody re-creates it by hand. */
@@ -136,7 +138,8 @@ const CITY_ALIASES = {
 const SERIES_ALIASES = {
   'operating-partners': ['operating partners', 'ops', 'op summit'],
   'data-tech':          ['data', 'tech', 'ai'],
-  'private-debt':       ['private debt', 'pd', 'sports'],
+  'private-debt':       ['private debt', 'pd'],
+  'sports-investing':   ['sports'],
   'cfo-coo':            ['cfo', 'coo', 'private markets'],
   'operational-fund':   ['operational fund', 'ofs', 'lux'],
 };
