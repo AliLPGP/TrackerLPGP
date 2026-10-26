@@ -522,6 +522,19 @@ async function runMigrations() {
     )
   `);
 
+  // Formal warnings given to a member of staff; they see them in their portal
+  await sql(`
+    CREATE TABLE IF NOT EXISTS employee_warnings (
+      id SERIAL PRIMARY KEY,
+      employee_id INT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+      issued_on DATE NOT NULL DEFAULT CURRENT_DATE,
+      level TEXT NOT NULL DEFAULT 'written',
+      reason TEXT NOT NULL,
+      issued_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   // One payslip PDF per person per month, uploaded by an admin
   await sql(`
     CREATE TABLE IF NOT EXISTS employee_payslips (

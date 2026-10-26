@@ -886,6 +886,50 @@ ${row.nda_signature ? `<img alt="Signature" src="${row.nda_signature}">` : ''}
     } catch (e) { fail(res, e); }
   });
 
+  // ═══ WARNINGS ════════════════════════════════════════════════════════════
+
+  const WARNING_LEVELS = { verbal: 'Verbal warning', written: 'Written warning', final: 'Final written warning' };
+  const warningCols = `id, issued_on::TEXT AS issued_on, level, reason, issued_by, created_at`;
+
+  router.get('/employees/:id/warnings', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const { rows } = await q(`SELECT ${warningCols} FROM employee_warnings WHERE employee_id = ? ORDER BY issued_on DESC, id DESC`, [req.params.id]);
+      res.json(rows);
+    } catch (e) { fail(res, e); }
+  });
+
+  router.post('/employees/:id/warnings', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const reason = String((req.body || {}).reason || '').replace(/\r/g, '').trim().slice(0, 2000);
+      const level = WARNING_LEVELS[req.body.level] ? req.body.level : 'written';
+      const issuedOn = /^\d{4}-\d{2}-\d{2}$/.test(req.body.issued_on || '') ? req.body.issued_on : new Date().toISOString().slice(0, 10);
+      if (!reason) return res.status(400).json({ error: 'Give the reason for the warning' });
+      const emp = await getEmployee(req.params.id);
+      if (!emp) return res.status(404).json({ error: 'Employee not found' });
+      const { rows } = await q(
+        `INSERT INTO employee_warnings (employee_id, issued_on, level, reason, issued_by) VALUES (?, ?, ?, ?, ?) RETURNING ${warningCols}`,
+        [emp.id, issuedOn, level, reason, req.admin.username || null]);
+      await q('INSERT INTO emp_notifications (employee_id, message, type) VALUES (?, ?, ?)',
+        [emp.id, `You have received a ${WARNING_LEVELS[level].toLowerCase()}: ${reason}`, 'warning']);
+      res.json(rows[0]);
+    } catch (e) { fail(res, e); }
+  });
+
+  // Removing one (e.g. issued by mistake) takes it off their portal too
+  router.delete('/warnings/:id', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      await q('DELETE FROM employee_warnings WHERE id = ?', [req.params.id]);
+      res.json({ success: true });
+    } catch (e) { fail(res, e); }
+  });
+
+  router.get('/employee/warnings', requireAuth, staffOnly, async (req, res) => {
+    try {
+      const { rows } = await q(`SELECT id, issued_on::TEXT AS issued_on, level, reason FROM employee_warnings WHERE employee_id = ? ORDER BY issued_on DESC, id DESC`, [req.user.employee_id]);
+      res.json(rows);
+    } catch (e) { fail(res, e); }
+  });
+
   // ═══ PROBATION ═══════════════════════════════════════════════════════════
 
   // Everyone whose probation review has not been marked done, soonest first
