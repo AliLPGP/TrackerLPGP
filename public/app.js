@@ -7617,11 +7617,13 @@ async function loadEmployeeDashboard(user) {
   el.innerHTML = '<div class="skeleton" style="height:200px;border-radius:16px"></div>';
 
   try {
-    const [profileRes, remindersRes, salaryRes] = await Promise.all([
+    const [profileRes, remindersRes, salaryRes, warnRes] = await Promise.all([
       fetch('/api/employee/profile'),
       fetch('/api/employee/reminders'),
-      fetch('/api/employee/salary')
+      fetch('/api/employee/salary'),
+      fetch('/api/employee/warnings').catch(() => null)
     ]);
+    const warnings  = warnRes && warnRes.ok ? await warnRes.json() : [];
     const profile   = profileRes.ok   ? await profileRes.json()   : {};
     const reminders = remindersRes.ok  ? await remindersRes.json() : [];
     const sal       = salaryRes.ok    ? await salaryRes.json()    : null;
@@ -7881,6 +7883,8 @@ async function loadEmployeeDashboard(user) {
           '<div style="padding:4px 18px 14px">' + remindersCardHtml() + '</div>' +
         '</div>' +
       '</div>' +
+      // Warnings on their record, the same card as on My Profile (only when there are any)
+      myWarningsCard(warnings) +
       salHtml;
 
     // Hide the other dashboard panels
@@ -7971,7 +7975,7 @@ function myWarningsCard(list) {
     '<div style="font:500 12px/1.5 var(--font-mono);color:var(--muted);margin:6px 0 10px">If you have questions about a warning, speak to your manager.</div>' +
     list.map(w =>
       '<div class="my-warning">' +
-        '<div class="my-warning-top"><b>' + esc(WARNING_LABEL[w.level] || 'Warning') + '</b><span>' + esc(formatDate(w.issued_on)) + '</span></div>' +
+        '<div class="my-warning-top"><b>' + esc(WARNING_LABEL[w.level] || 'Warning') + '</b><span>' + esc(fmtDateShort(w.issued_on)) + '</span></div>' +
         '<div class="my-warning-reason">' + esc(w.reason) + '</div>' +
       '</div>').join('') +
   '</div>';
