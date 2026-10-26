@@ -2161,6 +2161,15 @@ app.put('/api/portfolio-events/:id', requireAuth, requireAdminOrManager, async (
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+// Move an event to a producer team (or take it out of one). Only the team changes.
+app.patch('/api/portfolio-events/:id/producer', requireAuth, requireAdminOrManager, async (req, res) => {
+  try {
+    const producer = String(req.body.producer || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+    const { rows } = await q('UPDATE portfolio_events SET producer=? WHERE id=? RETURNING id, producer', [producer, req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 app.delete('/api/portfolio-events/:id', requireAuth, requireAdminOrManager, async (req, res) => {
   try { await q('DELETE FROM portfolio_events WHERE id=?', [req.params.id]); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }
