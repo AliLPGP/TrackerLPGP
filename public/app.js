@@ -5470,7 +5470,7 @@ function renderPortfolioGrid() {
   if (!filtered.length) {
     const teamsHtml = teamsWithoutEvents.length
       ? `<section class="pf-list"><div class="pf-list-hd"><h2 class="pf-panel-title">Teams</h2><span class="pf-panel-aside">${teamsWithoutEvents.length} new team${teamsWithoutEvents.length === 1 ? '' : 's'}</span></div>` +
-        teamsWithoutEvents.map(t => `<div class="pf-group" data-producer="${esc(t.name.toLowerCase())}"><div class="pf-group-hd"><span class="pf-group-name">${esc(t.name)}</span><span class="pf-group-n">New team · no events yet</span></div>${renderGroupTeam(t.name)}<div class="pf-group-empty">Add an event and choose this team as its producer group. <button type="button" class="btn btn-ghost btn-sm" onclick="openPortfolioModal(null, ${esc(JSON.stringify(t.name))})">+ Add event</button></div></div>`).join('') + `</section>`
+        teamsWithoutEvents.map(t => `<div class="pf-group" data-producer="${esc(t.name.toLowerCase())}"><div class="pf-group-hd"><span class="pf-group-name">${esc(t.name)}</span><span class="pf-group-n">New team · no events yet</span></div>${renderGroupTeam(t.name)}<div class="pf-group-empty">Add an event and choose this team as its producer group. <button type="button" class="btn btn-ghost btn-sm" onclick="openPortAssign(${esc(JSON.stringify(t.name))})">+ Add events</button></div></div>`).join('') + `</section>`
       : '';
     grid.innerHTML = toolbarHtml + programmeHtml + teamsHtml;
     empty.classList.remove('hidden');
@@ -5612,7 +5612,7 @@ function renderPortfolioGrid() {
           </div>
           ${renderGroupTeam(t.name)}
           <div class="pf-group-empty">Add an event and choose this team as its producer group.
-            <button type="button" class="btn btn-ghost btn-sm" onclick="openPortfolioModal(null, ${esc(JSON.stringify(t.name))})">+ Add event</button></div>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="openPortAssign(${esc(JSON.stringify(t.name))})">+ Add events</button></div>
         </div>`).join('')}
     </section>`;
 
@@ -5658,7 +5658,8 @@ function renderGroupTeam(groupName) {
       : `<span class="pf-gt-name">${esc(name)}</span>`;
     return `<span class="pf-gt-person"><span class="pf-gt-role">${r.label}</span>${nameHtml}${id && t[`${r.key}_active`] === false ? '<span class="pf-team-tag">left</span>' : ''}</span>`;
   }).filter(Boolean);
-  const btn = `<button type="button" class="btn btn-ghost btn-sm pf-gt-edit" onclick="openPortTeamModal(${esc(JSON.stringify(groupName))})">${t ? 'Edit team' : 'Set team'}</button>`;
+  const btn = `<button type="button" class="btn btn-ghost btn-sm pf-gt-edit" onclick="openPortAssign(${esc(JSON.stringify(groupName))})">+ Add events</button>` +
+    `<button type="button" class="btn btn-ghost btn-sm" onclick="openPortTeamModal(${esc(JSON.stringify(groupName))})">${t ? 'Edit team' : 'Set team'}</button>`;
   return `<div class="pf-gt">${people.length ? people.join('') : '<span class="pf-gt-none">No team set</span>'}${btn}</div>`;
 }
 
@@ -5799,6 +5800,77 @@ async function savePortTeam() {
     portfolioData.forEach(e => { if (portGroupKey(e.producer) === portGroupKey(oldName)) e.producer = saved.name; });
     showToast(`Team saved · events moved to ${saved.name}`, 'success');
   } else showToast('Team saved', 'success');
+  renderPortfolioGrid();
+}
+
+// ── Add existing events to a team ──
+// Lists every event not already in the team. One with no team is added straight away;
+// one in another team asks before moving it. A brand-new event can still be created.
+let _portAssignTeam = '';
+
+function openPortAssign(teamName) {
+  _portAssignTeam = teamName;
+  let m = document.getElementById('portAssignModal');
+  if (!m) {
+    m = document.createElement('div');
+    m.className = 'modal-overlay';
+    m.id = 'portAssignModal';
+    m.addEventListener('click', e => { if (e.target === m) closeModal('portAssignModal'); });
+    document.body.appendChild(m);
+  }
+  m.innerHTML = `<div class="modal" style="width:560px">
+    <div class="modal-header"><div><h2>Add events to ${esc(teamName)}</h2>
+      <p class="dm-sub">Pick events from the programme. Ones already in another team can be moved here.</p></div>
+      <button class="modal-close" onclick="closeModal('portAssignModal')" aria-label="Close">✕</button></div>
+    <div class="pt-body">
+      <input type="search" id="portAssignSearch" class="form-control" placeholder="Search events, cities or teams" oninput="renderPortAssign()" autocomplete="off">
+      <div id="portAssignList" class="pa-list"></div>
+    </div>
+    <div class="pt-foot" style="justify-content:space-between">
+      <button class="btn btn-ghost" onclick="closeModal('portAssignModal');openPortfolioModal(null, ${esc(JSON.stringify(teamName))})">+ Create a new event instead</button>
+      <button class="btn btn-primary" onclick="closeModal('portAssignModal')">Done</button>
+    </div></div>`;
+  renderPortAssign();
+  openModal('portAssignModal');
+  document.getElementById('portAssignSearch').focus();
+}
+
+function renderPortAssign() {
+  const box = document.getElementById('portAssignList');
+  if (!box) return;
+  const key = portGroupKey(_portAssignTeam);
+  const term = (document.getElementById('portAssignSearch').value || '').trim().toLowerCase();
+  const dateOf = e => e.event_date && e.date_tbc !== 'date' ? String(e.event_date).slice(0, 10) : '';
+  const evs = portfolioData
+    .filter(e => portGroupKey(e.producer) !== key)
+    .filter(e => !term || [e.name, e.location, e.producer].some(v => String(v || '').toLowerCase().includes(term)))
+    .sort((a, b) => (dateOf(a) || '9999').localeCompare(dateOf(b) || '9999') || String(a.name).localeCompare(String(b.name)));
+  const row = e => {
+    const when = dateOf(e) ? fmtDateShort(dateOf(e)) : (e.programme_year ? `${e.programme_year} · date TBC` : 'Date TBC');
+    const other = (e.producer || '').trim();
+    return `<div class="pa-row">
+      <div class="pa-main"><strong>${esc(e.name)}</strong><small>${esc(when)}${e.location ? ' · ' + esc(e.location) : ''}</small></div>
+      ${other ? `<span class="pa-team" title="Currently in ${esc(other)}">${esc(other)}</span>` : ''}
+      <button class="btn btn-sm ${other ? 'btn-ghost' : 'btn-primary'}" onclick="portAssignEvent(${e.id})">${other ? 'Move to this team' : 'Add'}</button>
+    </div>`;
+  };
+  const free = evs.filter(e => !(e.producer || '').trim()), taken = evs.filter(e => (e.producer || '').trim());
+  box.innerHTML = (free.length ? `<div class="pa-head">Not in a team</div>${free.map(row).join('')}` : '') +
+    (taken.length ? `<div class="pa-head">In another team</div>${taken.map(row).join('')}` : '') ||
+    `<div class="ep-empty" style="padding:18px 0">${term ? 'No events match.' : 'Every event is already in this team.'}</div>`;
+}
+
+async function portAssignEvent(id) {
+  const ev = portfolioData.find(e => e.id === id);
+  if (!ev) return;
+  const other = (ev.producer || '').trim();
+  if (other && !await showConfirm(`"${ev.name}" is in ${other}'s team. Move it to ${_portAssignTeam}?`)) return;
+  const res = await fetch(`/api/portfolio-events/${id}/producer`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ producer: _portAssignTeam }) }).catch(() => null);
+  if (!res || !res.ok) { showToast('Could not update the event', 'error'); return; }
+  ev.producer = _portAssignTeam;
+  showToast(other ? `Moved to ${_portAssignTeam}` : `Added to ${_portAssignTeam}`, 'success');
+  renderPortAssign();
   renderPortfolioGrid();
 }
 
