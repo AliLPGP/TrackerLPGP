@@ -12274,7 +12274,6 @@ function openInvoiceGenModal(dealId) {
   document.getElementById('igAmountExVat').value = amtEx ? Number(amtEx).toLocaleString('en-GB') : '';
   document.getElementById('igVatAmount').value = vatAmt;
   document.getElementById('igTotalDue').value = totalDue;
-  document.getElementById('igClientName').value = deal.company || deal.title || '';
   document.getElementById('igAdditionalNotes').value = '';
   // A deal with money in starts as a paid copy, dated and sourced from the deal.
   const paidIn = parseFloat(deal.paid_inc_vat) > 0;
@@ -12318,7 +12317,8 @@ function igCollectPayload() {
     // With no VAT the invoice leaves the VAT row out.
     vat_amount:     document.getElementById('igVatAmount').value.trim(),
     total_due:      document.getElementById('igTotalDue').value.trim() || document.getElementById('igAmountExVat').value.trim(),
-    client_name:    document.getElementById('igClientName').value.trim(),
+    // The agreement is signed in the company's name, so the signature line uses it.
+    client_name:    document.getElementById('igCompany').value.trim(),
     benefits,
     additional_notes: document.getElementById('igAdditionalNotes').value.trim(),
     paid:           document.getElementById('igPaid').checked,
