@@ -7555,3 +7555,10 @@ textarea.form-control { resize: vertical; }
 
 .pf-group-empty { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 14px 16px; margin-top: 8px; border: 1.5px dashed var(--border-bright); border-radius: 12px; color: var(--muted); font: 400 13px/1.5 var(--font-sans); }
 #portStaffModal .pt-body > .form-group { margin-bottom: 14px; }
+
+/* Profile: contract waiting for a signature vs documents already on file */
+.ep-sec-note { margin: 2px 0 0; font: 400 12px/1.4 var(--font-sans); color: var(--muted); max-width: 420px; }
+.ep-sec--sign { background: var(--accent-soft); }
+.ep-contract-wait .ep-doc-link { font-weight: 600; }
+.ep-older { margin-top: 10px; font: 400 12.5px/1.4 var(--font-sans); color: var(--muted); }
+.ep-older summary { cursor: pointer; }
