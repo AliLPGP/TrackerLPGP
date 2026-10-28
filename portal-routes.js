@@ -78,7 +78,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
   async function getEmployee(id) {
     const { rows } = await q(
       `SELECT id, name, email, phone, currency, employment_type, start_date::TEXT AS start_date,
-              termination_date::TEXT AS termination_date, job_title, annual_salary
+              termination_date::TEXT AS termination_date, job_title, annual_salary, working_pattern
        FROM employees WHERE id = ?`, [id]);
     return rows[0] || null;
   }
@@ -358,43 +358,27 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       : `You are entitled to ${d} of paid holiday in each holiday year (1 January to 31 December), excluding UK bank holidays. ` +
         `Holiday dates must be agreed with us in advance. ${rest}`;
   }
-  const WORKING_PATTERNS = ['full-time', 'part-time'];
+  // A contract is made for them automatically from their employee record, so it
+  // needs these set there first
+  const CONTRACT_NEEDS = { job_title: 'job title', start_date: 'start date', annual_salary: 'annual salary' };
+  const contractMissing = emp => Object.keys(CONTRACT_NEEDS).filter(k => k === 'annual_salary' ? !(Number(emp.annual_salary) > 0) : !emp[k]).map(k => CONTRACT_NEEDS[k]);
 
-  // What the admin sets when sending one, pre-filled from the employee's record
+  // The terms, from their employee record (frozen into the contract when they sign)
   function defaultContractFields(emp) {
     const start = isoDay(emp.start_date);
     const year = start && start > today() ? Number(start.slice(0, 4)) : new Date().getFullYear();
+    const pattern = emp.working_pattern === 'part-time' ? 'part-time' : 'full-time';
     return {
       job_title: emp.job_title || '',
-      working_pattern: 'full-time',
-      employment_basis: 'permanent, full-time',
+      working_pattern: pattern,
+      employment_basis: `permanent, ${pattern}`,
       employment_type: emp.employment_type === 'self_employed' ? 'self_employed' : 'payroll',
       start_date: start || '',
-      annual_salary: Number(emp.annual_salary) > 0 ? Number(emp.annual_salary) : '',
+      annual_salary: Number(emp.annual_salary) || 0,
       salary_effective_date: start || '',
       // A full year's allowance, not the part-year figure for the year they join
       holiday_days: allowanceFor ? allowanceFor({ ...emp, start_date: null, termination_date: null }, year) : 20,
     };
-  }
-  function readContractFields(b, emp) {
-    const pattern = WORKING_PATTERNS.includes(b.working_pattern) ? b.working_pattern : 'full-time';
-    const f = {
-      job_title: String(b.job_title || '').trim().slice(0, 120),
-      working_pattern: pattern,
-      employment_basis: `permanent, ${pattern}`,
-      // The holiday clause follows how they are paid, as set on their record
-      employment_type: emp.employment_type === 'self_employed' ? 'self_employed' : 'payroll',
-      start_date: String(b.start_date || ''),
-      annual_salary: Number(String(b.annual_salary == null ? '' : b.annual_salary).replace(/[^0-9.]/g, '')),
-      salary_effective_date: String(b.salary_effective_date || ''),
-      holiday_days: Number(b.holiday_days),
-    };
-    if (!f.job_title) return { error: 'Enter the job title' };
-    if (!ISO_DATE.test(f.start_date)) return { error: 'Choose the start date' };
-    if (!(f.annual_salary > 0)) return { error: 'Enter the annual salary' };
-    if (!ISO_DATE.test(f.salary_effective_date)) return { error: 'Choose the date the salary applies from' };
-    if (!(f.holiday_days >= 0 && f.holiday_days <= 60)) return { error: 'Enter the number of paid holiday days' };
-    return { fields: f };
   }
   // Everything the template can show. Name and address are read when it is shown,
   // so the contract carries what the person entered at onboarding.
@@ -415,10 +399,21 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       signed_date: signedAt ? longDate(isoDay(signedAt)) : '',
     };
   }
+  // `fields` is null until they sign: the contract then reads from their record as it is now
   async function renderTemplateContract(empId, fields, { signaturePng, signedAt } = {}) {
     const emp = await getEmployee(empId);
     const row = await onboardingRow(empId);
-    return contractGen.renderContract(await templateBytes('contract'), contractData(emp, row, fields, signedAt), { signaturePng });
+    return contractGen.renderContract(await templateBytes('contract'), contractData(emp, row, fields || defaultContractFields(emp), signedAt), { signaturePng });
+  }
+
+  // Someone still onboarding gets their employment contract as a step, made from the
+  // template, unless a contract has already been sent to them (or their record lacks the terms)
+  async function ensureContract(emp, row) {
+    if (row && row.completed_at) return;
+    if (await latestContract(emp.id)) return;
+    if (contractMissing(emp).length) return;
+    await q(`INSERT INTO employee_contracts (employee_id, file_name, file_data, file_size, uploaded_by, source)
+             VALUES (?, ?, NULL, 0, 'automatic', 'template')`, [emp.id, `Employment contract - ${emp.name}.pdf`]);
   }
   const sendPdf = (res, bytes, name, download) => {
     res.setHeader('Content-Type', 'application/pdf');
@@ -497,6 +492,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       const emp = await getEmployee(req.user.employee_id);
       if (!emp) return res.status(404).json({ error: 'Not found' });
       const row = await onboardingRow(emp.id);
+      await ensureContract(emp, row);
       const tpl = await templateMeta();
       const contract = await latestContract(emp.id);
       const st = onboardingState(row, emp, tpl, contract);
@@ -732,37 +728,33 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     return { id, replaced: !!(pending && !pending.signed_at) };
   }
 
-  // Admin: the terms a template contract would be sent with, from their record
-  router.get('/employees/:id/contracts/defaults', requireAuth, requireAdmin, async (req, res) => {
+  // Admin: whether their contract can be made automatically, and what is missing
+  router.get('/employees/:id/contract-status', requireAuth, requireAdmin, async (req, res) => {
     try {
       const emp = await getEmployee(req.params.id);
       if (!emp) return res.status(404).json({ error: 'Employee not found' });
       const row = await onboardingRow(emp.id);
-      const cur = await latestContract(emp.id);
-      const fields = cur && !cur.signed_at && cur.source === 'template' && cur.fields ? cur.fields : defaultContractFields(emp);
-      res.json({ fields, currency: emp.currency || 'GBP', employment_type: emp.employment_type, has_address: !!(row && String(row.address || '').trim()) });
+      res.json({ missing: contractMissing(emp), onboarding_completed: !!(row && row.completed_at), fields: defaultContractFields(emp) });
     } catch (e) { fail(res, e); }
   });
 
-  // Admin: the contract as it would read with these terms (their address shows once they enter it)
-  router.post('/employees/:id/contracts/preview', requireAuth, requireAdmin, async (req, res) => {
+  // Admin: their contract as it reads now (their address shows once they enter it)
+  router.get('/employees/:id/contracts/preview', requireAuth, requireAdmin, async (req, res) => {
     try {
       const emp = await getEmployee(req.params.id);
       if (!emp) return res.status(404).json({ error: 'Employee not found' });
-      const v = readContractFields(req.body || {}, emp);
-      if (v.error) return res.status(400).json({ error: v.error });
-      sendPdf(res, await renderTemplateContract(emp.id, v.fields), `Employment contract - ${emp.name}.pdf`, false);
+      sendPdf(res, await renderTemplateContract(emp.id, null), `Employment contract - ${emp.name}.pdf`, req.query.download);
     } catch (e) { fail(res, e); }
   });
 
-  // Admin: send a contract made from the template. It is drawn with their details when they open it.
+  // Admin: ask someone who has finished onboarding to sign their contract (made from the template)
   router.post('/employees/:id/contracts/generate', requireAuth, requireAdmin, async (req, res) => {
     try {
       const emp = await getEmployee(req.params.id);
       if (!emp) return res.status(404).json({ error: 'Employee not found' });
-      const v = readContractFields(req.body || {}, emp);
-      if (v.error) return res.status(400).json({ error: v.error });
-      const out = await sendContract(emp, { file_name: `Employment contract - ${emp.name}.pdf`, file_data: null, file_size: 0, source: 'template', fields: v.fields }, req.admin.username);
+      const missing = contractMissing(emp);
+      if (missing.length) return res.status(400).json({ error: `Add their ${missing.join(', ')} first (Edit details)` });
+      const out = await sendContract(emp, { file_name: `Employment contract - ${emp.name}.pdf`, file_data: null, file_size: 0, source: 'template', fields: null }, req.admin.username);
       res.json({ ok: true, ...out });
     } catch (e) { fail(res, e); }
   });
@@ -802,7 +794,6 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       const sig = readSigning(req.body);
       if (sig.error) return res.status(400).json({ error: sig.error });
       const empId = req.user.employee_id;
-      if (!await agreementSigned(empId)) return res.status(409).json({ error: 'Please sign the team member agreement first' });
       const c = await latestContract(empId);
       if (!c || c.signed_at) return res.status(400).json({ error: 'There is no contract waiting for your signature' });
       const emp = await getEmployee(empId);
@@ -813,9 +804,12 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
         const row = await onboardingRow(empId);
         if (!row || !String(row.address || '').trim()) return res.status(409).json({ error: 'Please add your details (including your address) first' });
         // The copy they read, kept as the original; the signed one carries their signature and the date
-        const unsigned = await renderTemplateContract(empId, c.fields);
-        await q('UPDATE employee_contracts SET file_data = ?, file_size = ? WHERE id = ?', [Buffer.from(unsigned).toString('base64'), unsigned.length, c.id]);
-        original = await renderTemplateContract(empId, c.fields, { signaturePng: sig.signature, signedAt });
+        // The terms are fixed at the moment they sign
+        const fields = c.fields || defaultContractFields(emp);
+        const unsigned = await renderTemplateContract(empId, fields);
+        await q('UPDATE employee_contracts SET file_data = ?, file_size = ?, fields = ? WHERE id = ?',
+          [Buffer.from(unsigned).toString('base64'), unsigned.length, JSON.stringify(fields), c.id]);
+        original = await renderTemplateContract(empId, fields, { signaturePng: sig.signature, signedAt });
       } else {
         const { rows } = await q('SELECT file_data FROM employee_contracts WHERE id = ?', [c.id]);
         original = Buffer.from(rows[0].file_data, 'base64');

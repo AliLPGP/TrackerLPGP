@@ -463,6 +463,8 @@ async function runMigrations() {
   // Probation: set an end date and the review is flagged as due until it is marked done
   await sql(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_end_date DATE`);
   await sql(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_review_done_at DATE`);
+  // Full-time or part-time: stated in their employment contract
+  await sql(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS working_pattern TEXT NOT NULL DEFAULT 'full-time'`);
 
   // First-login onboarding: personal details, an ID document and a signed NDA.
   // Kept apart from `employees` because that table is sent to every logged-in user.
