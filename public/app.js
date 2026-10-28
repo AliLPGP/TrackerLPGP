@@ -1370,7 +1370,7 @@ async function loadEmpContract(empId) {
     const upload = label => `<label class="btn btn-ghost btn-sm">${label}<input type="file" accept=".pdf,application/pdf" hidden onchange="epUploadContract(${empId},this)"></label>`;
     const preview = `<a class="btn btn-ghost btn-sm" href="/api/employees/${empId}/contracts/preview" target="_blank" rel="noopener">Preview</a>`;
     const f = st.fields;
-    const terms = `<small>${esc(f.job_title || '—')} · ${f.working_pattern === 'part-time' ? 'Part-time' : 'Full-time'} · ${f.employment_type === 'self_employed' ? `holiday scheme, ${f.holiday_days} days` : `${f.holiday_days} days paid holiday`} · from their employee record</small>`;
+    const terms = `<small>${esc(f.job_title || '—')} · ${f.working_pattern === 'part-time' ? 'Part-time' : 'Full-time'} · ${f.employment_type === 'self_employed' ? `holiday scheme, ${f.holiday_days} days` : `${f.holiday_days} days paid holiday`} · ${f.probation === 'on' ? `probation until ${fmtDateShort(f.probation_end_date)}` : f.probation === 'passed' ? 'probation passed' : 'no probation'} · from their employee record</small>`;
     const missing = st.missing.length ? `<div class="ep-empty">Add their ${esc(st.missing.join(', '))} (Edit details) so their contract can be made.</div>` : '';
     const row = (title, sub, badge) => `<div class="ep-row${badge ? ' ep-contract-wait' : ''}"><span>${title}<small>${sub}</small></span>${badge || ''}</div>`;
     const actions = html => `<div class="ep-actions" style="padding:10px 0 0;border:none">${html}</div>`;
@@ -2260,7 +2260,9 @@ async function savePayment() {
   const res = await fetch('/api/payments', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ employee_id, payment_year, payment_month, amount, notes })
+    // In the employee's own currency (it was left out, so it was stored as GBP)
+    body: JSON.stringify({ employee_id, payment_year, payment_month, amount, notes,
+      currency: ((allEmployeesData || []).find(e => String(e.id) === String(employee_id)) || {}).currency || 'GBP' })
   });
   if (!res.ok) { const e = await res.json(); return showToast(e.error, 'error'); }
   closeModal('paymentModal');
@@ -4237,6 +4239,121 @@ async function refreshCalendarBadge() {
 }
 
 // ─── SALARY REMINDER PANEL ────────────────────────────────────────────────────
+// ── Bulk monthly pay (Salary page) ──
+// Logs the usual monthly pay for everyone in a group (e.g. self-employed, PHP) in one go.
+// The usual amount is their salary for that month: annual ÷ 12 at the salary in force,
+// or the part-month amount in the month they started. Each one can be changed or left
+// out first, and anyone already paid for the month is skipped.
+let _bulkPay = { type: 'self_employed', currency: 'PHP', rows: [] };
+
+function bulkUsualAmount(emp, year, month) {
+  const ym = `${year}-${String(month).padStart(2, '0')}`;
+  const fm = emp.first_month_full;
+  if (fm && emp.start_date && emp.start_date.slice(0, 7) === ym && fm.first_month_days < fm.first_month_total_days) return parseFloat(fm.first_month_pay) || 0;
+  const band = (emp.pay_bands || []).find(b => b.from.slice(0, 7) <= ym && b.to.slice(0, 7) >= ym);
+  const monthly = band ? band.monthly : (parseFloat(emp.annual_salary) || 0) / 12;
+  return Math.round(monthly * 100) / 100;
+}
+
+async function openBulkPayModal(type, currency) {
+  _bulkPay.type = type; _bulkPay.currency = currency;
+  const now = new Date();
+  let m = document.getElementById('bulkPayModal');
+  if (!m) {
+    m = document.createElement('div');
+    m.className = 'modal-overlay';
+    m.id = 'bulkPayModal';
+    m.addEventListener('click', e => { if (e.target === m) closeModal('bulkPayModal'); });
+    document.body.appendChild(m);
+  }
+  const monthOpts = MONTHS.slice(1).map((n, i) => `<option value="${i + 1}"${i + 1 === now.getMonth() + 1 ? ' selected' : ''}>${n}</option>`).join('');
+  const y = now.getFullYear();
+  m.innerHTML = `<div class="modal" style="max-width:640px">
+    <div class="modal-header"><h2>Pay all ${type === 'self_employed' ? 'self-employed' : 'payroll'} · ${esc(currency)}</h2><button class="modal-close" onclick="closeModal('bulkPayModal')">✕</button></div>
+    <p class="bp-note">Each person's usual monthly pay is filled in. Change any amount that is different this month, or untick anyone you are not paying, then log them all at once.</p>
+    <div class="bp-when">
+      <div class="form-group"><label>Month</label><select id="bpMonth" onchange="renderBulkPay()">${monthOpts}</select></div>
+      <div class="form-group"><label>Year</label><select id="bpYear" onchange="renderBulkPay()">${[y - 1, y, y + 1].map(v => `<option${v === y ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
+      <div class="form-group bp-notes"><label>Note <span class="dm-opt">optional</span></label><input id="bpNotes" type="text" maxlength="200" placeholder="e.g. Paid via Wise"></div>
+    </div>
+    <div id="bpList" class="bp-list"><div class="ep-loading">Loading…</div></div>
+    <div class="bp-foot"><span id="bpTotal"></span>
+      <div><button class="btn btn-ghost" onclick="closeModal('bulkPayModal')">Cancel</button>
+      <button class="btn btn-primary" id="bpGo" onclick="submitBulkPay()">Log payments</button></div></div>
+  </div>`;
+  openModal('bulkPayModal');
+  renderBulkPay();
+}
+
+async function renderBulkPay() {
+  const year = parseInt(document.getElementById('bpYear').value, 10), month = parseInt(document.getElementById('bpMonth').value, 10);
+  const list = document.getElementById('bpList');
+  const res = await fetch(`/api/salary-overview?year=${year}`).catch(() => null);
+  const data = res && res.ok ? await res.json() : null;
+  if (!data) { list.innerHTML = '<div class="ep-empty">Could not load the team.</div>'; return; }
+  const ym = `${year}-${String(month).padStart(2, '0')}`;
+  const sym = { GBP: '£', USD: '$', AED: 'AED ', PHP: '₱', EUR: '€' }[_bulkPay.currency] || '';
+  const money = n => sym + Number(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  _bulkPay.rows = data.filter(e => !e.is_terminated && e.employment_type === _bulkPay.type && (e.currency || 'GBP') === _bulkPay.currency
+      && parseFloat(e.annual_salary) > 0 && (!e.start_date || e.start_date.slice(0, 7) <= ym))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(e => {
+      const paid = (e.payments || []).filter(p => parseInt(p.payment_year) === year && parseInt(p.payment_month) === month);
+      const prior = (e.payments || []).filter(p => `${p.payment_year}-${String(p.payment_month).padStart(2, '0')}` < ym)
+        .sort((a, b) => (b.payment_year - a.payment_year) || (b.payment_month - a.payment_month))[0];
+      const ded = (e.breakdown || []).find(b => b.year === year && b.month === month);
+      return { id: e.employee_id, name: e.name, usual: bulkUsualAmount(e, year, month), paid: paid.reduce((t, p) => t + parseFloat(p.amount), 0), already: paid.length > 0,
+               last: prior ? parseFloat(prior.amount) : null, deduction: ded ? ded.deduction : 0 };
+    });
+  if (!_bulkPay.rows.length) { list.innerHTML = `<div class="ep-empty">No active self-employed ${esc(_bulkPay.currency)} staff for ${MONTHS[month]} ${year}.</div>`; bulkPayTotal(); return; }
+  list.innerHTML = _bulkPay.rows.map((r, i) => r.already
+    ? `<div class="bp-row is-paid"><span class="bp-check">✓</span><div class="bp-who"><b>${esc(r.name)}</b><small>Already paid ${money(r.paid)} for ${MONTHS[month]}</small></div></div>`
+    : `<label class="bp-row"><input type="checkbox" class="bp-check" data-i="${i}" checked onchange="bulkPayTotal()">
+        <div class="bp-who"><b>${esc(r.name)}</b><small>Usual ${money(r.usual)}${r.last != null && Math.abs(r.last - r.usual) > 0.005 ? ` · last paid ${money(r.last)}` : ''}${r.deduction > 0 ? ` · <span class="bp-ded">${money(r.deduction)} day-off deduction this month <button type="button" class="dm-link" onclick="event.preventDefault();bulkTakeOff(${i})">take it off</button></span>` : ''}</small></div>
+        <span class="bp-amt">${esc(sym.trim())}<input type="number" min="0" step="0.01" id="bpAmt${i}" value="${r.usual.toFixed(2)}" oninput="bulkPayTotal()"></span>
+      </label>`).join('');
+  bulkPayTotal();
+}
+
+function bulkTakeOff(i) {
+  const r = _bulkPay.rows[i], el = document.getElementById('bpAmt' + i);
+  el.value = Math.max(0, r.usual - r.deduction).toFixed(2);
+  bulkPayTotal();
+}
+
+function bulkPaySelection() {
+  return [...document.querySelectorAll('#bpList input.bp-check:checked')].map(cb => {
+    const i = +cb.dataset.i;
+    return { employee_id: _bulkPay.rows[i].id, amount: parseFloat(document.getElementById('bpAmt' + i).value) || 0 };
+  }).filter(p => p.amount > 0);
+}
+
+function bulkPayTotal() {
+  const sel = bulkPaySelection();
+  const sym = { GBP: '£', USD: '$', AED: 'AED ', PHP: '₱', EUR: '€' }[_bulkPay.currency] || '';
+  const total = sel.reduce((t, p) => t + p.amount, 0);
+  document.getElementById('bpTotal').innerHTML = sel.length ? `<b>${sel.length}</b> ${sel.length === 1 ? 'person' : 'people'} · <b>${sym}${total.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b>` : 'Nobody selected';
+  const btn = document.getElementById('bpGo');
+  btn.disabled = !sel.length;
+  btn.textContent = sel.length ? `Log ${sel.length} payment${sel.length === 1 ? '' : 's'}` : 'Log payments';
+}
+
+async function submitBulkPay() {
+  const payments = bulkPaySelection();
+  if (!payments.length) return;
+  const year = document.getElementById('bpYear').value, month = document.getElementById('bpMonth').value;
+  const btn = document.getElementById('bpGo');
+  btn.disabled = true;
+  const res = await fetch('/api/payments/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ payment_year: year, payment_month: month, payments, notes: document.getElementById('bpNotes').value.trim() }) }).catch(() => null);
+  const data = res ? await res.json().catch(() => ({})) : {};
+  btn.disabled = false;
+  if (!res || !res.ok) { showToast(data.error || 'Could not log the payments', 'error'); return; }
+  closeModal('bulkPayModal');
+  showToast(`Logged ${data.created.length} payment${data.created.length === 1 ? '' : 's'} for ${MONTHS[month]} ${year}` + (data.skipped.length ? ` (${data.skipped.length} already paid, skipped)` : ''), 'success');
+  loadSalaryPage();
+}
+
 function getUnpaidThisMonth(overview, year, month) {
   return (overview || []).filter(emp => {
     if (emp.is_terminated || !emp.annual_salary || parseFloat(emp.annual_salary) <= 0) return false;
