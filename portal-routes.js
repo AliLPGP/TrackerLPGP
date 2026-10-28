@@ -344,13 +344,31 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     : '');
   const money = n => Number(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+  // The holiday clause. Both follow the tracker's own rule: a yearly number of free days
+  // (pro-rated in the year they join), and days beyond it deducted at that month's daily rate.
+  function holidayTerms(type, days) {
+    const n = Number(days), d = `${n % 1 ? n.toFixed(1) : n} day${n === 1 ? '' : 's'}`;
+    const rest = 'In the year you join, this is pro-rated to the part of the year you work for us. ' +
+      'Any days off beyond this are unpaid and are deducted from your pay at your daily rate for the month they fall in ' +
+      '(your monthly pay divided by the number of working days in that month).';
+    return type === 'self_employed'
+      ? `As a self-employed team member you are not entitled to paid holiday; instead you are covered by our holiday scheme. ` +
+        `Under the scheme you may take up to ${d} off in each holiday year (1 January to 31 December), excluding UK bank holidays, ` +
+        `without any reduction in your pay. Days off must be agreed with us in advance. ${rest}`
+      : `You are entitled to ${d} of paid holiday in each holiday year (1 January to 31 December), excluding UK bank holidays. ` +
+        `Holiday dates must be agreed with us in advance. ${rest}`;
+  }
+  const WORKING_PATTERNS = ['full-time', 'part-time'];
+
   // What the admin sets when sending one, pre-filled from the employee's record
   function defaultContractFields(emp) {
     const start = isoDay(emp.start_date);
     const year = start && start > today() ? Number(start.slice(0, 4)) : new Date().getFullYear();
     return {
       job_title: emp.job_title || '',
+      working_pattern: 'full-time',
       employment_basis: 'permanent, full-time',
+      employment_type: emp.employment_type === 'self_employed' ? 'self_employed' : 'payroll',
       start_date: start || '',
       annual_salary: Number(emp.annual_salary) > 0 ? Number(emp.annual_salary) : '',
       salary_effective_date: start || '',
@@ -358,17 +376,20 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       holiday_days: allowanceFor ? allowanceFor({ ...emp, start_date: null, termination_date: null }, year) : 20,
     };
   }
-  function readContractFields(b) {
+  function readContractFields(b, emp) {
+    const pattern = WORKING_PATTERNS.includes(b.working_pattern) ? b.working_pattern : 'full-time';
     const f = {
       job_title: String(b.job_title || '').trim().slice(0, 120),
-      employment_basis: String(b.employment_basis || '').trim().slice(0, 120),
+      working_pattern: pattern,
+      employment_basis: `permanent, ${pattern}`,
+      // The holiday clause follows how they are paid, as set on their record
+      employment_type: emp.employment_type === 'self_employed' ? 'self_employed' : 'payroll',
       start_date: String(b.start_date || ''),
       annual_salary: Number(String(b.annual_salary == null ? '' : b.annual_salary).replace(/[^0-9.]/g, '')),
       salary_effective_date: String(b.salary_effective_date || ''),
       holiday_days: Number(b.holiday_days),
     };
     if (!f.job_title) return { error: 'Enter the job title' };
-    if (!f.employment_basis) return { error: 'Enter the basis, e.g. permanent, full-time' };
     if (!ISO_DATE.test(f.start_date)) return { error: 'Choose the start date' };
     if (!(f.annual_salary > 0)) return { error: 'Enter the annual salary' };
     if (!ISO_DATE.test(f.salary_effective_date)) return { error: 'Choose the date the salary applies from' };
@@ -384,10 +405,12 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       date_of_birth: longDate(row && row.dob_text),
       job_title: f.job_title,
       employment_basis: f.employment_basis,
+      working_pattern: f.working_pattern || (/part-time/.test(f.employment_basis || '') ? 'part-time' : 'full-time'),
       start_date: longDate(f.start_date),
       annual_salary: money(f.annual_salary),
       salary_effective_date: longDate(f.salary_effective_date),
       holiday_days: String(f.holiday_days),
+      holiday_terms: holidayTerms(f.employment_type || emp.employment_type, f.holiday_days),
       today: longDate(today()),
       signed_date: signedAt ? longDate(isoDay(signedAt)) : '',
     };
@@ -717,7 +740,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       const row = await onboardingRow(emp.id);
       const cur = await latestContract(emp.id);
       const fields = cur && !cur.signed_at && cur.source === 'template' && cur.fields ? cur.fields : defaultContractFields(emp);
-      res.json({ fields, currency: emp.currency || 'GBP', has_address: !!(row && String(row.address || '').trim()) });
+      res.json({ fields, currency: emp.currency || 'GBP', employment_type: emp.employment_type, has_address: !!(row && String(row.address || '').trim()) });
     } catch (e) { fail(res, e); }
   });
 
@@ -726,7 +749,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     try {
       const emp = await getEmployee(req.params.id);
       if (!emp) return res.status(404).json({ error: 'Employee not found' });
-      const v = readContractFields(req.body || {});
+      const v = readContractFields(req.body || {}, emp);
       if (v.error) return res.status(400).json({ error: v.error });
       sendPdf(res, await renderTemplateContract(emp.id, v.fields), `Employment contract - ${emp.name}.pdf`, false);
     } catch (e) { fail(res, e); }
@@ -737,7 +760,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     try {
       const emp = await getEmployee(req.params.id);
       if (!emp) return res.status(404).json({ error: 'Employee not found' });
-      const v = readContractFields(req.body || {});
+      const v = readContractFields(req.body || {}, emp);
       if (v.error) return res.status(400).json({ error: v.error });
       const out = await sendContract(emp, { file_name: `Employment contract - ${emp.name}.pdf`, file_data: null, file_size: 0, source: 'template', fields: v.fields }, req.admin.username);
       res.json({ ok: true, ...out });

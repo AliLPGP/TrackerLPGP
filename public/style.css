@@ -7606,7 +7606,8 @@ textarea.form-control { resize: vertical; }
 .cg-note { font-size: 0.82rem; color: var(--muted); margin: 0 0 14px; line-height: 1.5; }
 .cg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
 .cg-grid .cg-span { grid-column: 1 / -1; }
-.cg-grid input { width: 100%; }
+.cg-grid input, .cg-grid select { width: 100%; }
+.cg-fixed { padding: 9px 0; font-size: 0.86rem; color: var(--text); }
 .cg-err { color: var(--negative); font-size: 0.82rem; min-height: 1.2em; margin-top: 8px; }
 .cg-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 @media (max-width: 560px) { .cg-grid { grid-template-columns: 1fr; } }

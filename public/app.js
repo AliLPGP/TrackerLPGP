@@ -1404,11 +1404,15 @@ async function openContractGenerator(empId) {
     <p class="cg-note">Made from your contract template. Check the terms below; their name${d.has_address ? ' and address are' : ' is filled in now, and their address is'} filled in ${d.has_address ? 'from their profile' : 'from what they enter at onboarding, before they sign'}.</p>
     <div class="cg-grid">
       <div class="form-group cg-span"><label>Job title</label><input id="cgJob" type="text" maxlength="120" value="${esc(f.job_title || '')}" placeholder="e.g. Production &amp; Research"></div>
-      <div class="form-group cg-span"><label>Basis</label><input id="cgBasis" type="text" maxlength="120" value="${esc(f.employment_basis || '')}" placeholder="e.g. permanent, full-time"></div>
+      <div class="form-group"><label>Hours</label><select id="cgPattern">
+        <option value="full-time"${(f.working_pattern || (/part-time/.test(f.employment_basis || '') ? 'part-time' : 'full-time')) === 'full-time' ? ' selected' : ''}>Full-time</option>
+        <option value="part-time"${(f.working_pattern || (/part-time/.test(f.employment_basis || '') ? 'part-time' : 'full-time')) === 'part-time' ? ' selected' : ''}>Part-time</option>
+      </select></div>
+      <div class="form-group"><label>Holiday</label><div class="cg-fixed">${d.employment_type === 'self_employed' ? 'Self-employed: holiday scheme' : 'Payroll: paid holiday'}</div></div>
       <div class="form-group"><label>Start date</label><input id="cgStart" type="date" value="${esc(f.start_date || '')}"></div>
       <div class="form-group"><label>Annual salary${sym ? ' (' + esc(sym.trim()) + ')' : ''}</label><input id="cgSalary" type="number" min="0" step="0.01" value="${esc(String(f.annual_salary || ''))}"></div>
       <div class="form-group"><label>Salary effective from</label><input id="cgEffective" type="date" value="${esc(f.salary_effective_date || '')}"></div>
-      <div class="form-group"><label>Paid holiday days a year</label><input id="cgHoliday" type="number" min="0" max="60" step="0.5" value="${esc(String(f.holiday_days ?? ''))}"></div>
+      <div class="form-group"><label>${d.employment_type === 'self_employed' ? 'Days off a year (holiday scheme)' : 'Paid holiday days a year'}</label><input id="cgHoliday" type="number" min="0" max="60" step="0.5" value="${esc(String(f.holiday_days ?? ''))}"></div>
     </div>
     <div class="cg-err" id="cgErr"></div>
     <div class="modal-footer cg-foot">
@@ -1427,7 +1431,7 @@ async function openContractGenerator(empId) {
 function cgFields() {
   return {
     job_title: document.getElementById('cgJob').value.trim(),
-    employment_basis: document.getElementById('cgBasis').value.trim(),
+    working_pattern: document.getElementById('cgPattern').value,
     start_date: document.getElementById('cgStart').value,
     annual_salary: document.getElementById('cgSalary').value,
     salary_effective_date: document.getElementById('cgEffective').value,
@@ -1586,7 +1590,7 @@ async function openOnboardingFiles() {
 
 // The contract template is a Word file with {{fields}}; editing it in Word and uploading it back changes every new contract
 function contractSlot(f) {
-  const fields = ['employee_name', 'employee_address', 'date_of_birth', 'job_title', 'employment_basis', 'start_date', 'annual_salary', 'salary_effective_date', 'holiday_days', 'today', 'signature', 'signed_date'];
+  const fields = ['employee_name', 'employee_address', 'date_of_birth', 'job_title', 'employment_basis', 'working_pattern', 'start_date', 'annual_salary', 'salary_effective_date', 'holiday_days', 'holiday_terms', 'today', 'signature', 'signed_date'];
   return `<div class="obf-slot">
     <div class="obf-head"><div><h3>${OB_FILES.contract.title}</h3><small>${OB_FILES.contract.who}</small></div><span class="ep-status ep-status--on">In use</span></div>
     <div class="obf-file"><span class="ob-pdf-badge">DOCX</span>
