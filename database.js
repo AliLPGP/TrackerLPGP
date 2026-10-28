@@ -521,6 +521,11 @@ async function runMigrations() {
       signed_doc_id INT
     )
   `);
+  // A contract can also be made from the Word template: its terms are set when it is
+  // sent (fields) and the PDF is produced when they read and sign it (file_data then holds it)
+  await sql(`ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'upload'`);
+  await sql(`ALTER TABLE employee_contracts ADD COLUMN IF NOT EXISTS fields JSONB`);
+  await sql(`ALTER TABLE employee_contracts ALTER COLUMN file_data DROP NOT NULL`);
 
   // Formal warnings given to a member of staff; they see them in their portal
   await sql(`

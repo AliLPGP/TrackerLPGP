@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node test/bridge.test.js && node test/salary.test.js && node test/pdf.test.js && node test/invoice-terms.test.js"
+    "test": "node test/bridge.test.js && node test/salary.test.js && node test/pdf.test.js && node test/invoice-terms.test.js && node test/contract.test.js"
   },
   "engines": {
     "node": ">=18.0.0"
