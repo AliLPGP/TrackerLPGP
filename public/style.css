@@ -7601,3 +7601,14 @@ textarea.form-control { resize: vertical; }
 .my-warning-top { display: flex; justify-content: space-between; gap: 12px; font: 500 13px/1.3 var(--font-sans); color: var(--text); }
 .my-warning-top span { color: var(--muted); font-size: 12px; }
 .my-warning-reason { margin-top: 6px; font: 400 13px/1.5 var(--font-sans); color: var(--text); white-space: pre-line; }
+
+/* Contract from template (admin) */
+.cg-note { font-size: 0.82rem; color: var(--muted); margin: 0 0 14px; line-height: 1.5; }
+.cg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
+.cg-grid .cg-span { grid-column: 1 / -1; }
+.cg-grid input { width: 100%; }
+.cg-err { color: var(--negative); font-size: 0.82rem; min-height: 1.2em; margin-top: 8px; }
+.cg-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+@media (max-width: 560px) { .cg-grid { grid-template-columns: 1fr; } }
+.obf-empty code { font-size: 11px; padding: 1px 4px; border-radius: 4px; background: var(--surface); border: 1px solid var(--border); white-space: nowrap; }
+.ob-summary .is-later { color: var(--muted); }
