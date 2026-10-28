@@ -1310,6 +1310,33 @@ app.post('/api/payments', requireAuth, requireAdmin, async (req, res) => {
   res.json({ id: rows[0].id });
 });
 
+// Log one month's pay for several people at once (the Salary page's bulk button).
+// Each payment takes the employee's own currency, and anyone already paid for that
+// month is skipped, so pressing it twice never pays twice.
+app.post('/api/payments/bulk', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const year = parseInt(req.body.payment_year, 10), month = parseInt(req.body.payment_month, 10);
+    if (!(year >= 2000 && year <= 2100) || !(month >= 1 && month <= 12)) return res.status(400).json({ error: 'Choose the month' });
+    const list = (Array.isArray(req.body.payments) ? req.body.payments : [])
+      .map(p => ({ employee_id: parseInt(p.employee_id, 10), amount: Math.round((parseFloat(p.amount) || 0) * 100) / 100 }))
+      .filter(p => p.employee_id > 0 && p.amount > 0);
+    if (!list.length) return res.status(400).json({ error: 'Nobody to pay' });
+    const notes = String(req.body.notes || '').trim().slice(0, 200);
+    const created = [], skipped = [];
+    for (const p of list) {
+      const { rows: emp } = await q('SELECT id, name, currency FROM employees WHERE id = ?', [p.employee_id]);
+      if (!emp[0]) continue;
+      const { rows: done } = await q('SELECT id FROM monthly_payments WHERE employee_id = ? AND payment_year = ? AND payment_month = ? LIMIT 1', [p.employee_id, year, month]);
+      if (done.length) { skipped.push(emp[0].name); continue; }
+      const cur = ['GBP', 'AED', 'PHP'].includes(emp[0].currency) ? emp[0].currency : 'GBP';
+      await q('INSERT INTO monthly_payments (employee_id, payment_year, payment_month, amount, notes, currency, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [p.employee_id, year, month, p.amount, notes, cur, req.admin.id]);
+      created.push(emp[0].name);
+    }
+    res.json({ created, skipped });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.delete('/api/payments/:id', requireAuth, requireAdmin, async (req, res) => {
   await q('DELETE FROM monthly_payments WHERE id = ?', [req.params.id]);
   res.json({ success: true });

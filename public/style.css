@@ -7615,3 +7615,22 @@ textarea.form-control { resize: vertical; }
 .ep-id-actions { display: inline-flex; gap: 6px; }
 .ep-id-history { margin-top: 8px; font-size: 0.78rem; color: var(--muted); line-height: 1.6; }
 .ep-id-history b { display: block; color: var(--text); font-weight: 600; margin-bottom: 2px; }
+
+/* Bulk monthly pay (Salary page) */
+.bp-note { font-size: 0.82rem; color: var(--muted); margin: 0 0 12px; line-height: 1.5; }
+.bp-when { display: grid; grid-template-columns: 1fr 110px 2fr; gap: 10px; margin-bottom: 10px; }
+.bp-when select, .bp-when input { width: 100%; }
+.bp-list { max-height: 52vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; }
+.bp-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.bp-row:last-child { border-bottom: none; }
+.bp-row.is-paid { opacity: 0.6; cursor: default; }
+.bp-row .bp-check { flex-shrink: 0; width: 16px; text-align: center; color: var(--positive); }
+.bp-who { flex: 1; min-width: 0; }
+.bp-who b { display: block; font-weight: 600; color: var(--text); }
+.bp-who small { color: var(--muted); font-size: 0.76rem; }
+.bp-ded { color: var(--warning); }
+.bp-amt { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.bp-amt input { width: 120px; text-align: right; }
+.bp-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.bp-foot > div { display: flex; gap: 8px; }
+@media (max-width: 560px) { .bp-when { grid-template-columns: 1fr 1fr; } .bp-when .bp-notes { grid-column: 1 / -1; } .bp-amt input { width: 96px; } }
