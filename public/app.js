@@ -1370,7 +1370,7 @@ async function loadEmpContract(empId) {
     const upload = label => `<label class="btn btn-ghost btn-sm">${label}<input type="file" accept=".pdf,application/pdf" hidden onchange="epUploadContract(${empId},this)"></label>`;
     const preview = `<a class="btn btn-ghost btn-sm" href="/api/employees/${empId}/contracts/preview" target="_blank" rel="noopener">Preview</a>`;
     const f = st.fields;
-    const terms = `<small>${esc(f.job_title || '—')} · ${f.working_pattern === 'part-time' ? 'Part-time' : 'Full-time'} · ${f.employment_type === 'self_employed' ? `holiday scheme, ${f.holiday_days} days` : `${f.holiday_days} days paid holiday`} · from their employee record</small>`;
+    const terms = `<small>${esc(f.job_title || '—')} · ${f.working_pattern === 'part-time' ? 'Part-time' : 'Full-time'} · ${f.employment_type === 'self_employed' ? `holiday scheme, ${f.holiday_days} days` : `${f.holiday_days} days paid holiday`} · ${f.probation === 'on' ? `probation until ${fmtDateShort(f.probation_end_date)}` : f.probation === 'passed' ? 'probation passed' : 'no probation'} · from their employee record</small>`;
     const missing = st.missing.length ? `<div class="ep-empty">Add their ${esc(st.missing.join(', '))} (Edit details) so their contract can be made.</div>` : '';
     const row = (title, sub, badge) => `<div class="ep-row${badge ? ' ep-contract-wait' : ''}"><span>${title}<small>${sub}</small></span>${badge || ''}</div>`;
     const actions = html => `<div class="ep-actions" style="padding:10px 0 0;border:none">${html}</div>`;

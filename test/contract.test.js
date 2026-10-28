@@ -26,6 +26,12 @@ const cg = require('../contract-gen');
   const pdf = await PDFDocument.load(await cg.renderContract(tpl, data));
   assert.ok(pdf.getPageCount() >= 2, 'contract runs to at least two pages');
 
+  // The probation section is left out entirely for someone never on probation
+  const para = d => (cg.fillTemplate(tpl, { ...data, ...d }).file('word/document.xml').asText().match(/<w:t(?:\s[^>]*)?>[\s\S]*?<\/w:t>/g) || []).map(t => t.replace(/<[^>]+>/g, '')).join('|');
+  assert.ok(!para({ probation_section: false }).includes('Probation') && !para({ probation_section: false }).includes('Confirmation of Employment'), 'no probation: section removed');
+  assert.ok(para({ probation_section: true, probation_heading: 'Probationary Period', probation_text: 'Your employment begins with a 3-month probationary period' }).includes('Probationary Period'), 'on probation');
+  assert.ok(para({ probation_section: true, probation_heading: 'Confirmation of Employment', probation_text: 'You successfully completed' }).includes('Confirmation of Employment'), 'passed');
+
   // A field we cannot fill is reported, so a bad template is refused
   const zip = new PizZip(tpl);
   zip.file('word/document.xml', zip.file('word/document.xml').asText().replace('{{job_title}}', '{{job_titel}}'));

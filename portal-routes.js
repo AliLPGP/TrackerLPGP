@@ -79,7 +79,8 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
   async function getEmployee(id) {
     const { rows } = await q(
       `SELECT id, name, email, phone, currency, employment_type, start_date::TEXT AS start_date,
-              termination_date::TEXT AS termination_date, job_title, annual_salary, working_pattern
+              termination_date::TEXT AS termination_date, job_title, annual_salary, working_pattern,
+              probation_end_date::TEXT AS probation_end_date, probation_review_done_at::TEXT AS probation_review_done_at
        FROM employees WHERE id = ?`, [id]);
     return rows[0] || null;
   }
@@ -379,6 +380,33 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       salary_effective_date: start || '',
       // A full year's allowance, not the part-year figure for the year they join
       holiday_days: allowanceFor ? allowanceFor({ ...emp, start_date: null, termination_date: null }, year) : 20,
+      // On probation, passed it (review marked done), or never on probation
+      probation: !emp.probation_end_date ? 'none' : emp.probation_review_done_at ? 'passed' : 'on',
+      probation_end_date: isoDay(emp.probation_end_date) || '',
+    };
+  }
+
+  // The probation section of the contract: a probation clause while they are on it, the
+  // confirmation once they have passed, and nothing at all for anyone never on probation
+  function probationClause(f) {
+    if (f.probation === 'passed') return {
+      probation_section: true, probation_heading: 'Confirmation of Employment',
+      probation_text: 'You successfully completed your Probationary Period to our satisfaction, and we confirm your continued employment with us on a permanent basis.',
+    };
+    if (f.probation !== 'on' || !f.probation_end_date) return { probation_section: false, probation_heading: '', probation_text: '' };
+    // "3 months" when the end date is a whole number of months after the start
+    let period = 'probationary period';
+    if (f.start_date) {
+      const s = new Date(f.start_date + 'T12:00:00Z'), e = new Date(f.probation_end_date + 'T12:00:00Z');
+      const months = Math.round((e - s) / (30.44 * 86400000));
+      const back = new Date(e); back.setUTCMonth(back.getUTCMonth() - months);
+      if (months > 0 && Math.abs(back - s) <= 3 * 86400000) period = `${months}-month probationary period`;
+    }
+    return {
+      probation_section: true, probation_heading: 'Probationary Period',
+      probation_text: `Your employment begins with a ${period}, ending on ${longDate(f.probation_end_date)}. During this time we will review your performance ` +
+        'and suitability for the role, and we may extend the period if we reasonably need more time to assess you. When you complete it ' +
+        'to our satisfaction, we will confirm your continued employment with us on a permanent basis.',
     };
   }
   // Everything the template can show. Name and address are read when it is shown,
@@ -396,6 +424,8 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       salary_effective_date: longDate(f.salary_effective_date),
       holiday_days: String(f.holiday_days),
       holiday_terms: holidayTerms(f.employment_type || emp.employment_type, f.holiday_days),
+      ...probationClause(f.probation ? f : { ...f, ...defaultContractFields(emp) }),
+      probation_end_date: longDate(f.probation_end_date),
       today: longDate(today()),
       signed_date: signedAt ? longDate(isoDay(signedAt)) : '',
     };
