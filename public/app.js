@@ -8410,7 +8410,18 @@ function obStepId() {
   obEl('obBody').innerHTML =
     '<h2>' + OB_ICON.id + ' Proof of ID</h2>' +
     '<p class="ob-help">Last step. Upload a clear photo or scan of your passport or driving licence. You can skip this for now and add it later from My Profile.</p>' +
-    '<div class="ob-secure">' + OB_ICON.lock + '<span>Your ID is encrypted before it is stored. Only the admin team can open it, every time it is opened is recorded, and it is never shared by link. Photos are re-saved on your device first, which removes hidden details such as location.</span></div>' +
+    // How the ID is protected, in plain terms; each point matches what the app actually does
+    '<div class="ob-secure">' +
+      '<div class="ob-secure-hd">' + OB_ICON.lock + '<b>How your ID is kept safe</b></div>' +
+      '<ul>' +
+        '<li><b>Encrypted in transit.</b> It travels to us over a secure HTTPS connection (TLS), so it cannot be read on the way.</li>' +
+        '<li><b>Encrypted in storage.</b> Before it is saved it is locked with AES-256-GCM, the encryption standard used by banks and governments. The key is held separately from the database, so a copy of the database on its own shows nothing readable, and any tampering with the file is detected.</li>' +
+        '<li><b>Admins only.</b> Only the admin team can open it, after signing in. Managers and other staff cannot, and there is no public or shareable link to it.</li>' +
+        '<li><b>Every access recorded.</b> Each time it is uploaded, opened or deleted, who did it and when is logged.</li>' +
+        '<li><b>Hidden details removed.</b> Photos are re-saved on your device before upload, which strips hidden data such as your location.</li>' +
+        '<li><b>Protected sign-in.</b> Accounts lock for 15 minutes after repeated wrong passwords or PINs, so they cannot be guessed.</li>' +
+        '<li><b>Deleted when no longer needed.</b> It can be permanently deleted at any time; ask the admin team if you want yours removed.</li>' +
+      '</ul></div>' +
     (cur ? '<div class="ob-ok">' + OB_ICON.check + '<span>Already uploaded: ' + esc(cur.name) + '. Add a new one only if you want to replace it.</span></div>' : '') +
     '<div class="ob-choice" role="radiogroup" aria-label="Type of ID">' +
       '<label class="ob-card-opt"><input type="radio" name="obIdType" value="passport" checked><span>' + OB_ICON.doc + '<b>Passport</b></span></label>' +
