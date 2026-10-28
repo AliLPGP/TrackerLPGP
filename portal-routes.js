@@ -6,6 +6,7 @@ const { PDFDocument } = require('pdf-lib');
 const { builtInHolidays, regionFor, splitWorkingDays, addDays } = require('./holidays');
 const { readFormFields, fillForm, imageToPdf, appendSignaturePage } = require('./pdf-sign');
 const contractGen = require('./contract-gen');
+const idCrypto = require('./id-crypto');
 
 /**
  * Everything the staff portal needs beyond the original day-off buttons.
@@ -564,6 +565,15 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     return !!(row && row.nda_signed_at);
   }
 
+  // ── Passport / driving licence ──
+  // Stored encrypted (id-crypto), opened only by admins, and every upload, view and
+  // deletion is written to id_doc_events.
+  const clientIp = req => String(req.headers['x-forwarded-for'] || (req.socket && req.socket.remoteAddress) || '').split(',')[0].trim().slice(0, 64);
+  async function logIdEvent(empId, action, byName, req) {
+    try { await q('INSERT INTO id_doc_events (employee_id, action, by_name, ip) VALUES (?, ?, ?, ?)', [empId, action, byName || null, clientIp(req)]); }
+    catch (e) { console.warn('ID event not logged:', e.message); }
+  }
+
   router.post('/employee/onboarding/id', requireAuth, staffOnly, async (req, res) => {
     try {
       if (!await agreementSigned(req.user.employee_id)) return res.status(409).json({ error: 'Please sign the team member agreement first' });
@@ -578,7 +588,8 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
          VALUES (?, ?, ?, ?, NOW())
          ON CONFLICT (employee_id) DO UPDATE SET id_doc_type = EXCLUDED.id_doc_type, id_doc_name = EXCLUDED.id_doc_name,
            id_doc_data = EXCLUDED.id_doc_data, id_uploaded_at = NOW(), updated_at = NOW()`,
-        [empId, type, safeName(file_name, 'id-document'), file_data]);
+        [empId, type, safeName(file_name, 'id-document'), idCrypto.seal(file_data)]);
+      await logIdEvent(empId, 'uploaded', req.user.name || 'them', req);
       const completed = await finishIfDone(empId);
       res.json({ ok: true, completed });
     } catch (e) { fail(res, e); }
@@ -949,12 +960,36 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       const { rows } = await q('SELECT id_doc_name, id_doc_data FROM employee_onboarding WHERE employee_id = ?', [req.params.id]);
       const r = rows[0];
       if (!r || !r.id_doc_data) return res.status(404).json({ error: 'No ID uploaded' });
-      const kind = sniff(r.id_doc_data) || { mime: 'application/octet-stream' };
+      const bytes = idCrypto.open(r.id_doc_data);
+      const kind = sniff(bytes.subarray(0, 16).toString('base64')) || { mime: 'application/octet-stream' };
+      await logIdEvent(Number(req.params.id), 'viewed', req.admin && req.admin.username, req);
       res.setHeader('Content-Type', kind.mime);
       res.setHeader('Content-Disposition', `inline; filename="${safeName(r.id_doc_name, 'id-document')}"`);
-      res.setHeader('Cache-Control', 'private, no-store');
-      res.send(Buffer.from(r.id_doc_data, 'base64'));
+      res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      res.send(bytes);
     } catch (e) { fail(res, e); }
+  });
+
+  // Admin: delete someone's ID (e.g. once it has been checked, or when they leave)
+  router.delete('/employees/:id/onboarding/id', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const { rows } = await q(
+        `UPDATE employee_onboarding SET id_doc_data = NULL, id_doc_name = NULL, id_doc_type = NULL, id_uploaded_at = NULL, updated_at = NOW()
+         WHERE employee_id = ? AND id_doc_data IS NOT NULL RETURNING employee_id`, [req.params.id]);
+      if (!rows.length) return res.status(404).json({ error: 'No ID on file' });
+      await logIdEvent(Number(req.params.id), 'deleted', req.admin && req.admin.username, req);
+      res.json({ ok: true });
+    } catch (e) { fail(res, e); }
+  });
+
+  // Admin: who uploaded, opened or deleted their ID, newest first
+  router.get('/employees/:id/onboarding/id/history', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const { rows } = await q('SELECT action, by_name, at FROM id_doc_events WHERE employee_id = ? ORDER BY at DESC LIMIT 20', [req.params.id]);
+      res.json(rows);
+    } catch (e) { res.json([]); }
   });
 
   // A printable copy of exactly what was signed; "Print > Save as PDF" makes the file

@@ -1474,11 +1474,34 @@ async function loadEmpOnboarding(empId) {
         ${detail('Emergency contact', [o.emergency_contact_name, o.emergency_contact_phone].filter(Boolean).map(esc).join(' · '))}
         ${detail('Address', esc(o.address), true)}
       </div>
-      <div class="ep-row"><span>${o.id_doc ? esc(ID_TYPE_LABEL[o.id_doc.type] || 'ID document') : 'ID document'}<small>${o.id_doc ? esc(o.id_doc.name) : 'Not uploaded'}</small></span>
-        ${o.id_doc ? `<a class="btn btn-ghost btn-sm" href="/api/employees/${empId}/onboarding/id" target="_blank" rel="noopener">View</a>` : ''}</div>`
+      <div class="ep-row"><span>${o.id_doc ? esc(ID_TYPE_LABEL[o.id_doc.type] || 'ID document') : 'ID document'}<small>${o.id_doc ? esc(o.id_doc.name) + ' · encrypted · every view is logged' : 'Not uploaded'}</small></span>
+        ${o.id_doc ? `<span class="ep-id-actions"><a class="btn btn-ghost btn-sm" href="/api/employees/${empId}/onboarding/id" target="_blank" rel="noopener" onclick="setTimeout(() => loadIdHistory(${empId}), 1500)">View</a>
+          <button class="btn btn-ghost btn-sm ep-danger" onclick="epDeleteId(${empId})">Delete</button></span>` : ''}</div>
+      <div id="epIdHistory" class="ep-id-history"></div>`
       : `<div class="ep-empty" style="margin-top:10px">${emp.portal_pin || emp.has_pin ? 'Nothing entered yet. They are asked to complete their profile when they sign in.' : 'No portal login yet.'}</div>`}
     </details>`;
+    loadIdHistory(empId);
   } catch { box.innerHTML = '<div class="ep-empty">Could not load onboarding.</div>'; }
+}
+
+// Who uploaded, opened or deleted their ID
+async function loadIdHistory(empId) {
+  const el = document.getElementById('epIdHistory');
+  if (!el) return;
+  const res = await fetch(`/api/employees/${empId}/onboarding/id/history`).catch(() => null);
+  const list = res && res.ok ? await res.json() : [];
+  if (_profileEmpId !== empId) return;
+  const when = t => new Date(t).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  el.innerHTML = list.length ? '<b>ID access history</b>' + list.slice(0, 8).map(e =>
+    `<div>${esc({ uploaded: 'Uploaded', viewed: 'Viewed', deleted: 'Deleted' }[e.action] || e.action)}${e.by_name ? ' by ' + esc(e.by_name) : ''} · ${when(e.at)}</div>`).join('') : '';
+}
+
+async function epDeleteId(empId) {
+  if (!await showConfirm('Delete their ID document? It is removed for good. They can upload a new one from their profile.')) return;
+  const res = await fetch(`/api/employees/${empId}/onboarding/id`, { method: 'DELETE' }).catch(() => null);
+  if (!res || !res.ok) { showToast('Could not delete it', 'error'); return; }
+  showToast('ID deleted', 'success');
+  loadEmpOnboarding(empId);
 }
 
 // ── Onboarding files: the company's own NDA and starter sheet (admin) ──
@@ -8386,7 +8409,8 @@ function obStepId() {
   const cur = OB.data.id_doc;
   obEl('obBody').innerHTML =
     '<h2>' + OB_ICON.id + ' Proof of ID</h2>' +
-    '<p class="ob-help">Last step. Upload a clear photo or scan of your passport or driving licence. It is stored securely on your employee file. You can skip this for now and add it later from My Profile.</p>' +
+    '<p class="ob-help">Last step. Upload a clear photo or scan of your passport or driving licence. You can skip this for now and add it later from My Profile.</p>' +
+    '<div class="ob-secure">' + OB_ICON.lock + '<span>Your ID is encrypted before it is stored. Only the admin team can open it, every time it is opened is recorded, and it is never shared by link. Photos are re-saved on your device first, which removes hidden details such as location.</span></div>' +
     (cur ? '<div class="ob-ok">' + OB_ICON.check + '<span>Already uploaded: ' + esc(cur.name) + '. Add a new one only if you want to replace it.</span></div>' : '') +
     '<div class="ob-choice" role="radiogroup" aria-label="Type of ID">' +
       '<label class="ob-card-opt"><input type="radio" name="obIdType" value="passport" checked><span>' + OB_ICON.doc + '<b>Passport</b></span></label>' +
