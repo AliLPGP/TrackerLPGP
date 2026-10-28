@@ -7602,13 +7602,16 @@ textarea.form-control { resize: vertical; }
 .my-warning-top span { color: var(--muted); font-size: 12px; }
 .my-warning-reason { margin-top: 6px; font: 400 13px/1.5 var(--font-sans); color: var(--text); white-space: pre-line; }
 
-/* Contract from template (admin) */
-.cg-note { font-size: 0.82rem; color: var(--muted); margin: 0 0 14px; line-height: 1.5; }
-.cg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 14px; }
-.cg-grid .cg-span { grid-column: 1 / -1; }
-.cg-grid input { width: 100%; }
-.cg-err { color: var(--negative); font-size: 0.82rem; min-height: 1.2em; margin-top: 8px; }
-.cg-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
-@media (max-width: 560px) { .cg-grid { grid-template-columns: 1fr; } }
 .obf-empty code { font-size: 11px; padding: 1px 4px; border-radius: 4px; background: var(--surface); border: 1px solid var(--border); white-space: nowrap; }
 .ob-summary .is-later { color: var(--muted); }
+
+/* ID documents: security note (staff) and access history (admin) */
+.ob-secure { margin: 0 0 14px; padding: 12px 14px; border-radius: 10px; background: var(--surface-2, var(--surface)); border: 1px solid var(--border); font-size: 0.8rem; line-height: 1.5; color: var(--muted); }
+.ob-secure-hd { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; color: var(--text); font-size: 0.86rem; }
+.ob-secure-hd svg { width: 16px; height: 16px; flex-shrink: 0; color: var(--positive); }
+.ob-secure ul { margin: 0; padding-left: 18px; }
+.ob-secure li { margin: 4px 0; }
+.ob-secure li b { color: var(--text); font-weight: 600; }
+.ep-id-actions { display: inline-flex; gap: 6px; }
+.ep-id-history { margin-top: 8px; font-size: 0.78rem; color: var(--muted); line-height: 1.6; }
+.ep-id-history b { display: block; color: var(--text); font-weight: 600; margin-bottom: 2px; }

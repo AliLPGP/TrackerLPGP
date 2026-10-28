@@ -51,6 +51,11 @@ async function runLateMigrations() {
     `CREATE TABLE IF NOT EXISTS employee_portfolio_events (id SERIAL PRIMARY KEY, employee_id INTEGER NOT NULL, event_name TEXT NOT NULL, event_date DATE, notes TEXT NOT NULL DEFAULT '', added_by TEXT NOT NULL DEFAULT 'employee', allocated_by INT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     `CREATE TABLE IF NOT EXISTS employee_reminders (id SERIAL PRIMARY KEY, employee_id INTEGER NOT NULL, title TEXT NOT NULL, reminder_date DATE, is_done BOOLEAN DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT NOW())`,
     `ALTER TABLE day_off_requests ADD COLUMN IF NOT EXISTS reason TEXT`,
+    // Failed sign-ins, so repeated guessing of a password or PIN is locked out for a while
+    `CREATE TABLE IF NOT EXISTS login_failures (id SERIAL PRIMARY KEY, account TEXT NOT NULL, ip TEXT, at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+    `CREATE INDEX IF NOT EXISTS login_failures_account_at ON login_failures (account, at)`,
+    // Every upload, view and deletion of someone's passport or driving licence
+    `CREATE TABLE IF NOT EXISTS id_doc_events (id SERIAL PRIMARY KEY, employee_id INT NOT NULL, action TEXT NOT NULL, by_name TEXT, ip TEXT, at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     `ALTER TABLE calendar_reminders ADD COLUMN IF NOT EXISTS visible_to_staff BOOLEAN DEFAULT FALSE`,
     `CREATE TABLE IF NOT EXISTS deal_tracker (
       id SERIAL PRIMARY KEY,
@@ -217,6 +222,11 @@ async function runLateMigrations() {
   for (const step of steps) {
     try { await sql(step); } catch(e) { console.warn('Migration step skipped:', e.message); }
   }
+  // Any passport or licence still stored unencrypted (or under an older key) is encrypted now
+  try {
+    const n = await require('./id-crypto').reencryptAll(q);
+    if (n) console.log(`Encrypted ${n} stored ID document(s)`);
+  } catch (e) { console.warn('ID encryption pass failed:', e.message); }
 }
 
 async function ensureDb() {
@@ -603,20 +613,52 @@ app.use('/api', createPortalRouter({ q, requireAuth, requireAdmin, requireAdminO
 
 // ─── AUTH ────────────────────────────────────────────────────────────────────
 
+// Sign-in lockout: after LOGIN_MAX_FAILURES wrong attempts on one account (or from one
+// address) within LOGIN_WINDOW_MIN minutes, that sign-in is refused until the window passes.
+// Admins can open every passport on file, and a staff PIN is only 4-6 digits, so guessing
+// has to be slow. Kept in the database because serverless instances share no memory.
+const LOGIN_MAX_FAILURES = 8, LOGIN_WINDOW_MIN = 15;
+const clientIp = req => String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim().slice(0, 64);
+async function loginLocked(account, ip) {
+  try {
+    const { rows } = await q(
+      `SELECT COUNT(*) FILTER (WHERE account = ?) AS acct, COUNT(*) FILTER (WHERE ip = ?) AS addr
+       FROM login_failures WHERE at > NOW() - make_interval(mins => ?::int)`, [account, ip, LOGIN_WINDOW_MIN]);
+    return Number(rows[0].acct) >= LOGIN_MAX_FAILURES || Number(rows[0].addr) >= LOGIN_MAX_FAILURES * 3;
+  } catch { return false; } // the table appears with the late migrations; never block sign-in on it
+}
+async function loginFailed(account, ip) {
+  try {
+    await q('INSERT INTO login_failures (account, ip) VALUES (?, ?)', [account, ip]);
+    await q(`DELETE FROM login_failures WHERE at < NOW() - interval '1 day'`);
+  } catch { /* see loginLocked */ }
+}
+async function loginSucceeded(account) {
+  try { await q('DELETE FROM login_failures WHERE account = ?', [account]); } catch { /* see loginLocked */ }
+}
+const LOCKED_MSG = `Too many wrong attempts. For security, sign-in is paused for ${LOGIN_WINDOW_MIN} minutes.`;
+// Sign-in cookies only travel over HTTPS on the live site
+const COOKIE_SECURE = !!process.env.VERCEL;
+
 app.post('/api/login', async (req, res) => {
   try {
     const { username, password } = req.body;
+    const account = 'admin:' + String(username || '').trim().toLowerCase();
+    const ip = clientIp(req);
+    if (await loginLocked(account, ip)) return res.status(429).json({ error: LOCKED_MSG });
     const { rows } = await q('SELECT * FROM admins WHERE username = ?', [username]);
     const admin = rows[0];
-    if (!admin || !bcrypt.compareSync(password, admin.password_hash)) {
+    if (!admin || !bcrypt.compareSync(String(password || ''), admin.password_hash)) {
+      await loginFailed(account, ip);
       return res.status(401).json({ error: 'Invalid username or password' });
     }
+    await loginSucceeded(account);
     const token = jwt.sign(
       { id: admin.id, username: admin.username, role: admin.role },
       JWT_SECRET,
       { expiresIn: '8h' }
     );
-    res.cookie('token', token, { httpOnly: true, sameSite: 'strict', maxAge: 8 * 60 * 60 * 1000 });
+    res.cookie('token', token, { httpOnly: true, sameSite: 'strict', secure: COOKIE_SECURE, maxAge: 8 * 60 * 60 * 1000 });
     res.json({ success: true, role: admin.role, username: admin.username });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -630,16 +672,20 @@ app.post('/api/employee-login', async (req, res) => {
   try {
     const { email, pin } = req.body;
     if (!email || !pin) return res.status(400).json({ error: 'Email and PIN required' });
+    const account = 'staff:' + String(email).trim().toLowerCase();
+    const ip = clientIp(req);
+    if (await loginLocked(account, ip)) return res.status(429).json({ error: LOCKED_MSG });
     const { rows } = await q(`SELECT * FROM employees WHERE LOWER(email) = LOWER(?) AND active = 1`, [email.trim()]);
     const emp = rows[0];
-    if (!emp || !emp.portal_pin) return res.status(401).json({ error: 'Invalid email or PIN' });
+    if (!emp || !emp.portal_pin) { await loginFailed(account, ip); return res.status(401).json({ error: 'Invalid email or PIN' }); }
     // PINs are stored as plaintext digits; tolerate legacy bcrypt-hashed PINs too
     const stored = String(emp.portal_pin);
     const given = String(pin).trim();
     const pinOk = stored.startsWith('$2') ? bcrypt.compareSync(given, stored) : stored === given;
-    if (!pinOk) return res.status(401).json({ error: 'Invalid email or PIN' });
+    if (!pinOk) { await loginFailed(account, ip); return res.status(401).json({ error: 'Invalid email or PIN' }); }
+    await loginSucceeded(account);
     const token = jwt.sign({ role: 'employee', employee_id: emp.id, name: emp.name, email: emp.email }, JWT_SECRET, { expiresIn: '12h' });
-    res.cookie('token', token, { httpOnly: true, sameSite: 'strict', maxAge: 12 * 60 * 60 * 1000 });
+    res.cookie('token', token, { httpOnly: true, sameSite: 'strict', secure: COOKIE_SECURE, maxAge: 12 * 60 * 60 * 1000 });
     res.json({ success: true, role: 'employee', name: emp.name, employee_id: emp.id });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -715,8 +761,10 @@ app.get('/api/employees/all', requireAuth, async (req, res) => {
 
 app.post('/api/employees', requireAuth, async (req, res) => {
   const { name, employment_type, annual_salary, currency, start_date, pension_rate,
-          job_title, department, phone, email, contract_end_date, probation_end_date } = req.body;
+          job_title, department, phone, email, contract_end_date, probation_end_date, working_pattern, portal_pin } = req.body;
   if (!name) return res.status(400).json({ error: 'Name required' });
+  // A PIN set while adding them is their portal login; it used to be dropped here
+  const pinVal = portal_pin ? String(portal_pin).replace(/\D/g, '').slice(0, 6) || null : null;
   const annualSal = parseFloat(annual_salary) || 0;
   const daily_rate = parseFloat((annualSal / 260).toFixed(4));
   const cur = ['GBP','AED','PHP'].includes(currency) ? currency : 'GBP';
@@ -724,12 +772,13 @@ app.post('/api/employees', requireAuth, async (req, res) => {
   const { rows } = await q(
     `INSERT INTO employees
        (name, daily_rate, employment_type, annual_salary, currency, start_date, pension_rate,
-        job_title, department, phone, email, contract_end_date, probation_end_date)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        job_title, department, phone, email, contract_end_date, probation_end_date, working_pattern, portal_pin)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     [name, daily_rate, employment_type || 'payroll', annualSal, cur, start_date ? String(start_date).slice(0, 10) : null, pensionRate,
      job_title || '', department || '', phone || '', email || '', contract_end_date ? String(contract_end_date).slice(0, 10) : null,
-     probation_end_date ? String(probation_end_date).slice(0, 10) : null]
+     probation_end_date ? String(probation_end_date).slice(0, 10) : null, working_pattern === 'part-time' ? 'part-time' : 'full-time', pinVal]
   );
+  if (pinVal) await requireOnboardingForNewLogin(rows[0].id, false);
   res.json({ id: rows[0].id, name, daily_rate });
 });
 
@@ -746,7 +795,7 @@ async function requireOnboardingForNewLogin(empId, hadPin) {
 app.put('/api/employees/:id', requireAuth, async (req, res) => {
   const { name, active, employment_type, annual_salary, currency, salary_reason, salary_effective,
           start_date, pension_rate, job_title, department, phone, email, contract_end_date,
-          probation_end_date, portal_pin } = req.body;
+          probation_end_date, portal_pin, working_pattern } = req.body;
   const annualSal = parseFloat(annual_salary) || 0;
   const daily_rate = parseFloat((annualSal / 260).toFixed(4));
   const cur = ['GBP','AED','PHP'].includes(currency) ? currency : 'GBP';
@@ -781,7 +830,8 @@ app.put('/api/employees/:id', requireAuth, async (req, res) => {
      currency=?, start_date=CASE WHEN ?::boolean THEN ?::date ELSE start_date END, pension_rate=?,
      job_title=?, department=?, phone=?, email=?, contract_end_date=?, portal_pin=COALESCE(?, portal_pin),
      probation_review_done_at=CASE WHEN ?::boolean AND probation_end_date IS DISTINCT FROM ?::date THEN NULL ELSE probation_review_done_at END,
-     probation_end_date=CASE WHEN ?::boolean THEN ?::date ELSE probation_end_date END
+     probation_end_date=CASE WHEN ?::boolean THEN ?::date ELSE probation_end_date END,
+     working_pattern=COALESCE(?, working_pattern)
      WHERE id=?`,
     [name, daily_rate, active !== undefined ? active : 1, employment_type || 'payroll',
      annualSal, cur, start_date !== undefined, start_date ? String(start_date).slice(0, 10) : null, pensionRate,
@@ -789,6 +839,7 @@ app.put('/api/employees/:id', requireAuth, async (req, res) => {
      contract_end_date ? String(contract_end_date).slice(0, 10) : null, pinVal,
      probation_end_date !== undefined, probation_end_date ? String(probation_end_date).slice(0, 10) : null,
      probation_end_date !== undefined, probation_end_date ? String(probation_end_date).slice(0, 10) : null,
+     working_pattern === 'part-time' || working_pattern === 'full-time' ? working_pattern : null,
      req.params.id]
   );
   if (pinVal) await requireOnboardingForNewLogin(req.params.id, !!(current[0] && current[0].portal_pin));
