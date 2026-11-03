@@ -944,9 +944,17 @@ app.delete('/api/employees/:id', requireAuth, requireAdmin, async (req, res) => 
   res.json({ success: true });
 });
 
+// Deleting someone removes everything about them: records, pay, documents, onboarding and ID
+// go with the row (the database cascades); these tables have no link to cascade, so they are
+// cleared first. Deals and event teams they were on stay, without their name.
+const EMPLOYEE_LOOSE_TABLES = ['agenda_notifications', 'day_off_requests', 'emp_notifications', 'employee_portfolio_events', 'employee_reminders', 'id_doc_events'];
 app.delete('/api/employees/:id/hard', requireAuth, requireAdmin, async (req, res) => {
   try {
-    await q('DELETE FROM employees WHERE id = ?', [req.params.id]);
+    const id = parseInt(req.params.id, 10);
+    const { rows } = await q('SELECT id FROM employees WHERE id = ?', [id]);
+    if (!rows.length) return res.status(404).json({ error: 'Employee not found' });
+    for (const t of EMPLOYEE_LOOSE_TABLES) await q(`DELETE FROM ${t} WHERE employee_id = ?`, [id]).catch(() => {}); // a table not created yet has nothing to clear
+    await q('DELETE FROM employees WHERE id = ?', [id]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

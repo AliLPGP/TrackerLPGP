@@ -8128,3 +8128,6 @@ body[data-role="accounts"] #page-portfolio [onclick*="openPortAssign"],
 body[data-role="accounts"] #page-portfolio [onclick*="deletePortfolioEvent"],
 body[data-role="accounts"] #page-portfolio [onclick*="Programme"],
 body[data-role="accounts"] #page-portfolio .pf-row-actions { display: none !important; }
+
+/* A button that cannot be pressed yet looks it (e.g. Delete until the name is typed) */
+.btn:disabled, .btn[disabled] { opacity: .45; cursor: not-allowed; pointer-events: none; }

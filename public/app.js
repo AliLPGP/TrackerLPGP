@@ -609,11 +609,54 @@ async function reactivateEmployee(id) {
   loadEmpTable();
 }
 
+// Asks for the name typed out; resolves true only when it matches and they press Delete.
+function confirmEmployeeDelete(name) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay open';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:460px" role="dialog" aria-modal="true" aria-labelledby="_delTitle">
+        <div class="modal-header"><span class="modal-title" id="_delTitle">Delete ${esc(name)}?</span></div>
+        <div class="modal-body">
+          <p style="margin:0 0 10px">This permanently removes them and everything about them:</p>
+          <ul style="margin:0 0 12px;padding-left:18px;line-height:1.6;color:var(--text-2)">
+            <li>daily records, days off and holiday requests</li>
+            <li>payments, salary history, bonuses and deductions</li>
+            <li>payslips, contracts, documents, onboarding and ID</li>
+            <li>warnings, notes and their portal login</li>
+          </ul>
+          <p style="margin:0 0 14px;color:var(--muted)">Deals and event teams they were on are kept, without their name. If they have left the company, use <b>Terminate</b> instead to keep their history. This cannot be undone.</p>
+          <label for="_delName" style="display:block;margin-bottom:6px">Type <b>${esc(name)}</b> to confirm</label>
+          <input id="_delName" class="form-control" autocomplete="off" style="margin-bottom:16px">
+          <div style="display:flex;gap:10px;justify-content:flex-end">
+            <button class="btn btn-ghost" id="_delCancel">Cancel</button>
+            <button class="btn btn-danger" id="_delOk" disabled>Delete permanently</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const input = overlay.querySelector('#_delName'), ok = overlay.querySelector('#_delOk');
+    const matches = () => input.value.trim().toLowerCase() === String(name).trim().toLowerCase();
+    const done = val => { overlay.remove(); resolve(val); };
+    input.addEventListener('input', () => { ok.disabled = !matches(); });
+    input.addEventListener('keydown', e => { if (e.key === 'Enter' && matches()) done(true); if (e.key === 'Escape') done(false); });
+    ok.onclick = () => matches() && done(true);
+    overlay.querySelector('#_delCancel').onclick = () => done(false);
+    overlay.addEventListener('click', e => { if (e.target === overlay) done(false); });
+    input.focus();
+  });
+}
+
+// Deleting is for someone added by mistake or a test record. People who leave are
+// terminated instead, which keeps their pay history. Typing the name guards against a slip.
 async function hardDeleteEmployee(id, name) {
-  if (!await showConfirm(`Permanently delete "${name}"? This cannot be undone.`)) return;
-  const res = await fetch(`/api/employees/${id}/hard`, { method: 'DELETE' });
-  if (!res.ok) { const e = await res.json(); showToast(e.error || 'Delete failed', 'error'); return; }
-  showToast('Employee deleted', 'success');
+  if (!await confirmEmployeeDelete(name)) return;
+  const res = await fetch(`/api/employees/${id}/hard`, { method: 'DELETE' }).catch(() => null);
+  if (!res || !res.ok) { const e = res ? await res.json().catch(() => ({})) : {}; showToast(e.error || 'Delete failed', 'error'); return; }
+  showToast(`${name} deleted`, 'success');
+  allEmployeesData = (allEmployeesData || []).filter(e => e.id !== id);
+  if (_profileMode === 'page' && _profileEmpId === id) closeEmployeePage();
+  else closeEmployeeProfile();
   await loadEmployees();
   loadEmpTable();
 }
@@ -1186,6 +1229,7 @@ async function openEmployeeProfile(empId, opts = {}) {
       ${isAdmin ? (emp.active
         ? `<button class="btn btn-sm ep-danger" onclick="closeEmployeeProfile();openTerminateModal(${emp.id}, ${esc(JSON.stringify(emp.name))})">Terminate</button>`
         : `<button class="btn btn-sm" onclick="closeEmployeeProfile();reactivateEmployee(${emp.id})">Reactivate</button>`) : ''}
+      ${isAdmin ? `<button class="btn btn-sm ep-danger" onclick="hardDeleteEmployee(${emp.id}, ${esc(JSON.stringify(emp.name))})">Delete</button>` : ''}
     </div>` : '';
 
   const secDetails = `<section class="ep-sec">
