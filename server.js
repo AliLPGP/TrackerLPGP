@@ -38,6 +38,15 @@ async function sendAdminEmail(subject, html) {
 }
 
 const app = express();
+// Express 4 does not catch errors thrown by async route handlers: the request would hang
+// until it timed out. Every route's handlers pass their errors on to the error handler.
+const catchAsync = h => (typeof h === 'function' && h.length < 4
+  ? (req, res, next) => { try { const r = h(req, res, next); if (r && typeof r.catch === 'function') r.catch(next); } catch (e) { next(e); } }
+  : h);
+for (const m of ['get', 'post', 'put', 'patch', 'delete']) {
+  const add = app[m].bind(app);
+  app[m] = (path, ...handlers) => (handlers.length ? add(path, ...handlers.map(catchAsync)) : add(path)); // app.get('setting') still reads settings
+}
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'lpgp-tracker-jwt-2024';
 
@@ -288,6 +297,27 @@ app.use('/api', async (req, res, next) => {
   }
 });
 
+// Staff portal logins may only use the routes the portal needs. Many office routes
+// check only that someone is logged in, so without this a staff member could read or
+// change other people's records. Each allowed route still checks the person itself.
+const STAFF_ROUTES = [
+  /^\/(login|logout|employee-login|me)$/,
+  /^\/employee\//,                                  // their own profile, records, onboarding, payslips…
+  /^\/my-deals(\/\d+)?$/,                            // sales staff: their own deals
+  /^\/event-kits(\/\d+(\/.*)?)?$/,                   // event kits checks the person is on the team
+  /^\/(contracts|payslips)\/\d+\/file$/,              // their own files (checked by owner)
+  /^\/onboarding\/templates\/[a-z_]+\/file$/, /^\/nda-text$/,
+];
+const STAFF_READ_ONLY = [/^\/employees(\/all)?$/, /^\/calendar$/]; // names and team days off only
+app.use('/api', (req, res, next) => {
+  let user = null;
+  try { user = req.cookies.token ? jwt.verify(req.cookies.token, JWT_SECRET) : null; } catch { return next(); }
+  if (!user || user.role !== 'employee') return next();
+  const path = req.path;
+  if (STAFF_ROUTES.some(r => r.test(path)) || (req.method === 'GET' && STAFF_READ_ONLY.some(r => r.test(path)))) return next();
+  res.status(403).json({ error: 'Not available in the staff portal' });
+});
+
 function safeJsonParse(v, fallback) { try { return JSON.parse(v); } catch { return fallback; } }
 
 function requireAuth(req, res, next) {
@@ -446,13 +476,22 @@ function calcProRatedPay(annualSalary, startDateStr) {
 // annual salary. A self-employed person whose salary changed (history holds two or more
 // salaries) is paid month by month at the salary in force; the first month is priced at
 // their starting salary, and `pay_bands` lists the salary steps so it can be shown.
+// Office deductions and bonuses belong to the year they are dated in
+const sumForYear = (rows, dateKey, year) =>
+  parseFloat(rows.filter(r => String(r[dateKey] || '').startsWith(String(year))).reduce((a, r) => a + (parseFloat(r.amount) || 0), 0).toFixed(2));
+
 function yearPayFigures({ emp, year, history, annualSal, startDateStr, terminationDateStr, isTerminated }) {
   const startedThisYear = !!(startDateStr && startDateStr.startsWith(String(year)));
   const stepped = emp.employment_type === 'self_employed' && periodsFrom(history).length >= 2;
   const startSal = stepped ? salaryOnDate(history, startDateStr || `${year}-01-01`, annualSal) : annualSal;
 
+  // A leaver's pay for this year runs from the later of their start and 1 January
+  // to the earlier of their leaving date and 31 December (nothing if they left before it)
+  const yrFrom = startDateStr && startDateStr > `${year}-01-01` ? startDateStr : `${year}-01-01`;
+  const yrTo = terminationDateStr && terminationDateStr < `${year}-12-31` ? terminationDateStr : `${year}-12-31`;
+  const leftBeforeYear = isTerminated && !!terminationDateStr && terminationDateStr < `${year}-01-01`;
   const earnedPay = isTerminated
-    ? calcEarnedPay(startSal, startDateStr, terminationDateStr)
+    ? (leftBeforeYear ? null : calcEarnedPay(startSal, yrFrom, yrTo))
     : (startedThisYear ? calcProRatedPay(startSal, startDateStr) : null);
 
   // First-month full payment: start date -> end of start month (regardless of today)
@@ -467,7 +506,7 @@ function yearPayFigures({ emp, year, history, annualSal, startDateStr, terminati
   // started this year -> pro-rated to 31 Dec, otherwise the full annual salary
   let salaryTarget = annualSal;
   if (isTerminated) {
-    salaryTarget = earnedPay?.total_expected ?? annualSal;
+    salaryTarget = leftBeforeYear ? 0 : (earnedPay?.total_expected ?? annualSal);
   } else if (startedThisYear) {
     const yearEnd = calcEarnedPay(startSal, startDateStr, `${year}-12-31`);
     salaryTarget = yearEnd?.total_expected ?? annualSal;
@@ -746,17 +785,19 @@ app.put('/api/admins/:id/password', requireAuth, async (req, res) => {
 // What a non-admin may see of an employee row: no pay, and never the portal PIN
 // (colleagues could read each other's PINs and log in as them). has_pin says whether one is set.
 const publicEmployee = ({ annual_salary, daily_rate, pension_rate, portal_pin, ...rest }) => ({ ...rest, has_pin: !!portal_pin });
+// Staff see colleagues in the team directory: who they are and how to reach them, nothing from HR
+const staffEmployee = ({ id, name, job_title, department, email, phone, active, employment_type }) =>
+  ({ id, name, job_title, department, email, phone, active, employment_type });
+const employeeView = role => (role === 'admin' ? r => r : role === 'employee' ? staffEmployee : publicEmployee);
 
 app.get('/api/employees', requireAuth, async (req, res) => {
   const { rows } = await q('SELECT * FROM employees WHERE active = 1 ORDER BY name');
-  if (req.user.role !== 'admin') return res.json(rows.map(publicEmployee));
-  res.json(rows);
+  res.json(rows.map(employeeView(req.user.role)));
 });
 
 app.get('/api/employees/all', requireAuth, async (req, res) => {
   const { rows } = await q('SELECT * FROM employees ORDER BY name');
-  if (req.user.role !== 'admin') return res.json(rows.map(publicEmployee));
-  res.json(rows);
+  res.json(rows.map(employeeView(req.user.role)));
 });
 
 // The contract's cover-page terms, as stored on the employee
@@ -765,10 +806,12 @@ const contractTerms = ({ work_arrangement, country }) => [
   String(country || '').trim().slice(0, 80),
 ];
 
-app.post('/api/employees', requireAuth, async (req, res) => {
-  const { name, employment_type, annual_salary, currency, start_date, pension_rate,
-          job_title, department, phone, email, contract_end_date, probation_end_date, working_pattern, portal_pin,
-          work_arrangement, country } = req.body;
+// Managers can add people (new producer teams on the Portfolio page); pay and the portal PIN are set by an admin
+app.post('/api/employees', requireAuth, requireAdminOrManager, async (req, res) => {
+  const isAdmin = req.admin.role === 'admin';
+  const { name, employment_type, currency, start_date, job_title, department, phone, email,
+          contract_end_date, probation_end_date, working_pattern, work_arrangement, country } = req.body;
+  const { annual_salary, pension_rate, portal_pin } = isAdmin ? req.body : {};
   if (!name) return res.status(400).json({ error: 'Name required' });
   // A PIN set while adding them is their portal login; it used to be dropped here
   const pinVal = portal_pin ? String(portal_pin).replace(/\D/g, '').slice(0, 6) || null : null;
@@ -802,7 +845,7 @@ async function requireOnboardingForNewLogin(empId, hadPin) {
     [empId]);
 }
 
-app.put('/api/employees/:id', requireAuth, async (req, res) => {
+app.put('/api/employees/:id', requireAuth, requireAdmin, async (req, res) => {
   const { name, active, employment_type, annual_salary, currency, salary_reason, salary_effective,
           start_date, pension_rate, job_title, department, phone, email, contract_end_date,
           probation_end_date, portal_pin, working_pattern, work_arrangement, country } = req.body;
@@ -812,7 +855,7 @@ app.put('/api/employees/:id', requireAuth, async (req, res) => {
   const pensionRate = (employment_type === 'payroll' && pension_rate != null && pension_rate !== '') ? parseFloat(pension_rate) : 0;
 
   // If salary changed, log old salary to history before updating
-  const { rows: current } = await q('SELECT annual_salary, currency, start_date, portal_pin FROM employees WHERE id = ?', [req.params.id]);
+  const { rows: current } = await q('SELECT annual_salary, currency, start_date, portal_pin, active FROM employees WHERE id = ?', [req.params.id]);
   if (current[0] && parseFloat(current[0].annual_salary) !== annualSal) {
     // First recorded change: log the salary they had until now, so the year's pay
     // can be worked out month by month instead of repricing the whole year.
@@ -844,7 +887,7 @@ app.put('/api/employees/:id', requireAuth, async (req, res) => {
      working_pattern=COALESCE(?, working_pattern),
      work_arrangement=COALESCE(?, work_arrangement), country=COALESCE(?, country)
      WHERE id=?`,
-    [name, daily_rate, active !== undefined ? active : 1, employment_type || 'payroll',
+    [name, daily_rate, active !== undefined ? active : (current[0] ? current[0].active : 1), employment_type || 'payroll',
      annualSal, cur, start_date !== undefined, start_date ? String(start_date).slice(0, 10) : null, pensionRate,
      job_title || '', department || '', phone || '', email || '',
      contract_end_date ? String(contract_end_date).slice(0, 10) : null, pinVal,
@@ -858,7 +901,7 @@ app.put('/api/employees/:id', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-app.patch('/api/employees/:id', requireAuth, async (req, res) => {
+app.patch('/api/employees/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { portal_pin } = req.body;
     const pinVal = portal_pin ? String(portal_pin).replace(/\D/g,'').slice(0,6) || null : null;
@@ -870,7 +913,7 @@ app.patch('/api/employees/:id', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/employees/:id/terminate', requireAuth, async (req, res) => {
+app.post('/api/employees/:id/terminate', requireAuth, requireAdmin, async (req, res) => {
   const { termination_date, termination_reason } = req.body;
   if (!termination_date) return res.status(400).json({ error: 'termination_date required' });
   await q(
@@ -880,7 +923,7 @@ app.post('/api/employees/:id/terminate', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/employees/:id/reactivate', requireAuth, async (req, res) => {
+app.post('/api/employees/:id/reactivate', requireAuth, requireAdmin, async (req, res) => {
   await q(
     'UPDATE employees SET active = 1, termination_date = NULL, termination_reason = NULL WHERE id = ?',
     [req.params.id]
@@ -888,7 +931,7 @@ app.post('/api/employees/:id/reactivate', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-app.delete('/api/employees/:id', requireAuth, async (req, res) => {
+app.delete('/api/employees/:id', requireAuth, requireAdmin, async (req, res) => {
   await q('UPDATE employees SET active = 0 WHERE id = ?', [req.params.id]);
   res.json({ success: true });
 });
@@ -1089,8 +1132,8 @@ app.get('/api/employee/salary', requireAuth, async (req, res) => {
     );
     const { rows: officeRows } = await q(
       `SELECT id, amount, deduction_date::TEXT AS deduction_date, description
-       FROM office_deductions WHERE employee_id = ? ORDER BY deduction_date DESC`,
-      [empId]
+       FROM office_deductions WHERE employee_id = ? AND EXTRACT(YEAR FROM deduction_date) = ? ORDER BY deduction_date DESC`,
+      [empId, year]
     );
     const totalBonuses = parseFloat(bonusRows.reduce((a, b) => a + parseFloat(b.amount || 0), 0).toFixed(2));
     const allowance   = allowanceFor(emp, year);
@@ -1401,7 +1444,7 @@ app.get('/api/salary-overview', requireAuth, requireAdmin, async (req, res) => {
       const netSalaryTarget = parseFloat((salaryTarget * netFactor).toFixed(2));
       const netMonthly      = ukPay ? ukPay.net_monthly : null;
 
-      const totalOffice   = officeRows.reduce((a, b) => a + parseFloat(b.amount), 0);
+      const totalOffice   = sumForYear(officeRows, 'deduction_date', year);
       const totalPaid     = payments.reduce((a, b) => a + parseFloat(b.amount), 0);
       // Effective amount actually owed = salary target minus all deductions (day-off + office).
       // % paid is measured against this so it stays consistent with the "amount left" figure.
@@ -1439,7 +1482,7 @@ app.get('/api/salary-overview', requireAuth, requireAdmin, async (req, res) => {
         salary_history:      salaryHistory,
         payments,
         bonuses:             bonusRows,
-        total_bonuses:       parseFloat(bonusRows.reduce((a, b) => a + parseFloat(b.amount), 0).toFixed(2)),
+        total_bonuses:       sumForYear(bonusRows, 'bonus_date', year),
         office_deductions:   officeRows,
         total_office_deductions: parseFloat(totalOffice.toFixed(2)),
         total_paid:          parseFloat(totalPaid.toFixed(2)),
@@ -1526,8 +1569,8 @@ app.get('/api/summary', requireAuth, async (req, res) => {
       [emp.id, year]
     );
     const { rows: offRows } = await q(
-      'SELECT COALESCE(SUM(amount), 0) AS total FROM office_deductions WHERE employee_id = ?',
-      [emp.id]
+      'SELECT COALESCE(SUM(amount), 0) AS total FROM office_deductions WHERE employee_id = ? AND EXTRACT(YEAR FROM deduction_date) = ?',
+      [emp.id, year]
     );
     const totalPaid    = parseFloat(payRows[0].total_paid) || 0;
     const totalOffice  = parseFloat(offRows[0].total) || 0;
@@ -1556,12 +1599,14 @@ app.get('/api/summary', requireAuth, async (req, res) => {
     };
   }));
 
+  // Pay figures are for admins; managers see days off and time only
+  if (req.admin.role !== 'admin') return res.json(summary.map(({ annual_salary, daily_rate, salary_remaining, total_paid_year, ...rest }) => rest));
   res.json(summary);
 });
 
 // ─── OFFICE DEDUCTIONS ───────────────────────────────────────────────────────
 
-app.get('/api/office-deductions/:employeeId', requireAuth, async (req, res) => {
+app.get('/api/office-deductions/:employeeId', requireAuth, requireAdmin, async (req, res) => {
   const { rows } = await q(
     `SELECT od.*, od.deduction_date::TEXT AS deduction_date, ad.username AS created_by_name
      FROM office_deductions od LEFT JOIN admins ad ON ad.id = od.created_by
@@ -1571,7 +1616,7 @@ app.get('/api/office-deductions/:employeeId', requireAuth, async (req, res) => {
   res.json(rows);
 });
 
-app.post('/api/office-deductions', requireAuth, async (req, res) => {
+app.post('/api/office-deductions', requireAuth, requireAdmin, async (req, res) => {
   const { employee_id, description, amount, deduction_date, notes } = req.body;
   if (!employee_id || !description || !amount)
     return res.status(400).json({ error: 'employee_id, description and amount required' });
@@ -1582,14 +1627,14 @@ app.post('/api/office-deductions', requireAuth, async (req, res) => {
   res.json({ id: rows[0].id });
 });
 
-app.delete('/api/office-deductions/:id', requireAuth, async (req, res) => {
+app.delete('/api/office-deductions/:id', requireAuth, requireAdmin, async (req, res) => {
   await q('DELETE FROM office_deductions WHERE id = ?', [req.params.id]);
   res.json({ success: true });
 });
 
 // ─── BONUSES ─────────────────────────────────────────────────────────────────
 
-app.get('/api/bonuses/:employeeId', requireAuth, async (req, res) => {
+app.get('/api/bonuses/:employeeId', requireAuth, requireAdmin, async (req, res) => {
   const { rows } = await q(
     'SELECT *, bonus_date::TEXT AS bonus_date FROM bonuses WHERE employee_id = ? ORDER BY bonuses.bonus_date DESC',
     [req.params.employeeId]
@@ -1597,7 +1642,7 @@ app.get('/api/bonuses/:employeeId', requireAuth, async (req, res) => {
   res.json(rows);
 });
 
-app.post('/api/bonuses', requireAuth, async (req, res) => {
+app.post('/api/bonuses', requireAuth, requireAdmin, async (req, res) => {
   const { employee_id, amount, bonus_date, reason, notes } = req.body;
   if (!employee_id || !amount)
     return res.status(400).json({ error: 'employee_id and amount required' });
@@ -1608,7 +1653,7 @@ app.post('/api/bonuses', requireAuth, async (req, res) => {
   res.json({ id: rows[0].id });
 });
 
-app.delete('/api/bonuses/:id', requireAuth, async (req, res) => {
+app.delete('/api/bonuses/:id', requireAuth, requireAdmin, async (req, res) => {
   await q('DELETE FROM bonuses WHERE id = ?', [req.params.id]);
   res.json({ success: true });
 });
@@ -1735,7 +1780,7 @@ app.delete('/api/calendar-reminders/:id', requireAuth, async (req, res) => {
 
 // ─── EMPLOYEE NOTES ──────────────────────────────────────────────────────────
 
-app.get('/api/employee-notes/:employeeId', requireAuth, async (req, res) => {
+app.get('/api/employee-notes/:employeeId', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { rows } = await q(
       `SELECT en.*, ad.username AS created_by_name
@@ -1749,7 +1794,7 @@ app.get('/api/employee-notes/:employeeId', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/employee-notes', requireAuth, async (req, res) => {
+app.post('/api/employee-notes', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { employee_id, note, note_type } = req.body;
     if (!employee_id || !note) return res.status(400).json({ error: 'employee_id and note required' });
@@ -1763,7 +1808,7 @@ app.post('/api/employee-notes', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/employee-notes/:id', requireAuth, async (req, res) => {
+app.delete('/api/employee-notes/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
     await q('DELETE FROM employee_notes WHERE id = ?', [req.params.id]);
     res.json({ success: true });
@@ -1861,7 +1906,7 @@ app.get('/api/export/payroll-csv', requireAuth, requireAdmin, async (req, res) =
       const annualSal = parseFloat(emp.annual_salary) || 0;
       const [{ rows: payments }, { rows: officeRows }] = await Promise.all([
         q('SELECT SUM(amount) AS total FROM monthly_payments WHERE employee_id = ? AND payment_year = ?', [emp.id, year]),
-        q('SELECT COALESCE(SUM(amount),0) AS total FROM office_deductions WHERE employee_id = ?', [emp.id])
+        q('SELECT COALESCE(SUM(amount),0) AS total FROM office_deductions WHERE employee_id = ? AND EXTRACT(YEAR FROM deduction_date) = ?', [emp.id, year])
       ]);
       const totalPaid   = parseFloat(payments[0]?.total || 0);
       const totalOffice = parseFloat(officeRows[0]?.total || 0);
@@ -2180,13 +2225,16 @@ app.delete('/api/subscriptions/:id', requireAuth, requireAdminOrManager, async (
 });
 
 // ─── PORTFOLIO EVENTS ─────────────────────────────────────────────────────────
+// An event's share of a deal split over several events (joined as `de`): its allocation
+// over all the deal's allocations, or an equal part when no amounts were set.
+const DEAL_SHARE = `COALESCE(de.allocated_amount / NULLIF((SELECT SUM(x.allocated_amount) FROM deal_events x WHERE x.deal_id = de.deal_id), 0),
+  1.0 / NULLIF((SELECT COUNT(*) FROM deal_events x WHERE x.deal_id = de.deal_id), 0), 1)`;
 app.get('/api/portfolio-events', requireAuth, async (req, res) => {
   try {
     const { rows } = await q(`
       SELECT pe.*,
         -- A deal split over several events counts towards each in proportion to its share
-        COALESCE(SUM(COALESCE(d.paid_inc_vat, 0) * COALESCE(de.allocated_amount
-          / NULLIF((SELECT SUM(x.allocated_amount) FROM deal_events x WHERE x.deal_id = de.deal_id), 0), 1)),0) AS total_won,
+        COALESCE(SUM(COALESCE(d.paid_inc_vat, 0) * ${DEAL_SHARE}),0) AS total_won,
         COALESCE(SUM(de.allocated_amount),0) AS total_pipeline,
         COUNT(DISTINCT de.deal_id) AS deal_count,
         string_agg(DISTINCT NULLIF(COALESCE(NULLIF(d.company,''), d.title),''), ', ') AS companies
@@ -2204,8 +2252,7 @@ app.get('/api/portfolio-events/:id/deals', requireAuth, requireAdminOrManager, a
       SELECT d.id, COALESCE(NULLIF(d.company,''),d.title) AS company,
         de.allocated_amount AS amount, de.package_label, d.currency, d.amount AS deal_amount,
         -- This event's share of what has been paid on the deal
-        COALESCE(d.paid_inc_vat, 0) * COALESCE(de.allocated_amount
-          / NULLIF((SELECT SUM(x.allocated_amount) FROM deal_events x WHERE x.deal_id = de.deal_id), 0), 1) AS paid_inc_vat,
+        COALESCE(d.paid_inc_vat, 0) * ${DEAL_SHARE} AS paid_inc_vat,
         (SELECT COUNT(*) FROM deal_events x WHERE x.deal_id = de.deal_id) AS event_count, d.stage
       FROM deal_events de
       JOIN deals d ON d.id=de.deal_id
@@ -2400,16 +2447,16 @@ app.get('/api/deals/revenue-by-event', requireAuth, requireAdminOrManager, async
         pe.name AS event_name,
         pe.event_date,
         COUNT(DISTINCT d.id) AS deal_count,
-        COALESCE(SUM(d.amount), 0) AS total_amount,
-        COALESCE(SUM(d.paid_inc_vat), 0) AS total_paid,
-        COALESCE(SUM(CASE WHEN COALESCE(d.paid_inc_vat,0) > 0 THEN COALESCE(d.tax_vat,0) ELSE 0 END), 0) AS total_vat_collected,
+        COALESCE(SUM(COALESCE(d.amount, 0) * ${DEAL_SHARE}), 0) AS total_amount,
+        COALESCE(SUM(COALESCE(d.paid_inc_vat, 0) * ${DEAL_SHARE}), 0) AS total_paid,
+        COALESCE(SUM(CASE WHEN COALESCE(d.paid_inc_vat,0) > 0 THEN COALESCE(d.tax_vat,0) * ${DEAL_SHARE} ELSE 0 END), 0) AS total_vat_collected,
         COUNT(DISTINCT CASE WHEN COALESCE(d.paid_inc_vat,0) > 0 THEN d.id END) AS paid_count,
         json_agg(
           json_build_object(
             'id', d.id,
             'company', COALESCE(NULLIF(d.company,''), d.title, ''),
-            'amount', COALESCE(d.amount, 0),
-            'paid_inc_vat', COALESCE(d.paid_inc_vat, 0),
+            'amount', ROUND(COALESCE(d.amount, 0) * ${DEAL_SHARE}, 2),
+            'paid_inc_vat', ROUND(COALESCE(d.paid_inc_vat, 0) * ${DEAL_SHARE}, 2),
             'currency', COALESCE(d.currency, 'GBP')
           ) ORDER BY d.company
         ) FILTER (WHERE d.id IS NOT NULL) AS clients
@@ -2707,8 +2754,15 @@ app.patch('/api/deals/:id/field', requireAuth, requireAdminOrManager, async (req
   try {
     const { field, value } = req.body;
     if (!ALLOWED.includes(field)) return res.status(400).json({ error: 'Field not allowed' });
+    const { rows: before } = field === 'amount' ? await q('SELECT amount FROM deals WHERE id=?', [req.params.id]) : { rows: [] };
     const { rows } = await q(`UPDATE deals SET ${field}=? WHERE id=? RETURNING id`, [value, req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    // A new amount keeps the split between its events: each event's part scales with it
+    if (field === 'amount') {
+      const was = parseFloat(before[0] && before[0].amount) || 0, now = parseFloat(value) || 0;
+      if (was > 0) await q('UPDATE deal_events SET allocated_amount = ROUND(allocated_amount * ? / ?, 2) WHERE deal_id = ?', [now, was, req.params.id]);
+      else await q(`UPDATE deal_events SET allocated_amount = ROUND(?::numeric / (SELECT COUNT(*) FROM deal_events x WHERE x.deal_id = ?), 2) WHERE deal_id = ?`, [now, req.params.id, req.params.id]);
+    }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2947,39 +3001,6 @@ app.delete('/api/employee/portfolio/:id', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Admin: get all employees with their portfolio events
-app.get('/api/admin/staff-portfolio', requireAuth, async (req, res) => {
-  try {
-    const { rows: emps } = await q('SELECT id AS employee_id, name, role, department FROM employees WHERE active = 1 ORDER BY name');
-    let events = [];
-    try {
-      const { rows } = await q('SELECT e.*, emp.name AS employee_name FROM employee_portfolio_events e JOIN employees emp ON emp.id = e.employee_id ORDER BY e.event_date DESC NULLS LAST, e.created_at DESC');
-      events = rows;
-    } catch(tableErr) { /* table may not exist yet */ }
-    res.json({ employees: emps, events });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Admin: allocate/add event to an employee
-app.post('/api/admin/staff-portfolio', requireAuth, async (req, res) => {
-  try {
-    const { employee_id, event_name, event_date, notes } = req.body;
-    if (!employee_id || !event_name) return res.status(400).json({ error: 'employee_id and event_name required' });
-    await q(
-      'INSERT INTO employee_portfolio_events (employee_id, event_name, event_date, notes, added_by, allocated_by) VALUES (?,?,?,?,?,?)',
-      [employee_id, event_name.trim(), event_date || null, (notes || '').trim(), 'admin', req.user.id || null]
-    );
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Admin: delete any portfolio event
-app.delete('/api/admin/staff-portfolio/:id', requireAuth, async (req, res) => {
-  try {
-    await q('DELETE FROM employee_portfolio_events WHERE id = ?', [req.params.id]);
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
 
 // Employee: upcoming — team day-offs + staff-visible reminders
 app.get('/api/employee/upcoming', requireAuth, async (req, res) => {
@@ -3206,58 +3227,8 @@ app.delete('/api/deal-invoices/:id', requireAuth, async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// ─── GLOBAL ERROR HANDLER ────────────────────────────────────────────────────
-// Catches any unhandled async errors thrown in routes (e.g. DB failures)
-// eslint-disable-next-line no-unused-vars
-app.use((err, req, res, next) => {
-  console.error('Unhandled route error:', err);
-  if (!res.headersSent) {
-    res.status(500).json({ error: err.message || 'Internal server error' });
-  }
-});
-
-// ─── EMPLOYEE PORTAL (PIN auth, no session) ───────────────────────────────────
-
-app.get('/portal', (req, res) => res.sendFile(path.join(__dirname, 'public', 'portal.html')));
-
-app.post('/api/portal/auth', async (req, res) => {
-  try {
-    const { employee_id, pin } = req.body;
-    if (!employee_id || !pin) return res.status(400).json({ error: 'ID and PIN required' });
-    const { rows } = await q('SELECT id, name, job_title, department, employment_type, annual_salary, currency, start_date, portal_pin FROM employees WHERE id = ? AND active = true', [employee_id]);
-    const emp = rows[0];
-    if (!emp || !emp.portal_pin) return res.status(401).json({ error: 'Invalid credentials' });
-    if (String(emp.portal_pin) !== String(pin).trim()) return res.status(401).json({ error: 'Invalid PIN' });
-    res.json({ id: emp.id, name: emp.name, job_title: emp.job_title, department: emp.department, employment_type: emp.employment_type, annual_salary: emp.annual_salary, currency: emp.currency, start_date: emp.start_date });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/api/portal/holiday-request', async (req, res) => {
-  try {
-    const { employee_id, pin, date, type, note } = req.body;
-    const { rows: empRows } = await q('SELECT id, name, portal_pin FROM employees WHERE id = ? AND active = true', [employee_id]);
-    const emp = empRows[0];
-    if (!emp || String(emp.portal_pin) !== String(pin).trim()) return res.status(401).json({ error: 'Invalid credentials' });
-    // Check for duplicate pending/approved request for same date
-    const { rows: existing } = await q(
-      `SELECT id FROM holiday_requests WHERE employee_id = ? AND request_date = ? AND status IN ('pending','approved')`,
-      [employee_id, date]
-    );
-    if (existing.length > 0) return res.status(409).json({ error: 'A request for this date already exists.' });
-    await q(
-      `INSERT INTO holiday_requests (employee_id, request_date, day_type, note) VALUES (?, ?, ?, ?)`,
-      [employee_id, date, type === 'half' ? 'half' : 'full', note || '']
-    );
-    // Send admin email notification
-    await sendAdminEmail(
-      `Holiday Request: ${emp.name}`,
-      `<p><strong>${emp.name}</strong> has requested a day off.</p>
-       <p><strong>Date:</strong> ${date}<br><strong>Type:</strong> ${type === 'half' ? 'Half Day' : 'Full Day'}<br><strong>Note:</strong> ${note || '—'}</p>
-       <p>Log in to EmpTracker to approve or deny this request.</p>`
-    );
-    res.json({ success: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+// The old PIN-only staff page (no login lockout) is replaced by the staff portal on the main site
+app.get('/portal', (req, res) => res.redirect(301, '/'));
 
 // ─── Holiday Requests (admin) ────────────────────────────────────────────────
 
@@ -3320,47 +3291,6 @@ app.put('/api/holiday-requests/:id/deny', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ─── Portal calendar (no admin reminders — days off only) ────────────────────
-
-app.get('/api/portal/calendar', async (req, res) => {
-  try {
-    const { employee_id, pin, year, month } = req.query;
-    if (!employee_id || !pin) return res.status(401).json({ error: 'Authentication required' });
-    const { rows: empRows } = await q('SELECT id, portal_pin FROM employees WHERE id = ? AND active = true', [employee_id]);
-    const emp = empRows[0];
-    if (!emp || String(emp.portal_pin) !== String(pin).trim()) return res.status(401).json({ error: 'Invalid credentials' });
-    const y = parseInt(year) || new Date().getFullYear();
-    const m = parseInt(month);
-    const allYear = !m || isNaN(m);
-    // All days off for all employees in the requested month (or full year)
-    const { rows: daysOff } = allYear
-      ? await q(
-          `SELECT dr.employee_id, e.name AS employee_name, dr.record_date::TEXT AS record_date, dr.is_day_off
-           FROM daily_records dr
-           JOIN employees e ON e.id = dr.employee_id
-           WHERE dr.is_day_off > 0 AND EXTRACT(YEAR FROM dr.record_date) = ?
-           ORDER BY dr.record_date`, [y])
-      : await q(
-          `SELECT dr.employee_id, e.name AS employee_name, dr.record_date::TEXT AS record_date, dr.is_day_off
-           FROM daily_records dr
-           JOIN employees e ON e.id = dr.employee_id
-           WHERE dr.is_day_off > 0
-             AND EXTRACT(YEAR FROM dr.record_date) = ?
-             AND EXTRACT(MONTH FROM dr.record_date) = ?
-           ORDER BY dr.record_date`,
-          [y, m]);
-    // Upcoming days off for all employees (next 60 days)
-    const { rows: upcoming } = await q(
-      `SELECT dr.employee_id, e.name AS employee_name, dr.record_date::TEXT AS record_date, dr.is_day_off
-       FROM daily_records dr
-       JOIN employees e ON e.id = dr.employee_id
-       WHERE dr.is_day_off > 0 AND dr.record_date >= CURRENT_DATE
-       ORDER BY dr.record_date
-       LIMIT 20`
-    );
-    res.json({ days_off: daysOff, upcoming });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
 
 // ─── START ────────────────────────────────────────────────────────────────────
 
@@ -3765,7 +3695,7 @@ async function wmFetchSalaryOverview(year) {
     const ukPay          = emp.employment_type === 'payroll' && annualSal > 0 ? calcUKNetPay(annualSal, parseFloat(emp.pension_rate) || 0) : null;
     const netFactor      = ukPay ? ukPay.net_annual / annualSal : 1;
     const netSalaryTarget = parseFloat((salaryTarget * netFactor).toFixed(2));
-    const totalOffice    = officeRows.reduce((a, b) => a + parseFloat(b.amount), 0);
+    const totalOffice    = sumForYear(officeRows, 'deduction_date', year);
     const totalPaid      = payments.reduce((a, b) => a + parseFloat(b.amount), 0);
     const effectiveTarget = parseFloat((netSalaryTarget - dayCalc.excess_deduction - totalOffice).toFixed(2));
     const netRemaining   = parseFloat((effectiveTarget - totalPaid).toFixed(2));
@@ -3777,7 +3707,7 @@ async function wmFetchSalaryOverview(year) {
       salary_target: netSalaryTarget, active: emp.active ? 1 : 0,
       start_date: startDateStr, termination_date: terminationDateStr, is_terminated: isTerminated,
       payments, salary_history: salaryHistory, bonuses: bonusRows,
-      total_bonuses: parseFloat(bonusRows.reduce((a, b) => a + parseFloat(b.amount), 0).toFixed(2)),
+      total_bonuses: sumForYear(bonusRows, 'bonus_date', year),
       office_deductions: officeRows, total_office_deductions: parseFloat(totalOffice.toFixed(2)),
       total_paid: parseFloat(totalPaid.toFixed(2)), total_days_off: dayCalc.total_days_off,
       allowance_days: allowance, excess_days: dayCalc.excess_days, exempt_days: dayCalc.exempt_days,
@@ -3839,6 +3769,14 @@ registerWasteman(app, { requireAuth, requireAdmin, db: {
   getMemories:          wmGetMemories,
   saveMemory:           wmSaveMemory,
 }});
+
+// Any route error ends here (registered last so it covers every route)
+app.use((err, req, res, next) => {
+  console.error('Unhandled route error:', err);
+  if (!res.headersSent) {
+    res.status(500).json({ error: err.message || 'Internal server error' });
+  }
+});
 
 module.exports = app;
 
