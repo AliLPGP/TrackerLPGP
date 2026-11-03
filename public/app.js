@@ -1530,51 +1530,12 @@ async function openOnboardingFiles() {
   m.innerHTML = `<div class="modal" style="max-width:600px">
     <div class="modal-header"><h2>Onboarding files</h2><button class="modal-close" onclick="closeModal('obFilesModal')">✕</button></div>
     <p style="font-size:0.82rem;color:var(--muted);margin:0 0 14px">These are shown to staff in the onboarding screen. They read each one in full, then sign, and the signed PDF is stored on their employee file. PDFs up to 3 MB.</p>
-    ${slot('nda')}${await signatorySlot()}
+    ${slot('nda')}
     <div class="obf-slot"><div class="obf-head"><div><h3>New starter form</h3><small>Payroll staff added from now on</small></div><span class="ep-status ep-status--on">Built in</span></div>
       <p class="obf-empty">New payroll staff answer HMRC's starter checklist questions and give their bank details in onboarding. A PDF for your accountant is saved under Documents on file.</p></div>
     <div class="obf-foot">A new version applies to everyone who signs from now on. Copies people already signed stay on their files unchanged; to have someone sign the new version, open their profile and choose "Make them onboard again".</div>
   </div>`;
   openModal('obFilesModal');
-}
-
-// Who signs employment contracts for the company: their name and signature go on every contract
-async function signatorySlot() {
-  const res = await fetch('/api/contract-signatory').catch(() => null);
-  const sig = res && res.ok ? await res.json() : { name: '', signature: '' };
-  return `<div class="obf-slot">
-    <div class="obf-head"><div><h3>Company signature on contracts</h3><small>Printed on every employment contract, beside the employee's signature</small></div>
-      ${sig.name && sig.signature ? '<span class="ep-status ep-status--on">Set</span>' : '<span class="ep-status">Not set</span>'}</div>
-    <div class="sg-row">
-      <div class="form-group" style="flex:1;margin:0"><label>Signed by</label><input type="text" id="sgName" maxlength="120" value="${esc(sig.name)}" placeholder="e.g. the director's full name"></div>
-      <div class="sg-img">${sig.signature ? `<img alt="Signature" src="${sig.signature}">` : '<span>No signature yet</span>'}</div>
-    </div>
-    <div class="obf-actions">
-      <label class="btn btn-ghost btn-sm">${sig.signature ? 'Replace signature image' : 'Upload signature image'}<input type="file" accept="image/png,image/jpeg" hidden onchange="uploadSignatoryImage(this)"></label>
-      <button class="btn btn-sm" onclick="saveSignatoryName()">Save name</button>
-    </div>
-    <p class="obf-empty" style="margin-top:8px">A PNG with a transparent background looks best. A photo of a signature on white paper works too.</p>
-  </div>`;
-}
-
-async function saveSignatoryName(signature) {
-  const body = { name: document.getElementById('sgName').value.trim() };
-  if (signature) body.signature = signature;
-  const res = await fetch('/api/contract-signatory', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null);
-  const data = res ? await res.json().catch(() => ({})) : {};
-  if (!res || !res.ok) { showToast(data.error || 'Could not save', 'error'); return; }
-  showToast(signature ? 'Signature saved' : 'Saved', 'success');
-  openOnboardingFiles();
-}
-
-async function uploadSignatoryImage(input) {
-  const f = input.files[0];
-  input.value = '';
-  if (!f) return;
-  if (!/^image\/(png|jpeg)$/.test(f.type)) { showToast('Upload a PNG or JPG', 'error'); return; }
-  if (f.size > 500 * 1024) { showToast('The image must be under 500 KB', 'error'); return; }
-  const url = await new Promise(resolve => { const r = new FileReader(); r.onload = e => resolve(e.target.result); r.onerror = () => resolve(null); r.readAsDataURL(f); });
-  if (url) saveSignatoryName(url.replace('data:image/jpg;', 'data:image/jpeg;'));
 }
 
 async function uploadOnboardingFile(key, input) {

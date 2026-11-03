@@ -397,17 +397,9 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     return months > 0 && Math.abs(back - s) <= 3 * 86400000 ? months : null;
   }
 
-  // The person who signs contracts for the company (Onboarding files), and their signature
-  async function contractSignatory() {
-    const { rows } = await q(`SELECT key, value FROM app_settings WHERE key IN ('contract_signatory_name', 'contract_signatory_signature')`);
-    const v = Object.fromEntries(rows.map(r => [r.key, r.value]));
-    return { name: v.contract_signatory_name || '', signature: v.contract_signatory_signature || '' };
-  }
-
   // What the contract shows. Name and address are read when it is shown, so it carries
-  // what the person entered at onboarding; the company's signature is dated when it was issued.
-  async function contractData(emp, row, f, { signedAt, issuedAt } = {}) {
-    const sig = await contractSignatory();
+  // what the person entered at onboarding. Only the employee signs.
+  async function contractData(emp, row, f, { signedAt } = {}) {
     const fd = { ...defaultContractFields(emp), ...f };
     const arrangement = { remote: 'Remote', office: 'Office-based', hybrid: 'Hybrid' }[fd.work_arrangement] || 'Remote';
     return {
@@ -424,15 +416,14 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       employment_type: fd.employment_type,
       holiday_days: fd.holiday_days,
       probation: { state: fd.probation, months: probationMonths(fd.start_date, fd.probation_end_date), end: longDate(fd.probation_end_date) },
-      company: { name: sig.name, signaturePng: sig.signature, date: longDate(isoDay(issuedAt || new Date())) },
       signed_date: signedAt ? longDate(isoDay(signedAt)) : '',
     };
   }
   // `fields` is null until they sign: the contract then reads from their record as it is now
-  async function renderTemplateContract(empId, fields, { signaturePng, signedAt, issuedAt } = {}) {
+  async function renderTemplateContract(empId, fields, { signaturePng, signedAt } = {}) {
     const emp = await getEmployee(empId);
     const row = await onboardingRow(empId);
-    return renderContractPdf(await contractData(emp, row, fields || defaultContractFields(emp), { signedAt, issuedAt }), { signaturePng });
+    return renderContractPdf(await contractData(emp, row, fields || defaultContractFields(emp), { signedAt }), { signaturePng });
   }
 
   // Someone still onboarding gets their employment contract as a step, made from the
@@ -715,12 +706,12 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
   // The original as uploaded (admin, or the person it was sent to)
   router.get('/contracts/:id/file', requireAuth, async (req, res) => {
     try {
-      const { rows } = await q('SELECT employee_id, file_name, file_data, source, fields, created_at FROM employee_contracts WHERE id = ?', [req.params.id]);
+      const { rows } = await q('SELECT employee_id, file_name, file_data, source, fields FROM employee_contracts WHERE id = ?', [req.params.id]);
       const r = rows[0];
       const allowed = r && (req.user.role === 'admin' || (req.user.role === 'employee' && Number(req.user.employee_id) === Number(r.employee_id)));
       if (!allowed) return res.status(404).json({ error: 'Contract not found' });
       // Made from the template and not signed yet: drawn now, with their latest details
-      if (!r.file_data && r.source === 'template') return sendPdf(res, await renderTemplateContract(r.employee_id, r.fields, { issuedAt: r.created_at }), r.file_name, req.query.download);
+      if (!r.file_data && r.source === 'template') return sendPdf(res, await renderTemplateContract(r.employee_id, r.fields), r.file_name, req.query.download);
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `${req.query.download ? 'attachment' : 'inline'}; filename="${safeName(r.file_name, 'contract.pdf')}"`);
       res.setHeader('Cache-Control', 'private, no-store');
@@ -840,10 +831,10 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
         // The copy they read, kept as the original; the signed one carries their signature and the date
         // The terms are fixed at the moment they sign
         const fields = c.fields || defaultContractFields(emp);
-        const unsigned = await renderTemplateContract(empId, fields, { issuedAt: c.created_at });
+        const unsigned = await renderTemplateContract(empId, fields);
         await q('UPDATE employee_contracts SET file_data = ?, file_size = ?, fields = ? WHERE id = ?',
           [Buffer.from(unsigned).toString('base64'), unsigned.length, JSON.stringify(fields), c.id]);
-        original = await renderTemplateContract(empId, fields, { signaturePng: sig.signature, signedAt, issuedAt: c.created_at });
+        original = await renderTemplateContract(empId, fields, { signaturePng: sig.signature, signedAt });
       } else {
         const { rows } = await q('SELECT file_data FROM employee_contracts WHERE id = ?', [c.id]);
         original = Buffer.from(rows[0].file_data, 'base64');
@@ -884,25 +875,6 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
            file_size = EXCLUDED.file_size, uploaded_by = EXCLUDED.uploaded_by, updated_at = NOW()`,
         [key, safeName(file_name, `${key}.pdf`), file_data, size, req.admin.username || null]);
       res.json({ ok: true, pages });
-    } catch (e) { fail(res, e); }
-  });
-
-  // ── Who signs contracts for the company ──
-  router.get('/contract-signatory', requireAuth, requireAdmin, async (req, res) => {
-    try { res.json(await contractSignatory()); } catch (e) { fail(res, e); }
-  });
-  router.put('/contract-signatory', requireAuth, requireAdmin, async (req, res) => {
-    try {
-      const name = String((req.body || {}).name || '').trim().slice(0, 120);
-      const sig = req.body.signature == null ? null : String(req.body.signature);
-      // A PNG or JPEG image of their signature, small enough to sit on every contract
-      if (sig && (!/^data:image\/(png|jpe?g);base64,[A-Za-z0-9+/=]+$/.test(sig) || sig.length > 700000)) {
-        return res.status(400).json({ error: 'Upload the signature as a PNG or JPG under 500 KB' });
-      }
-      const put = (k, v) => q(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`, [k, v]);
-      await put('contract_signatory_name', name);
-      if (sig !== null) await put('contract_signatory_signature', sig);
-      res.json({ ok: true });
     } catch (e) { fail(res, e); }
   });
 
