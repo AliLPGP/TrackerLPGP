@@ -5896,11 +5896,15 @@ function renderPortfolioGrid() {
               <span class="pf-st-num" data-l="Events">${r.events}<small>${r.deals} deal${r.deals === 1 ? '' : 's'}</small></span>
               ${pfMoneyCells(r.allocated, r.paid, true)}
             </button>
-            <div class="pf-st-sub">${evs.map(e => `<div class="pf-st-row pf-st-ev">
-                <span class="pf-st-name"><span><b>${esc(e.name)}</b><small>${esc([fmtEventDate(e, { long: true }), e.location].filter(Boolean).join(' · '))}</small></span></span>
-                <span class="pf-st-num" data-l="Deals">${parseInt(e.deal_count) || 0}<small>deal${(parseInt(e.deal_count) || 0) === 1 ? '' : 's'}</small></span>
-                ${pfMoneyCells(num(e.total_pipeline), num(e.total_won), false)}
-              </div>`).join('')}</div>
+            <div class="pf-st-sub">${evs.map(e => {
+              const n = parseInt(e.deal_count) || 0;
+              const cells = `<span class="pf-st-name">${n ? `<span class="pf-st-chev">${PF_ICON_CHEV}</span>` : '<span class="pf-st-chev-gap"></span>'}<span><b>${esc(e.name)}</b><small>${esc([fmtEventDate(e, { long: true }), e.location].filter(Boolean).join(' · '))}</small></span></span>
+                <span class="pf-st-num" data-l="Deals">${n}<small>deal${n === 1 ? '' : 's'}</small></span>
+                ${pfMoneyCells(num(e.total_pipeline), num(e.total_won), false)}`;
+              return n
+                ? `<div class="pf-st-evgroup" data-event="${e.id}"><button type="button" class="pf-st-row pf-st-ev pf-st-toggle" onclick="pfToggleEventDeals(this, ${e.id})" aria-expanded="false">${cells}</button><div class="pf-st-deals"></div></div>`
+                : `<div class="pf-st-row pf-st-ev">${cells}</div>`;
+            }).join('')}</div>
           </div>`;
         }).join('')}
       </div>` : '<div class="pf-empty">No deals won yet.</div>'}
@@ -5937,7 +5941,7 @@ function renderPortfolioGrid() {
     `<section class="pf-list">
       <div class="pf-list-hd">
         <h2 class="pf-panel-title">Events by producer team</h2>
-        <span class="pf-panel-aside">${filtered.length} event${filtered.length === 1 ? '' : 's'} · click a name for its sponsors</span>
+        <span class="pf-panel-aside">${filtered.length} event${filtered.length === 1 ? '' : 's'} · see each event's deals under Revenue by series</span>
       </div>
       ${producers.map(p => {
         const evs = byProducer.get(p).sort(byDate);
@@ -6372,6 +6376,43 @@ function pfToggleSeries(btn) {
   g.querySelectorAll('.pf-st-sub .pf-anim').forEach(b => { b.style.width = (Number(b.dataset.pct) || 0) + '%'; });
 }
 
+// An event in the series drop-down opens to list its deals, with the same columns
+async function pfToggleEventDeals(btn, eventId) {
+  const g = btn.closest('.pf-st-evgroup');
+  const box = g.querySelector('.pf-st-deals');
+  const open = g.classList.toggle('open');
+  btn.setAttribute('aria-expanded', String(open));
+  if (!open || box.dataset.loaded) return;
+  const ev = portfolioData.find(x => x.id === eventId) || {};
+  box.innerHTML = '<div class="pf-st-dmsg">Loading deals…</div>';
+  try {
+    const res = await fetch(`/api/portfolio-events/${eventId}/deals`);
+    if (!res.ok) throw new Error();
+    const deals = await res.json();
+    box.dataset.loaded = '1';
+    const symMap = { GBP: '£', USD: '$', AED: 'AED ', PHP: '₱', EUR: '€', CHF: 'CHF ' };
+    box.innerHTML = (deals.length ? deals.map(d => {
+      const sym = symMap[d.currency] || '£';
+      const amt = parseFloat(d.amount) || 0;
+      // Paid is this event's share of the deal's payments (split in proportion, like the deal)
+      const paid = Math.min(amt, parseFloat(d.paid_inc_vat) || 0);
+      const split = (parseInt(d.event_count) || 1) > 1;
+      const owed = Math.max(0, amt - paid);
+      const pct = amt > 0 ? Math.round(paid / amt * 100) : 0;
+      const money = v => sym + Math.round(v).toLocaleString('en-GB');
+      return `<div class="pf-st-row pf-st-deal">
+        <span class="pf-st-name"><span><b>${esc(d.company || 'Untitled deal')}</b>${d.package_label || split ? `<small>${esc([d.package_label, split ? `this event's share of a ${money(parseFloat(d.deal_amount) || 0)} deal over ${d.event_count} events` : ''].filter(Boolean).join(' · '))}</small>` : ''}</span></span>
+        <span class="pf-st-num" data-l="Status"><small>${paid >= amt && amt > 0 ? 'Paid' : paid > 0 ? 'Part paid' : 'Awaiting payment'}</small></span>
+        <span class="pf-st-num" data-l="Deal">${money(amt)}</span>
+        <span class="pf-st-num ${paid > 0 ? 'pf-st-paid' : 'pf-st-zero'}" data-l="Paid">${money(paid)}</span>
+        <span class="pf-st-num${owed > 0 ? ' pf-st-owed' : ''}" data-l="Owed">${owed > 0 ? money(owed) : '—'}</span>
+        <span class="pf-st-prog" data-l="Collected"><span class="pf-paidbar"><span style="width:${pct}%"></span></span><b>${pct}%</b></span>
+      </div>`;
+    }).join('') : '<div class="pf-st-dmsg">No deals on this event yet.</div>') +
+      `<div class="pf-st-dmsg"><button type="button" class="pf-st-link" onclick="viewEventDeals(${eventId}, ${esc(JSON.stringify(ev.name || ''))})">Open in Deal Tracker →</button></div>`;
+  } catch { box.innerHTML = '<div class="pf-st-dmsg">Could not load the deals.</div>'; }
+}
+
 // Deals won, Paid, Owed and Collected cells for a row of the Revenue by series table
 function pfMoneyCells(won, paid, big) {
   const owed = Math.max(0, won - paid);
@@ -6397,8 +6438,7 @@ function renderPortfolioEventCard(ev) {
   return `<div class="pec-card pf-row" data-name="${esc(hay)}" data-id="${ev.id}">
     <div class="pf-row-main">
       <div class="pf-row-id">
-        <button type="button" class="pf-row-btn" onclick="togglePortfolioDeals(this,${ev.id})" aria-expanded="false">
-          <span class="pec-arrow">${PF_ICON_CHEV}</span>
+        <div class="pf-row-btn pf-row-static">
           <span class="pf-row-txt">
             <span class="pf-row-name">${esc(ev.name)}</span>
             <span class="pf-row-meta">
@@ -6409,7 +6449,7 @@ function renderPortfolioEventCard(ev) {
               ${looksLike ? `<span class="pf-meta-item pf-meta-dup" title="The 2027 programme panel above can fold this row into it">looks like ${esc(looksLike)}</span>` : ''}
             </span>
           </span>
-        </button>
+        </div>
       </div>
       <div class="pf-row-figs-wrap">
         ${pipeline > 0 ? `<div class="pf-money">
@@ -6425,58 +6465,7 @@ function renderPortfolioEventCard(ev) {
         <button class="sub-action-btn sub-action-btn--danger" onclick="deletePortfolioEvent(${ev.id})">Delete</button>
       </div>
     </div>
-    <div class="pec-deals-list"></div>
   </div>`;
-}
-
-async function togglePortfolioDeals(btn, eventId) {
-  const card = btn.closest('.pec-card');
-  const list = card ? card.querySelector('.pec-deals-list') : null;
-  if (!card || !list) return;
-  const isOpen = card.classList.contains('open');
-  const toggleBtn = card.querySelector('.pf-row-btn');
-
-  if (isOpen) {
-    card.classList.remove('open');
-    if (toggleBtn) toggleBtn.setAttribute('aria-expanded', 'false');
-    return;
-  }
-  card.classList.add('open');
-  if (toggleBtn) toggleBtn.setAttribute('aria-expanded', 'true');
-  if (list.dataset.loaded === String(eventId)) return;
-
-  const ev = portfolioData.find(x => x.id === eventId) || {};
-  const head = `<div class="pf-deals-hd"><span class="pf-eyebrow">Sponsoring this event</span>` +
-    `<button class="sub-action-btn" onclick="viewEventDeals(${eventId},'${esc(ev.name || '').replace(/'/g, "\\'")}')">View in Deals</button></div>`;
-  list.innerHTML = head + '<div class="pf-deals-msg">Loading from the deal tracker…</div>';
-
-  try {
-    const res = await fetch(`/api/portfolio-events/${eventId}/deals`);
-    const deals = res.ok ? await res.json() : [];
-    list.dataset.loaded = String(eventId);
-    if (!deals.length) {
-      list.innerHTML = head + '<div class="pf-deals-msg">No sponsors allocated to this event yet.</div>';
-      return;
-    }
-    const symMap = { GBP: '£', USD: '$', AED: 'AED ', PHP: '₱', EUR: '€', CHF: 'CHF ' };
-    list.innerHTML = head + `<div class="pf-deals">` + deals.map(d => {
-      const sym  = symMap[d.currency] || '£';
-      const paid = parseFloat(d.paid_inc_vat) || 0;
-      const amt  = parseFloat(d.amount) || 0;
-      const isPaid = paid > 0;
-      const isPart = isPaid && paid < amt;
-      const state  = isPaid && !isPart ? 'Paid' : isPart ? `Part paid · ${sym}${fmt(paid)}` : 'Awaiting payment';
-      const dot    = isPaid && !isPart ? 'pf-deal-dot--paid' : isPart ? 'pf-deal-dot--part' : '';
-      const sub = [state, d.package_label, d.signed_by ? `signed by ${d.signed_by}` : ''].filter(Boolean).map(esc).join(' · ');
-      return `<div class="pf-deal">
-        <span class="pf-deal-dot ${dot}"></span>
-        <span class="pf-deal-body"><span class="pf-deal-co">${esc(d.company)}</span><span class="pf-deal-sub">${sub}</span></span>
-        <span class="pf-deal-amt">${sym}${fmt(amt)}</span>
-      </div>`;
-    }).join('') + `</div>`;
-  } catch {
-    list.innerHTML = head + '<div class="pf-deals-msg pf-err">Failed to load deals.</div>';
-  }
 }
 
 function viewEventDeals(eventId, eventName) {
@@ -7081,6 +7070,21 @@ function dealPassesFilter(d) {
   return true;
 }
 
+// With one event chosen, a deal split over several events shows only that event's share:
+// its part of the deal value, and the same part of what was paid and of the VAT.
+// The share is the event's allocation over all the deal's allocations.
+function dealEventShare(d) {
+  if (!_dealEventFilter || !Array.isArray(d.events) || d.events.length < 2) return null;
+  const ev = d.events.find(e => String(e.event_id) === String(_dealEventFilter));
+  if (!ev) return null;
+  const sum = d.events.reduce((a, e) => a + (parseFloat(e.allocated_amount) || 0), 0);
+  const ratio = sum > 0 ? (parseFloat(ev.allocated_amount) || 0) / sum : 1 / d.events.length;
+  const part = v => (v == null || v === '' ? v : Math.round(parseFloat(v) * ratio * 100) / 100);
+  return { ratio, eventName: ev.event_name || 'this event', count: d.events.length,
+    amount: sum > 0 ? parseFloat(ev.allocated_amount) || 0 : part(d.amount),
+    paid_inc_vat: part(d.paid_inc_vat), tax_vat: part(d.tax_vat) };
+}
+
 function renderDealsTable() {
   const filtered = dealsData.filter(dealPassesFilter);
   const tbody = document.getElementById('dealsTableBody');
@@ -7114,12 +7118,14 @@ function renderDealsTable() {
 
   tbody.innerHTML = filtered.map(d => {
     const sym = symMap[d.currency] || '£';
-    const paidAmt   = parseFloat(d.paid_inc_vat) || 0;
-    const dealAmt   = parseFloat(d.amount) || 0;
+    const share     = dealEventShare(d);
+    const paidAmt   = parseFloat(share ? share.paid_inc_vat : d.paid_inc_vat) || 0;
+    const dealAmt   = parseFloat(share ? share.amount : d.amount) || 0;
+    const taxAmt    = parseFloat(share ? share.tax_vat : d.tax_vat) || 0;
     const hasPaid   = d.paid_inc_vat != null && paidAmt > 0;
     // Paid in full means the deal value plus its VAT. Anything else that has
     // been paid (short or over) gets a yellow cell so someone looks at it.
-    const expectedAmt = dealAmt + (parseFloat(d.tax_vat) || 0);
+    const expectedAmt = dealAmt + taxAmt;
     const paidOff     = hasPaid && Math.abs(paidAmt - expectedAmt) >= 0.01;
     const isFlagged = !!d.is_flagged;
     const isSelected = _selectedDealIds.has(d.id);
@@ -7158,9 +7164,14 @@ function renderDealsTable() {
       </td>
       ${ec('deal_month', 'period', d.deal_month || '', dealPeriodDisplayHtml(d), 'deal-td-month')}
       <td class="deal-cell-company${coHl ? ' deal-cell-orange' : ''}" data-id="${d.id}" data-hlkey="${coHlKey}" onclick="dealCompanyClick(event,${d.id},this)" title="Open the deal · Shift+click to highlight"><span class="deal-co-link">${esc(d.company || d.title)}</span>${d.office_seen === false ? `<span class="deal-new" title="Added by ${esc(d.sales_name || 'the sales team')} from the staff portal">New</span>` : ''}</td>
-      ${ec('amount', 'number', d.amount || 0, `<span class="deal-figure">${sym}${fmt(dealAmt)}</span>`, 'deal-num dt-r')}
+      ${share
+        // This event's share: worked out from the whole deal, so not edited here (open the deal to change it)
+        ? `<td class="deal-num dt-r deal-share" title="${esc(share.eventName)}'s share (${Math.round(share.ratio * 100)}%) of a deal split over ${share.count} events · whole deal ${sym}${fmt(parseFloat(d.amount) || 0)}"><span class="deal-figure">${sym}${fmt(dealAmt)}</span><small>of ${sym}${fmt(parseFloat(d.amount) || 0)}</small></td>
+          <td class="deal-num dt-r deal-share" title="${esc(share.eventName)}'s share of ${sym}${fmt(parseFloat(d.paid_inc_vat) || 0)} paid on the whole deal">${paidDisplay}${hasPaid ? `<small>of ${sym}${fmt(parseFloat(d.paid_inc_vat) || 0)}</small>` : ''}</td>
+          <td class="deal-num dt-r deal-share">${taxAmt ? `${sym}${fmt(taxAmt)}` : dash}</td>`
+        : `${ec('amount', 'number', d.amount || 0, `<span class="deal-figure">${sym}${fmt(dealAmt)}</span>`, 'deal-num dt-r')}
       ${ec('paid_inc_vat', 'number', d.paid_inc_vat ?? '', paidDisplay, `deal-num dt-r${paidOff ? ' deal-cell-check' : ''}`, `oncontextmenu="dealCellContextMenu(event,this)"${paidTitle}`)}
-      ${ec('tax_vat', 'number', d.tax_vat ?? '', d.tax_vat ? `${sym}${fmt(parseFloat(d.tax_vat))}` : dash, 'deal-num dt-r')}
+      ${ec('tax_vat', 'number', d.tax_vat ?? '', d.tax_vat ? `${sym}${fmt(parseFloat(d.tax_vat))}` : dash, 'deal-num dt-r')}`}
       ${ec('invoice_date', 'date', d.invoice_date || '', dateCell(d.invoice_date), 'deal-td-date')}
       ${ec('paid_date', 'date', d.paid_date || '', dateCell(d.paid_date), 'deal-td-date')}
       ${ec('bank', 'select-bank', d.bank || '', esc(d.bank || '') || dash, 'deal-td-bank')}
@@ -7177,7 +7188,8 @@ function renderDealsTable() {
   }).join('');
 
   window._dealCurrentFiltered = filtered;
-  renderDealTotals(filtered, tfoot);
+  // Totals for one event count only its share of split deals
+  renderDealTotals(filtered.map(d => { const sh = dealEventShare(d); return sh ? { ...d, amount: sh.amount, paid_inc_vat: sh.paid_inc_vat, tax_vat: sh.tax_vat } : d; }), tfoot);
   renderDealsByInitials(filtered);
   updateDealSelectionUI();
 }

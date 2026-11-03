@@ -2184,7 +2184,9 @@ app.get('/api/portfolio-events', requireAuth, async (req, res) => {
   try {
     const { rows } = await q(`
       SELECT pe.*,
-        COALESCE(SUM(COALESCE(d.paid_inc_vat, 0)),0) AS total_won,
+        -- A deal split over several events counts towards each in proportion to its share
+        COALESCE(SUM(COALESCE(d.paid_inc_vat, 0) * COALESCE(de.allocated_amount
+          / NULLIF((SELECT SUM(x.allocated_amount) FROM deal_events x WHERE x.deal_id = de.deal_id), 0), 1)),0) AS total_won,
         COALESCE(SUM(de.allocated_amount),0) AS total_pipeline,
         COUNT(DISTINCT de.deal_id) AS deal_count,
         string_agg(DISTINCT NULLIF(COALESCE(NULLIF(d.company,''), d.title),''), ', ') AS companies
@@ -2200,8 +2202,11 @@ app.get('/api/portfolio-events/:id/deals', requireAuth, requireAdminOrManager, a
   try {
     const { rows } = await q(`
       SELECT d.id, COALESCE(NULLIF(d.company,''),d.title) AS company,
-        de.allocated_amount AS amount, de.package_label, d.currency,
-        d.paid_inc_vat, d.stage
+        de.allocated_amount AS amount, de.package_label, d.currency, d.amount AS deal_amount,
+        -- This event's share of what has been paid on the deal
+        COALESCE(d.paid_inc_vat, 0) * COALESCE(de.allocated_amount
+          / NULLIF((SELECT SUM(x.allocated_amount) FROM deal_events x WHERE x.deal_id = de.deal_id), 0), 1) AS paid_inc_vat,
+        (SELECT COUNT(*) FROM deal_events x WHERE x.deal_id = de.deal_id) AS event_count, d.stage
       FROM deal_events de
       JOIN deals d ON d.id=de.deal_id
       WHERE de.event_id=?
