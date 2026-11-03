@@ -928,26 +928,6 @@ function renderDashOverview(o) {
   const chartCard = dashCard('Deals signed', null,
     `<div class="db-card-meta">This month: £${fmt(thisMonth.total)}</div>${chartBody}`, 'db-span-2');
 
-  // ── Collections: how many deals are paid, part paid, not paid
-  const counts = { paid: 0, partial: 0, unpaid: 0 };
-  deals.forEach(d => { counts[dashDealStatus(d)]++; });
-  const maxCount = Math.max(1, counts.paid, counts.partial, counts.unpaid);
-  const hbar = (label, n, shade) => `<div class="db-hbar">
-      <span class="db-hbar-label">${label}</span>
-      <span class="db-hbar-track"><span class="db-hbar-fill" style="width:${n / maxCount * 100}%;opacity:${shade}"></span></span>
-      <span class="db-hbar-n">${n}</span>
-    </div>`;
-  const collectCard = dashCard('Collections', { page: 'deals', label: 'View all' }, deals.length ? `
-    <div class="db-hbars">
-      ${hbar('Paid in full', counts.paid, 1)}
-      ${hbar('Part paid', counts.partial, 0.65)}
-      ${hbar('Not paid yet', counts.unpaid, 0.35)}
-    </div>
-    <div class="db-foot-figures">
-      <div><span>Received</span><strong>£${fmtK(totals.paid)}</strong><small>inc VAT</small></div>
-      <div><span>Outstanding</span><strong>£${fmtK(totals.out)}</strong><small>ex VAT</small></div>
-    </div>` : dashEmpty('No deals yet.'));
-
   // ── Team by department: donut + legend
   const depts = {};
   o.activeEmps.forEach(e => { const d = e.department || 'Unassigned'; depts[d] = (depts[d] || 0) + 1; });
@@ -995,17 +975,27 @@ function renderDashOverview(o) {
       </li>`).join('')}
     </ul>` : dashEmpty('No deals linked to events yet.'));
 
-  // ── Deals still to collect
+  // ── Collections: what has come in, what is still owed, and who owes it, in one card
+  const counts = { paid: 0, partial: 0, unpaid: 0 };
+  deals.forEach(d => { counts[dashDealStatus(d)]++; });
   const owing = deals.map(d => ({ d, m: dashDealMoney(d), status: dashDealStatus(d) }))
     .filter(x => x.m.out > 0.5).sort((a, b) => b.m.out - a.m.out);
-  const owingCard = dashCard('Still to collect', { page: 'deals', label: 'Deal Tracker' }, owing.length ? `
-    <ul class="db-list">
+  const collectedPct = Math.min(100, pctCollected);
+  const collectCard = dashCard('Collections', { page: 'deals', label: 'Deal Tracker' }, deals.length ? `
+    <div class="db-coll-figs">
+      <div><span>Received</span><strong>£${fmtK(totals.paid)}</strong><small>inc VAT</small></div>
+      <div><span>Still to collect</span><strong class="db-coll-out">£${fmtK(totals.out)}</strong><small>ex VAT</small></div>
+    </div>
+    <div class="db-coll-bar" role="img" aria-label="${collectedPct}% collected"><span style="width:${collectedPct}%"></span></div>
+    <div class="db-coll-counts"><b>${collectedPct}%</b> collected · ${counts.paid} paid · ${counts.partial} part paid · ${counts.unpaid} not paid</div>
+    ${owing.length ? `<ul class="db-list db-coll-list">
       ${owing.slice(0, 5).map(x => `<li class="db-row">
         <span class="db-list-name">${esc(x.d.company || x.d.title || 'Deal')}</span>
         <span class="db-list-amt">£${fmt(x.m.out)}</span>
         <span class="db-tag ${x.status === 'partial' ? 'is-warn' : ''}">${x.status === 'partial' ? 'Part paid' : 'Unpaid'}</span>
       </li>`).join('')}
-    </ul>` : dashEmpty('Every deal is paid.'));
+    </ul>${owing.length > 5 ? `<div class="db-coll-more">and ${owing.length - 5} more in the Deal Tracker</div>` : ''}`
+    : '<div class="db-coll-more">Every deal is paid.</div>'}` : dashEmpty('No deals yet.'));
 
   // ── Hotels still to pay, and contracts ending
   const hotelsOpen = (o.hotelData || []).filter(h => h.status !== 'paid');
@@ -1059,12 +1049,12 @@ function renderDashOverview(o) {
         <span class="db-tag ${days < 0 ? 'is-alert' : days <= 14 ? 'is-warn' : ''}">${probationLabel(days)}</span>
       </li>`).join('')}
     </ul>`) : '';
-  const lastRow = [hotelsCard, soonCard, contractsCard, probationCard].filter(Boolean);
+  const lastRow = [soonCard, contractsCard, probationCard].filter(Boolean);
 
   el.innerHTML = `${kpis}
     <div class="db-grid db-grid-3">${chartCard}${collectCard}</div>
-    <div class="db-grid db-grid-3">${teamCard}${eventsCard}${owingCard}</div>
-    <div class="db-grid ${lastRow.length >= 3 ? 'db-grid-3' : 'db-grid-2'}">${lastRow.join('')}</div>`;
+    <div class="db-grid db-grid-3">${teamCard}${eventsCard}${hotelsCard}</div>
+    <div class="db-grid ${lastRow.length >= 3 ? 'db-grid-3' : lastRow.length === 2 ? 'db-grid-2' : ''}">${lastRow.join('')}</div>`;
 }
 
 // Probation: an end date with no review recorded yet

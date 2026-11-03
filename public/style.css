@@ -8143,3 +8143,17 @@ body[data-role="accounts"] #page-portfolio .pf-row-actions { display: none !impo
 :root .sal-ov-tile { display: flex; flex-direction: column; }
 :root .sal-ov-tile .sal-ov-meter { margin-top: auto; }
 :root .sal-ov-tile .sal-ov-t-alt { margin-bottom: 14px; }
+
+/* Dashboard: Collections — totals, one bar, and the deals still owed, in one card */
+.db-coll-figs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 2px; }
+.db-coll-figs div { display: flex; flex-direction: column; gap: 3px; }
+.db-coll-figs span { font: 400 12px/1.2 var(--font-sans); color: var(--muted); }
+.db-coll-figs strong { font: 700 22px/1.1 var(--font-sans); letter-spacing: -0.02em; color: var(--text); }
+:root .db-coll-figs .db-coll-out { color: var(--warning, #d97706); }
+.db-coll-figs small { font: 400 11px/1.2 var(--font-sans); color: var(--dim); }
+.db-coll-bar { height: 8px; margin-top: 14px; border-radius: 999px; background: var(--border-bright, var(--border)); overflow: hidden; }
+.db-coll-bar span { display: block; height: 100%; border-radius: 999px; background: var(--positive); }
+.db-coll-counts { margin-top: 8px; font: 400 12.5px/1.4 var(--font-sans); color: var(--muted); }
+.db-coll-counts b { font-weight: 600; color: var(--text); }
+.db-coll-list { margin-top: 14px; padding-top: 6px; border-top: 1px solid var(--line); }
+.db-coll-more { margin-top: 8px; font: 400 12px/1.4 var(--font-sans); color: var(--dim); }
