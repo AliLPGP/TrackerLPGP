@@ -28,7 +28,10 @@ async function renderStarterPdf(a, { employeeName, signedName, signedAt, signatu
   text(cover, 'NEW STARTER FORM', 57, 158, { font: fonts.sansBold, size: 28 });
   text(cover, `${employeeName} · for payroll`, 58, 192, { font: fonts.mono, size: 14.4 });
   const about = STARTER_FORM[0].fields;
-  const cells = [['Employer', employer], ...about.filter(f => f.key !== 'gender' || a.gender).map(f => [f.label, val(f) || '—']), ['Employee statement', a.statement ? `Statement ${a.statement}` : '—']];
+  // Name in one block; the employee statement is on the next page with its wording
+  const fullName = [a.first_names, a.last_name].filter(Boolean).join(' ');
+  const cells = [['Employer', employer], ['Full name', fullName || '\u2014'],
+    ...about.filter(f => !['first_names', 'last_name'].includes(f.key) && (f.key !== 'gender' || a.gender)).map(f => [f.label, val(f) || '\u2014'])];
   cells.forEach(([label, value], i) => {
     const x = i % 2 ? 307 : 68, top = 250 + Math.floor(i / 2) * 76;
     text(cover, label.toUpperCase(), x, top, { font: fonts.mono, size: 9.6, color: BLUE });

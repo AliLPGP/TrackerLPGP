@@ -411,7 +411,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       work_arrangement: fd.work_arrangement,
       schedule: String(fd.schedule).split(/\r?\n/).map(s => s.trim()).filter(Boolean),
       flexible_hours: fd.flexible_hours !== false,
-      monthly_salary: `${fd.currency} ${money(fd.annual_salary / 12)}`,
+      annual_salary: `${fd.currency} ${money(fd.annual_salary)}`,
       start_date: longDate(fd.start_date),
       employment_type: fd.employment_type,
       holiday_days: fd.holiday_days,

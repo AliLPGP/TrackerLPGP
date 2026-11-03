@@ -41,7 +41,7 @@ function sections(c) {
       : 'The Employee is responsible for managing any applicable time zone differences.'),
   ]]);
   out.push(['Compensation', [
-    `The Employee will be paid ${c.monthly_salary} per month. LPGP Connect issues salary payments during the last week of each month unless a major holiday affects the scheduled payout period, in which case payment may be processed on the next business day. Payments will be made via bank transfer or other approved payment methods.`,
+    `The Employee will be paid an annual salary of ${c.annual_salary} before tax, paid in monthly instalments. LPGP Connect issues salary payments during the last week of each month unless a major holiday affects the scheduled payout period, in which case payment may be processed on the next business day. Payments will be made via bank transfer or other approved payment methods.`,
   ]]);
   const extra = 'In the year the Employee joins, this is pro-rated to the part of the year worked. Any days off beyond this are unpaid and are deducted from pay at the daily rate for the month they fall in (the monthly pay divided by the number of working days in that month). Leave must be agreed with the Company in advance.';
   out.push(['Benefits & Statutory Obligations', c.employment_type === 'self_employed' ? [
@@ -64,7 +64,7 @@ function sections(c) {
 /**
  * The contract as a PDF.
  * `c`: employee_name, employee_address, position, country, employment_label, schedule (lines),
- * monthly_salary, start_date, employment_type, work_arrangement, holiday_days,
+ * annual_salary, start_date, employment_type, work_arrangement, holiday_days,
  * probation {state, months, end}, signed_date.
  */
 async function renderContractPdf(c, { signaturePng } = {}) {
@@ -80,7 +80,7 @@ async function renderContractPdf(c, { signaturePng } = {}) {
     ['Name of Employee', c.employee_name], ['Employee’s Address', c.employee_address || '—'],
     ['Employee’s Position', c.position], ['Country of Employment', c.country],
     ['Employment Type', c.employment_label], ['Working Schedule', c.schedule.join('\n')],
-    ['Monthly Salary', c.monthly_salary], ['Contract Start Date', c.start_date],
+    ['Annual Salary (Before Tax)', c.annual_salary], ['Contract Start Date', c.start_date],
   ];
   cells.forEach(([label, value], i) => {
     const x = i % 2 ? 307 : 68, top = 262 + Math.floor(i / 2) * 83.5;

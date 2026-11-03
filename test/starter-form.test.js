@@ -21,6 +21,7 @@ const ok = {
   assert.ok(!('loan_studying' in v.answers), 'no loan: the follow-up questions are not asked');
 
   // Missing and malformed answers come back by field
+  assert.deepStrictEqual(Object.keys(checkAnswers({ ...ok, ni_number: '' }).errors), ['ni_number'], 'NI number required');
   const bad = checkAnswers({ ...ok, statement: 'D', sort_code: '1234', ni_number: 'nope' });
   assert.deepStrictEqual(Object.keys(bad.errors).sort(), ['ni_number', 'sort_code', 'statement']);
 
