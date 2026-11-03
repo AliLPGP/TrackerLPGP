@@ -138,8 +138,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (currentUser.role === 'admin') {
     document.querySelectorAll('.admin-only').forEach(el => el.classList.remove('hidden'));
   }
-  if (currentUser.role === 'admin' || currentUser.role === 'manager' || currentUser.role === 'accounts') {
+  if (['admin', 'manager', 'accounts'].includes(currentUser.role)) {
     document.querySelectorAll('.admin-manager-only').forEach(el => el.classList.remove('hidden'));
+  }
+  document.body.dataset.role = currentUser.role; // lets the page hide controls a role cannot use
+  // The accounts login runs the money side only: no staff, tracking or event kits
+  if (currentUser.role === 'accounts') {
+    document.querySelectorAll('.nav-item[data-page], .bottom-nav-item[data-page]').forEach(el => {
+      if (!ACCOUNTS_PAGES.includes(el.dataset.page)) el.classList.add('hidden');
+    });
   }
 
   const m = thisMonth();
@@ -188,8 +195,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     setInterval(refreshNotifBadge, 60000);
   }
 
-  // Initial badge — silent, non-blocking
-  fetch(`/api/salary-overview?year=${new Date().getFullYear()}`)
+  // Initial badge — silent, non-blocking (pay is admin-only)
+  if (currentUser.role === 'admin') fetch(`/api/salary-overview?year=${new Date().getFullYear()}`)
     .then(r => r.ok ? r.json() : [])
     .then(data => {
       const now = new Date();
@@ -270,9 +277,13 @@ function initSidebarCollapse() {
 }
 
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
+// What the accounts login can open: deals and invoices, costs, the portfolio's revenue, the calendar
+const ACCOUNTS_PAGES = ['dashboard', 'calendar', 'deals', 'portfolio', 'expenses', 'subscriptions', 'hotels'];
+
 function navigate(page) {
   // Salary and Employees sections are admin-only
   if ((page === 'salary' || page === 'employees') && currentUser?.role !== 'admin') return;
+  if (currentUser?.role === 'accounts' && !ACCOUNTS_PAGES.includes(page)) return;
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.querySelectorAll('.bottom-nav-item').forEach(n => n.classList.remove('active'));
@@ -533,7 +544,7 @@ async function saveEmployee() {
     await fetch(`/api/employees/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...payload, active: 1, salary_reason, salary_effective })
+      body: JSON.stringify({ ...payload, salary_reason, salary_effective })
     });
   } else {
     // Their documents come from onboarding, and extra ones are added on their profile
@@ -619,7 +630,7 @@ async function loadDashboard() {
 
   const [summaryRes, salaryRes, upcomingRes, expiringRes, allEmpRes, hotelRes, dealsRes, evtRevRes, calCurRes, calNextRes] = await Promise.all([
     fetch(`/api/summary?from=${year}-01-01&to=${year}-12-31`),
-    fetch(`/api/salary-overview?year=${year}`),
+    currentUser.role === 'admin' ? fetch(`/api/salary-overview?year=${year}`) : null, // pay is admin-only
     fetch(`/api/calendar-reminders/upcoming?days=30`),
     fetch(`/api/contracts/expiring?days=60`),
     fetch(`/api/employees/all`),
@@ -631,7 +642,7 @@ async function loadDashboard() {
   ]);
 
   const summary       = summaryRes.ok   ? await summaryRes.json()   : [];
-  const salaryData    = salaryRes.ok    ? await salaryRes.json()    : [];
+  const salaryData    = salaryRes && salaryRes.ok ? await salaryRes.json() : [];
   const upcoming      = upcomingRes.ok  ? await upcomingRes.json()  : [];
   const expiring      = expiringRes.ok  ? await expiringRes.json()  : [];
   const allEmps       = allEmpRes.ok    ? await allEmpRes.json()    : [];
@@ -668,7 +679,6 @@ async function loadDashboard() {
     upcoming, dayOffs: upcomingDayOffs });
 
   // Activity feed
-  renderDashActivity(summary, expiring, hotelData, salaryData);
 
   const tbody = document.getElementById('dashTable');
   tbody.innerHTML = '';
@@ -1055,66 +1065,6 @@ function fmtDateShort(iso) {
   return isNaN(d) ? String(iso) : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
-function renderDashActivity(summary, expiring, hotelData, salaryData) {
-  const el = document.getElementById('activityPanel');
-  if (!el) return;
-
-  const items = [];
-  const ICONS = {
-    pay:     '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>',
-    breach:  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
-    hotel:   '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
-    expiry:  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
-    deduct:  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>',
-  };
-
-  // Salary payments from salaryData
-  salaryData.filter(e => !e.is_terminated && (e.payments||[]).length).slice(0,2).forEach(e => {
-    const last = e.payments[e.payments.length - 1];
-    const sym = e.currency === 'AED' ? 'AED ' : '£';
-    items.push({ icon: ICONS.pay, tone: 'pos', title: 'Logged payment', detail: sym + parseFloat(last.amount||0).toLocaleString('en-GB') + ' &rarr; ' + esc(e.name) });
-  });
-
-  // Allowance breaches — only when it actually costs money. Days over the
-  // allowance that are all marked "no deduct" are approved leave, not a breach.
-  summary.filter(r => (parseFloat(r.excess_day_deduction)||0) > 0).slice(0,2).forEach(r => {
-    items.push({ icon: ICONS.breach, tone: 'neg', title: 'Allowance breach', detail: esc(r.name) + ' &middot; ' + r.year_days_off + '/' + r.allowance_days + ' days &middot; &pound;' + parseFloat(r.excess_day_deduction||0).toFixed(2) + ' deduct' });
-  });
-
-  // Contract expiring
-  expiring.slice(0,2).forEach(e => {
-    const days = Math.floor((new Date(e.contract_end_date) - new Date()) / 86400000);
-    items.push({ icon: ICONS.expiry, tone: 'warn', title: 'Contract expiring', detail: esc(e.name) + ' &middot; ' + e.contract_end_date + ' &middot; ' + Math.abs(days) + 'd' });
-  });
-
-  // Hotel events
-  hotelData.filter(h => h.status !== 'paid').slice(0,2).forEach(h => {
-    const sym = hotelCurrencySymbol(h.currency || h.paid_currency || 'USD');
-    const amtStr = h.paid_amount ? sym + parseFloat(h.paid_amount).toLocaleString('en-GB') + ' &middot; ' : '';
-    items.push({ icon: ICONS.hotel, tone: 'info', title: 'Hotel expense', detail: esc(h.event_name) + ' &middot; ' + amtStr + h.status });
-  });
-
-  if (!items.length) { el.innerHTML = ''; return; }
-
-  const TONE_COLOR = { pos:'var(--positive)', neg:'var(--negative)', warn:'var(--warning)', info:'var(--info)' };
-  const rows = items.slice(0,5).map(it =>
-    '<div style="display:flex;gap:10px;padding:11px 16px;border-bottom:1px solid var(--line);align-items:flex-start">' +
-      '<div style="width:28px;height:28px;border-radius:6px;background:var(--surface-2);border:1px solid var(--border);display:grid;place-items:center;flex-shrink:0;color:' + TONE_COLOR[it.tone] + '">' + it.icon + '</div>' +
-      '<div style="flex:1;min-width:0">' +
-        '<div style="font:600 12.5px/1.3 var(--font-sans);color:var(--text)">' + it.title + '</div>' +
-        '<div style="font:400 11px/1.4 var(--font-mono);color:var(--muted);margin-top:3px">' + it.detail + '</div>' +
-      '</div>' +
-    '</div>'
-  ).join('');
-
-  el.innerHTML = '<div class="card" style="margin-bottom:0">' +
-    '<div class="card-header" style="padding:12px 16px">' +
-      '<span class="card-title" style="display:flex;align-items:center;gap:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Activity</span>' +
-      '<span style="font-size:0.72rem;color:var(--muted);font-family:var(--font-mono)">last 24h</span>' +
-    '</div>' +
-    '<div style="padding:0">' + rows + '</div>' +
-  '</div>';
-}
 
 function goToTracking(empId) {
   navigate('tracking');
@@ -1230,7 +1180,7 @@ async function openEmployeeProfile(empId, opts = {}) {
       ${asPage ? '' : '<button class="modal-close ep-close" onclick="closeEmployeeProfile()" aria-label="Close">✕</button>'}
     </header>`;
   const actions = canManage ? `<div class="ep-actions">
-      <button class="btn btn-sm" onclick="epEdit(${emp.id})">Edit details</button>
+      ${isAdmin ? `<button class="btn btn-sm" onclick="epEdit(${emp.id})">Edit details</button>` : ''}
       ${asPage ? `<button class="btn btn-sm" onclick="goToTracking(${emp.id})">Daily tracking</button>` : ''}
       ${isAdmin ? `<button class="btn btn-sm" onclick="closeEmployeeProfile();openAddPinModal(${emp.id}, ${esc(JSON.stringify(emp.name))})">${emp.portal_pin ? 'Change PIN' : 'Add portal PIN'}</button>` : ''}
       ${isAdmin ? (emp.active
@@ -2033,7 +1983,7 @@ async function loadEmployeeRecords() {
         <td style="color:var(--primary);font-size:0.8rem" title="Reference only — not deducted from salary">£${(r.ref_amount||0).toFixed(2)} <span style="opacity:0.5;font-size:0.68rem">ref</span></td>
         <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.notes||'')}">${esc(r.notes||'')||'—'}</td>
         <td style="white-space:nowrap">
-          <button class="btn btn-ghost btn-sm" onclick="openEditRecord(${r.id},${r.employee_id},'${r.record_date}',${r.break_minutes},${r.phone_minutes},${r.wasted_minutes},${r.late_minutes},${r.is_day_off},\`${esc(r.notes||'')}\`,${!!r.no_deduction})">Edit</button>
+          <button class="btn btn-ghost btn-sm" onclick="openEditRecord(${r.id},${r.employee_id},'${r.record_date}',${r.break_minutes},${r.phone_minutes},${r.wasted_minutes},${r.late_minutes},${r.is_day_off},${esc(JSON.stringify(r.notes || ''))},${!!r.no_deduction})">Edit</button>
           <button class="btn btn-danger btn-sm" onclick="deleteRecord(${r.id})">Del</button>
         </td>`;
       tbody.appendChild(tr);
@@ -3426,7 +3376,7 @@ async function loadSalaryPage() {
 
           <!-- Print / Export row -->
           <div class="sc-card-footer">
-            <button class="btn btn-ghost btn-sm" onclick="printPayslip(${emp.employee_id}, '${esc(emp.name)}')" title="Print formatted payslip">🖨 Print Payslip</button>
+            <button class="btn btn-ghost btn-sm" onclick="printPayslip(${emp.employee_id}, ${esc(JSON.stringify(emp.name || ''))})" title="Print formatted payslip">🖨 Print Payslip</button>
           </div>
 
         </div>
@@ -3825,11 +3775,11 @@ async function loadCalendar() {
   const [calRes, remRes, pendingRes] = await Promise.all([
     fetch(`/api/calendar?year=${calYear}&month=${calMonth}`),
     fetch(`/api/calendar-reminders?year=${calYear}&month=${calMonth}`),
-    fetch(`/api/day-off-requests`)
+    currentUser.role === 'admin' ? fetch(`/api/day-off-requests`) : null, // admins approve requests
   ]);
   calData = await calRes.json();
   calReminders = remRes.ok ? await remRes.json() : [];
-  const pendingRequests = pendingRes.ok ? await pendingRes.json() : [];
+  const pendingRequests = pendingRes && pendingRes.ok ? await pendingRes.json() : [];
   renderDayOffRequestsBanner(pendingRequests);
   updateCalendarBadge(pendingRequests.length);
 
@@ -4200,7 +4150,7 @@ function thisMonth() {
   return { from, to: last.toISOString().slice(0,10) };
 }
 function esc(str) {
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 // ─── TOAST NOTIFICATIONS ─────────────────────────────────────────────────────
@@ -4300,6 +4250,7 @@ function updateCalendarBadge(count) {
 }
 
 async function refreshCalendarBadge() {
+  if (!currentUser || currentUser.role !== 'admin') return; // day-off requests are approved by admins
   try {
     const res = await fetch('/api/day-off-requests');
     if (res.ok) updateCalendarBadge((await res.json()).length);
@@ -5724,6 +5675,8 @@ async function loadPortfolio() {
 }
 
 async function loadProgramme2027() {
+  // Matching events to the programme is a manager's job; the accounts login only reads the Portfolio
+  if (currentUser && currentUser.role === 'accounts') { _programme2027 = { status: 'ready', data: null, error: null }; return; }
   _programme2027 = { status: 'loading', data: null, error: null };
   try {
     const res = await fetch('/api/programme/2027');
@@ -5896,11 +5849,15 @@ function renderPortfolioGrid() {
               <span class="pf-st-num" data-l="Events">${r.events}<small>${r.deals} deal${r.deals === 1 ? '' : 's'}</small></span>
               ${pfMoneyCells(r.allocated, r.paid, true)}
             </button>
-            <div class="pf-st-sub">${evs.map(e => `<div class="pf-st-row pf-st-ev">
-                <span class="pf-st-name"><span><b>${esc(e.name)}</b><small>${esc([fmtEventDate(e, { long: true }), e.location].filter(Boolean).join(' · '))}</small></span></span>
-                <span class="pf-st-num" data-l="Deals">${parseInt(e.deal_count) || 0}<small>deal${(parseInt(e.deal_count) || 0) === 1 ? '' : 's'}</small></span>
-                ${pfMoneyCells(num(e.total_pipeline), num(e.total_won), false)}
-              </div>`).join('')}</div>
+            <div class="pf-st-sub">${evs.map(e => {
+              const n = parseInt(e.deal_count) || 0;
+              const cells = `<span class="pf-st-name">${n ? `<span class="pf-st-chev">${PF_ICON_CHEV}</span>` : '<span class="pf-st-chev-gap"></span>'}<span><b>${esc(e.name)}</b><small>${esc([fmtEventDate(e, { long: true }), e.location].filter(Boolean).join(' · '))}</small></span></span>
+                <span class="pf-st-num" data-l="Deals">${n}<small>deal${n === 1 ? '' : 's'}</small></span>
+                ${pfMoneyCells(num(e.total_pipeline), num(e.total_won), false)}`;
+              return n
+                ? `<div class="pf-st-evgroup" data-event="${e.id}"><button type="button" class="pf-st-row pf-st-ev pf-st-toggle" onclick="pfToggleEventDeals(this, ${e.id})" aria-expanded="false">${cells}</button><div class="pf-st-deals"></div></div>`
+                : `<div class="pf-st-row pf-st-ev">${cells}</div>`;
+            }).join('')}</div>
           </div>`;
         }).join('')}
       </div>` : '<div class="pf-empty">No deals won yet.</div>'}
@@ -5937,7 +5894,7 @@ function renderPortfolioGrid() {
     `<section class="pf-list">
       <div class="pf-list-hd">
         <h2 class="pf-panel-title">Events by producer team</h2>
-        <span class="pf-panel-aside">${filtered.length} event${filtered.length === 1 ? '' : 's'} · click a name for its sponsors</span>
+        <span class="pf-panel-aside">${filtered.length} event${filtered.length === 1 ? '' : 's'} · see each event's deals under Revenue by series</span>
       </div>
       ${producers.map(p => {
         const evs = byProducer.get(p).sort(byDate);
@@ -6340,6 +6297,7 @@ async function loadEmpPortfolioRoles(empId, boxId = 'empPortfolioRoles') {
 
 // Programme data without re-rendering the Portfolio page.
 async function loadProgramme2027Quiet() {
+  if (currentUser && currentUser.role === 'accounts') return;
   try {
     const res = await fetch('/api/programme/2027');
     if (res.ok) _programme2027 = { status: 'ready', data: await res.json(), error: null };
@@ -6372,6 +6330,43 @@ function pfToggleSeries(btn) {
   g.querySelectorAll('.pf-st-sub .pf-anim').forEach(b => { b.style.width = (Number(b.dataset.pct) || 0) + '%'; });
 }
 
+// An event in the series drop-down opens to list its deals, with the same columns
+async function pfToggleEventDeals(btn, eventId) {
+  const g = btn.closest('.pf-st-evgroup');
+  const box = g.querySelector('.pf-st-deals');
+  const open = g.classList.toggle('open');
+  btn.setAttribute('aria-expanded', String(open));
+  if (!open || box.dataset.loaded) return;
+  const ev = portfolioData.find(x => x.id === eventId) || {};
+  box.innerHTML = '<div class="pf-st-dmsg">Loading deals…</div>';
+  try {
+    const res = await fetch(`/api/portfolio-events/${eventId}/deals`);
+    if (!res.ok) throw new Error();
+    const deals = await res.json();
+    box.dataset.loaded = '1';
+    const symMap = { GBP: '£', USD: '$', AED: 'AED ', PHP: '₱', EUR: '€', CHF: 'CHF ' };
+    box.innerHTML = (deals.length ? deals.map(d => {
+      const sym = symMap[d.currency] || '£';
+      const amt = parseFloat(d.amount) || 0;
+      // Paid is this event's share of the deal's payments (split in proportion, like the deal)
+      const paid = Math.min(amt, parseFloat(d.paid_inc_vat) || 0);
+      const split = (parseInt(d.event_count) || 1) > 1;
+      const owed = Math.max(0, amt - paid);
+      const pct = amt > 0 ? Math.round(paid / amt * 100) : 0;
+      const money = v => sym + Math.round(v).toLocaleString('en-GB');
+      return `<div class="pf-st-row pf-st-deal">
+        <span class="pf-st-name"><span><b>${esc(d.company || 'Untitled deal')}</b>${d.package_label || split ? `<small>${esc([d.package_label, split ? `this event's share of a ${money(parseFloat(d.deal_amount) || 0)} deal over ${d.event_count} events` : ''].filter(Boolean).join(' · '))}</small>` : ''}</span></span>
+        <span class="pf-st-num" data-l="Status"><small>${paid >= amt && amt > 0 ? 'Paid' : paid > 0 ? 'Part paid' : 'Awaiting payment'}</small></span>
+        <span class="pf-st-num" data-l="Deal">${money(amt)}</span>
+        <span class="pf-st-num ${paid > 0 ? 'pf-st-paid' : 'pf-st-zero'}" data-l="Paid">${money(paid)}</span>
+        <span class="pf-st-num${owed > 0 ? ' pf-st-owed' : ''}" data-l="Owed">${owed > 0 ? money(owed) : '—'}</span>
+        <span class="pf-st-prog" data-l="Collected"><span class="pf-paidbar"><span style="width:${pct}%"></span></span><b>${pct}%</b></span>
+      </div>`;
+    }).join('') : '<div class="pf-st-dmsg">No deals on this event yet.</div>') +
+      `<div class="pf-st-dmsg"><button type="button" class="pf-st-link" onclick="viewEventDeals(${eventId}, ${esc(JSON.stringify(ev.name || ''))})">Open in Deal Tracker →</button></div>`;
+  } catch { box.innerHTML = '<div class="pf-st-dmsg">Could not load the deals.</div>'; }
+}
+
 // Deals won, Paid, Owed and Collected cells for a row of the Revenue by series table
 function pfMoneyCells(won, paid, big) {
   const owed = Math.max(0, won - paid);
@@ -6397,8 +6392,7 @@ function renderPortfolioEventCard(ev) {
   return `<div class="pec-card pf-row" data-name="${esc(hay)}" data-id="${ev.id}">
     <div class="pf-row-main">
       <div class="pf-row-id">
-        <button type="button" class="pf-row-btn" onclick="togglePortfolioDeals(this,${ev.id})" aria-expanded="false">
-          <span class="pec-arrow">${PF_ICON_CHEV}</span>
+        <div class="pf-row-btn pf-row-static">
           <span class="pf-row-txt">
             <span class="pf-row-name">${esc(ev.name)}</span>
             <span class="pf-row-meta">
@@ -6409,7 +6403,7 @@ function renderPortfolioEventCard(ev) {
               ${looksLike ? `<span class="pf-meta-item pf-meta-dup" title="The 2027 programme panel above can fold this row into it">looks like ${esc(looksLike)}</span>` : ''}
             </span>
           </span>
-        </button>
+        </div>
       </div>
       <div class="pf-row-figs-wrap">
         ${pipeline > 0 ? `<div class="pf-money">
@@ -6425,58 +6419,7 @@ function renderPortfolioEventCard(ev) {
         <button class="sub-action-btn sub-action-btn--danger" onclick="deletePortfolioEvent(${ev.id})">Delete</button>
       </div>
     </div>
-    <div class="pec-deals-list"></div>
   </div>`;
-}
-
-async function togglePortfolioDeals(btn, eventId) {
-  const card = btn.closest('.pec-card');
-  const list = card ? card.querySelector('.pec-deals-list') : null;
-  if (!card || !list) return;
-  const isOpen = card.classList.contains('open');
-  const toggleBtn = card.querySelector('.pf-row-btn');
-
-  if (isOpen) {
-    card.classList.remove('open');
-    if (toggleBtn) toggleBtn.setAttribute('aria-expanded', 'false');
-    return;
-  }
-  card.classList.add('open');
-  if (toggleBtn) toggleBtn.setAttribute('aria-expanded', 'true');
-  if (list.dataset.loaded === String(eventId)) return;
-
-  const ev = portfolioData.find(x => x.id === eventId) || {};
-  const head = `<div class="pf-deals-hd"><span class="pf-eyebrow">Sponsoring this event</span>` +
-    `<button class="sub-action-btn" onclick="viewEventDeals(${eventId},'${esc(ev.name || '').replace(/'/g, "\\'")}')">View in Deals</button></div>`;
-  list.innerHTML = head + '<div class="pf-deals-msg">Loading from the deal tracker…</div>';
-
-  try {
-    const res = await fetch(`/api/portfolio-events/${eventId}/deals`);
-    const deals = res.ok ? await res.json() : [];
-    list.dataset.loaded = String(eventId);
-    if (!deals.length) {
-      list.innerHTML = head + '<div class="pf-deals-msg">No sponsors allocated to this event yet.</div>';
-      return;
-    }
-    const symMap = { GBP: '£', USD: '$', AED: 'AED ', PHP: '₱', EUR: '€', CHF: 'CHF ' };
-    list.innerHTML = head + `<div class="pf-deals">` + deals.map(d => {
-      const sym  = symMap[d.currency] || '£';
-      const paid = parseFloat(d.paid_inc_vat) || 0;
-      const amt  = parseFloat(d.amount) || 0;
-      const isPaid = paid > 0;
-      const isPart = isPaid && paid < amt;
-      const state  = isPaid && !isPart ? 'Paid' : isPart ? `Part paid · ${sym}${fmt(paid)}` : 'Awaiting payment';
-      const dot    = isPaid && !isPart ? 'pf-deal-dot--paid' : isPart ? 'pf-deal-dot--part' : '';
-      const sub = [state, d.package_label, d.signed_by ? `signed by ${d.signed_by}` : ''].filter(Boolean).map(esc).join(' · ');
-      return `<div class="pf-deal">
-        <span class="pf-deal-dot ${dot}"></span>
-        <span class="pf-deal-body"><span class="pf-deal-co">${esc(d.company)}</span><span class="pf-deal-sub">${sub}</span></span>
-        <span class="pf-deal-amt">${sym}${fmt(amt)}</span>
-      </div>`;
-    }).join('') + `</div>`;
-  } catch {
-    list.innerHTML = head + '<div class="pf-deals-msg pf-err">Failed to load deals.</div>';
-  }
 }
 
 function viewEventDeals(eventId, eventName) {
@@ -7081,6 +7024,21 @@ function dealPassesFilter(d) {
   return true;
 }
 
+// With one event chosen, a deal split over several events shows only that event's share:
+// its part of the deal value, and the same part of what was paid and of the VAT.
+// The share is the event's allocation over all the deal's allocations.
+function dealEventShare(d) {
+  if (!_dealEventFilter || !Array.isArray(d.events) || d.events.length < 2) return null;
+  const ev = d.events.find(e => String(e.event_id) === String(_dealEventFilter));
+  if (!ev) return null;
+  const sum = d.events.reduce((a, e) => a + (parseFloat(e.allocated_amount) || 0), 0);
+  const ratio = sum > 0 ? (parseFloat(ev.allocated_amount) || 0) / sum : 1 / d.events.length;
+  const part = v => (v == null || v === '' ? v : Math.round(parseFloat(v) * ratio * 100) / 100);
+  return { ratio, eventName: ev.event_name || 'this event', count: d.events.length,
+    amount: sum > 0 ? parseFloat(ev.allocated_amount) || 0 : part(d.amount),
+    paid_inc_vat: part(d.paid_inc_vat), tax_vat: part(d.tax_vat) };
+}
+
 function renderDealsTable() {
   const filtered = dealsData.filter(dealPassesFilter);
   const tbody = document.getElementById('dealsTableBody');
@@ -7114,12 +7072,14 @@ function renderDealsTable() {
 
   tbody.innerHTML = filtered.map(d => {
     const sym = symMap[d.currency] || '£';
-    const paidAmt   = parseFloat(d.paid_inc_vat) || 0;
-    const dealAmt   = parseFloat(d.amount) || 0;
+    const share     = dealEventShare(d);
+    const paidAmt   = parseFloat(share ? share.paid_inc_vat : d.paid_inc_vat) || 0;
+    const dealAmt   = parseFloat(share ? share.amount : d.amount) || 0;
+    const taxAmt    = parseFloat(share ? share.tax_vat : d.tax_vat) || 0;
     const hasPaid   = d.paid_inc_vat != null && paidAmt > 0;
     // Paid in full means the deal value plus its VAT. Anything else that has
     // been paid (short or over) gets a yellow cell so someone looks at it.
-    const expectedAmt = dealAmt + (parseFloat(d.tax_vat) || 0);
+    const expectedAmt = dealAmt + taxAmt;
     const paidOff     = hasPaid && Math.abs(paidAmt - expectedAmt) >= 0.01;
     const isFlagged = !!d.is_flagged;
     const isSelected = _selectedDealIds.has(d.id);
@@ -7158,9 +7118,14 @@ function renderDealsTable() {
       </td>
       ${ec('deal_month', 'period', d.deal_month || '', dealPeriodDisplayHtml(d), 'deal-td-month')}
       <td class="deal-cell-company${coHl ? ' deal-cell-orange' : ''}" data-id="${d.id}" data-hlkey="${coHlKey}" onclick="dealCompanyClick(event,${d.id},this)" title="Open the deal · Shift+click to highlight"><span class="deal-co-link">${esc(d.company || d.title)}</span>${d.office_seen === false ? `<span class="deal-new" title="Added by ${esc(d.sales_name || 'the sales team')} from the staff portal">New</span>` : ''}</td>
-      ${ec('amount', 'number', d.amount || 0, `<span class="deal-figure">${sym}${fmt(dealAmt)}</span>`, 'deal-num dt-r')}
+      ${share
+        // This event's share: worked out from the whole deal, so not edited here (open the deal to change it)
+        ? `<td class="deal-num dt-r deal-share" title="${esc(share.eventName)}'s share (${Math.round(share.ratio * 100)}%) of a deal split over ${share.count} events · whole deal ${sym}${fmt(parseFloat(d.amount) || 0)}"><span class="deal-figure">${sym}${fmt(dealAmt)}</span><small>of ${sym}${fmt(parseFloat(d.amount) || 0)}</small></td>
+          <td class="deal-num dt-r deal-share" title="${esc(share.eventName)}'s share of ${sym}${fmt(parseFloat(d.paid_inc_vat) || 0)} paid on the whole deal">${paidDisplay}${hasPaid ? `<small>of ${sym}${fmt(parseFloat(d.paid_inc_vat) || 0)}</small>` : ''}</td>
+          <td class="deal-num dt-r deal-share">${taxAmt ? `${sym}${fmt(taxAmt)}` : dash}</td>`
+        : `${ec('amount', 'number', d.amount || 0, `<span class="deal-figure">${sym}${fmt(dealAmt)}</span>`, 'deal-num dt-r')}
       ${ec('paid_inc_vat', 'number', d.paid_inc_vat ?? '', paidDisplay, `deal-num dt-r${paidOff ? ' deal-cell-check' : ''}`, `oncontextmenu="dealCellContextMenu(event,this)"${paidTitle}`)}
-      ${ec('tax_vat', 'number', d.tax_vat ?? '', d.tax_vat ? `${sym}${fmt(parseFloat(d.tax_vat))}` : dash, 'deal-num dt-r')}
+      ${ec('tax_vat', 'number', d.tax_vat ?? '', d.tax_vat ? `${sym}${fmt(parseFloat(d.tax_vat))}` : dash, 'deal-num dt-r')}`}
       ${ec('invoice_date', 'date', d.invoice_date || '', dateCell(d.invoice_date), 'deal-td-date')}
       ${ec('paid_date', 'date', d.paid_date || '', dateCell(d.paid_date), 'deal-td-date')}
       ${ec('bank', 'select-bank', d.bank || '', esc(d.bank || '') || dash, 'deal-td-bank')}
@@ -7177,7 +7142,8 @@ function renderDealsTable() {
   }).join('');
 
   window._dealCurrentFiltered = filtered;
-  renderDealTotals(filtered, tfoot);
+  // Totals for one event count only its share of split deals
+  renderDealTotals(filtered.map(d => { const sh = dealEventShare(d); return sh ? { ...d, amount: sh.amount, paid_inc_vat: sh.paid_inc_vat, tax_vat: sh.tax_vat } : d; }), tfoot);
   renderDealsByInitials(filtered);
   updateDealSelectionUI();
 }
@@ -7709,120 +7675,6 @@ async function initEmployeePortal(user) {
 
   // Show dashboard
   window.navigate('dashboard');
-}
-
-// ─── ACCOUNTS PORTAL ─────────────────────────────────────────────────────────
-async function initAccountsPortal(user) {
-  window.currentUser = user;
-  initSidebarCollapse();
-
-  document.getElementById('logoutBtn')?.addEventListener('click', async () => {
-    await fetch('/api/logout', { method: 'POST' });
-    window.location.href = '/login.html';
-  });
-
-  const initials = user.username.slice(0,2).toUpperCase();
-  document.getElementById('userLabel').innerHTML =
-    '<div class="sidebar-user-pill"><div class="sidebar-user-avatar">' + esc(initials) + '</div>' +
-    '<span class="sidebar-user-name">' + esc(user.username) + '</span>' +
-    '<span class="sidebar-user-role" style="font:500 9px/1 var(--font-mono);color:var(--accent);text-transform:uppercase;letter-spacing:.5px">Accounts</span></div>';
-
-  document.title = 'LPGP – Accounts';
-
-  const ACC_PAGES = ['dashboard', 'calendar', 'deals'];
-
-  // Hide pages not allowed
-  document.querySelectorAll('.nav-item').forEach(el => {
-    if (!ACC_PAGES.includes(el.dataset.page)) el.style.display = 'none';
-  });
-  document.querySelectorAll('.nav-section-label').forEach(el => el.style.display = 'none');
-
-  window.navigate = function(page) {
-    if (!ACC_PAGES.includes(page)) return;
-    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-    document.querySelectorAll('.nav-item, .bottom-nav-item').forEach(n => n.classList.remove('active'));
-    const pageEl = document.getElementById('page-' + page);
-    if (pageEl) pageEl.classList.add('active');
-    document.querySelectorAll('[data-page="' + page + '"]').forEach(n => n.classList.add('active'));
-    const titles = { dashboard: 'Accounts Dashboard', calendar: 'Calendar', deals: 'Deal Tracker' };
-    document.getElementById('pageTitle').textContent = titles[page] || page;
-    if (page === 'dashboard') loadAccountsDashboard(user);
-    if (page === 'calendar')  loadCalendar();
-    if (page === 'deals')     loadDealTracker();
-  };
-
-  document.querySelectorAll('.nav-item').forEach(el => {
-    el.addEventListener('click', () => { if (ACC_PAGES.includes(el.dataset.page)) window.navigate(el.dataset.page); });
-  });
-
-  window.navigate('dashboard');
-}
-
-async function loadAccountsDashboard(user) {
-  const page = document.getElementById('page-dashboard');
-  if (!page) return;
-  page.innerHTML = '<div style="padding:32px 24px"><div style="font:500 11px/1 var(--font-mono);color:var(--muted)">Loading…</div></div>';
-
-  let deals = [];
-  try {
-    const r = await fetch('/api/deal-tracker');
-    if (r.ok) deals = await r.json();
-  } catch(e) {}
-
-  const active = deals.filter(d => d.status !== 'cancelled');
-  const totalPaid  = active.reduce((s,d) => s + (parseFloat(d.paid_inc_vat)||0), 0);
-  const totalDeal  = active.reduce((s,d) => s + (parseFloat(d.deal_amount)||0), 0);
-  const outstanding = totalDeal - totalPaid;
-  const fmtAmt = v => '£' + v.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2});
-
-  let lastInv = '', nextInv = '';
-  let maxN = -1;
-  active.forEach(d => {
-    if (!d.invoice_number) return;
-    const m = String(d.invoice_number).match(/(\d+)\s*$/);
-    if (m) { const n = parseInt(m[1]); if (n > maxN) { maxN = n; lastInv = d.invoice_number; } }
-  });
-  if (maxN >= 0) nextInv = lastInv.replace(/\d+$/, String(maxN + 1));
-
-  const card = (label, val, color) =>
-    '<div style="flex:1;min-width:140px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px">' +
-      '<div style="font:600 9px/1 var(--font-mono);color:var(--muted);letter-spacing:.5px;text-transform:uppercase;margin-bottom:8px">' + label + '</div>' +
-      '<div style="font:700 22px/1 var(--font-sans);color:' + (color||'var(--text)') + '">' + val + '</div>' +
-    '</div>';
-
-  const greeting = 'Good ' + (new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening') + ', ' + user.username;
-
-  page.innerHTML =
-    '<div style="padding:28px 24px">' +
-      '<div style="margin-bottom:24px">' +
-        '<div style="font:700 20px/1.2 var(--font-sans);color:var(--text);margin-bottom:4px">' + esc(greeting) + '</div>' +
-        '<div style="font:500 11px/1 var(--font-mono);color:var(--muted)">Accounts overview · ' + active.length + ' active deal' + (active.length!==1?'s':'') + '</div>' +
-      '</div>' +
-
-      '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">' +
-        card('Total Paid', fmtAmt(totalPaid), 'var(--positive)') +
-        card('Total Deal Value', fmtAmt(totalDeal)) +
-        card('Outstanding', fmtAmt(outstanding), outstanding > 0 ? 'var(--negative)' : 'var(--positive)') +
-        (lastInv ?
-          '<div style="flex:1;min-width:180px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px">' +
-            '<div style="font:600 9px/1 var(--font-mono);color:var(--muted);letter-spacing:.5px;text-transform:uppercase;margin-bottom:8px">Last Invoice</div>' +
-            '<div style="font:600 12px/1.3 var(--font-mono);color:var(--text);word-break:break-all">' + esc(lastInv) + '</div>' +
-            '<div style="font:500 11px/1 var(--font-mono);color:var(--primary);margin-top:10px">Next → ' + esc(nextInv) + '</div>' +
-          '</div>'
-        : '') +
-      '</div>' +
-
-      '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
-        '<button class="btn btn-primary" onclick="window.navigate(\'deals\')" style="gap:8px">' +
-          '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>' +
-          'Open Deal Tracker' +
-        '</button>' +
-        '<button class="btn btn-ghost" onclick="window.navigate(\'calendar\')" style="gap:8px">' +
-          '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>' +
-          'View Calendar' +
-        '</button>' +
-      '</div>' +
-    '</div>';
 }
 
 async function loadEmpNotifications() {
@@ -10034,124 +9886,6 @@ function empRemindersHtmlStandalone() {
     '</div>';
 }
 
-// ─── ADMIN STAFF PORTFOLIO ────────────────────────────────────────────────────
-let _adminPortfolioData = null;
-let _adminPortfolioEmpFilter = '';
-
-async function loadAdminPortfolio() {
-  const page = document.getElementById('page-portfolio');
-  if (!page) return;
-  page.innerHTML = '<div class="skeleton" style="height:400px;border-radius:16px;margin:24px"></div>';
-  try {
-    const res = await fetch('/api/admin/staff-portfolio');
-    _adminPortfolioData = res.ok ? await res.json() : { employees: [], events: [] };
-    renderAdminPortfolioPage();
-  } catch(e) {
-    page.innerHTML = '<div style="padding:24px"><div class="alert alert-error">Failed to load staff portfolio: ' + e.message + '</div></div>';
-  }
-}
-
-function renderAdminPortfolioPage() {
-  const page = document.getElementById('page-portfolio');
-  if (!page || !_adminPortfolioData) return;
-  const { employees, events } = _adminPortfolioData;
-
-  // Group events by employee
-  const byEmp = {};
-  employees.forEach(e => { byEmp[e.employee_id] = { emp: e, events: [] }; });
-  events.forEach(ev => {
-    if (byEmp[ev.employee_id]) byEmp[ev.employee_id].events.push(ev);
-  });
-
-  const filtered = _adminPortfolioEmpFilter
-    ? Object.values(byEmp).filter(g => g.emp.employee_id == _adminPortfolioEmpFilter)
-    : Object.values(byEmp);
-
-  const empOptions = employees.map(e =>
-    `<option value="${e.employee_id}" ${e.employee_id==_adminPortfolioEmpFilter?'selected':''}>${esc(e.name)}</option>`
-  ).join('');
-
-  const empCards = filtered.map(({ emp, events: evts }) => {
-    const sorted = [...evts].sort((a,b) => {
-      if (!a.event_date && !b.event_date) return 0;
-      if (!a.event_date) return 1;
-      if (!b.event_date) return -1;
-      return new Date(b.event_date) - new Date(a.event_date);
-    });
-
-    const evtRows = sorted.map(ev => {
-      const dateStr = ev.event_date ? new Date(ev.event_date).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : '—';
-      const badgeColor = ev.added_by === 'admin' ? '#f59e0b' : 'var(--positive)';
-      const badgeLabel = ev.added_by === 'admin' ? 'Allocated' : 'Self-added';
-      return `<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
-        <div style="flex:1;min-width:0">
-          <div style="font:600 13px/1 var(--font-sans);color:var(--text)">${esc(ev.event_name)}</div>
-          <div style="font:500 11px/1 var(--font-mono);color:var(--muted);margin-top:3px">${dateStr}</div>
-          ${ev.notes ? `<div style="font:500 11px/1.4 var(--font-mono);color:var(--text-2);margin-top:4px">${esc(ev.notes)}</div>` : ''}
-        </div>
-        <span style="font:700 9px/1 var(--font-mono);color:${badgeColor};padding:3px 8px;border:1px solid ${badgeColor};border-radius:20px;flex-shrink:0">${badgeLabel}</span>
-        <button class="btn btn-danger btn-sm" onclick="adminDeletePortfolioEvent(${ev.id})" style="flex-shrink:0">×</button>
-      </div>`;
-    }).join('');
-
-    return `<div class="card" style="margin-bottom:16px">
-      <div style="padding:16px 20px 12px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
-        <div>
-          <div style="font:700 15px/1 var(--font-sans);color:var(--text)">${esc(emp.name)}</div>
-          <div style="font:500 11px/1 var(--font-mono);color:var(--muted);margin-top:4px">${esc(emp.role||'')}${emp.department?' · '+esc(emp.department):''} · ${sorted.length} event${sorted.length!==1?'s':''}</div>
-        </div>
-        <button class="btn btn-primary btn-sm" onclick="openAllocateEvent(${emp.employee_id}, '${esc(emp.name)}')">+ Allocate Event</button>
-      </div>
-      <div style="padding:4px 20px 12px">
-        ${evtRows || '<div style="padding:16px 0;color:var(--muted);font:500 12px/1 var(--font-mono)">No events logged yet</div>'}
-      </div>
-    </div>`;
-  }).join('');
-
-  page.innerHTML = `
-    <div style="padding:24px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
-        <div>
-          <h2 style="font:700 20px/1 var(--font-sans);color:var(--text);margin:0">Staff Portfolio</h2>
-          <div style="font:500 11px/1 var(--font-mono);color:var(--muted);margin-top:6px">${events.length} event${events.length!==1?'s':''} across ${employees.length} staff</div>
-        </div>
-        <div style="display:flex;gap:10px;align-items:center">
-          <select onchange="adminPortfolioFilter(this.value)" style="background:var(--surface-2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 12px;font:500 12px/1 var(--font-mono)">
-            <option value="">All Staff</option>
-            ${empOptions}
-          </select>
-        </div>
-      </div>
-      ${empCards || '<div style="text-align:center;padding:40px;color:var(--muted);font:500 13px/1 var(--font-mono)">No staff found.</div>'}
-    </div>
-    <!-- Allocate Event Modal -->
-    <div id="allocateModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1000;align-items:center;justify-content:center">
-      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:16px;padding:28px;width:100%;max-width:440px;margin:16px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
-          <h3 id="allocateModalTitle" style="font:700 16px/1 var(--font-sans);color:var(--text);margin:0">Allocate Event</h3>
-          <button onclick="closeAllocateModal()" style="background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:0">✕</button>
-        </div>
-        <input type="hidden" id="allocateEmpId">
-        <div class="form-group" style="margin-bottom:14px">
-          <label class="form-label">Event Name *</label>
-          <input id="allocEventName" class="form-control" type="text" placeholder="e.g. CFO NYC 2026">
-        </div>
-        <div class="form-group" style="margin-bottom:14px">
-          <label class="form-label">Event Date</label>
-          <input id="allocEventDate" class="form-control" type="date">
-        </div>
-        <div class="form-group" style="margin-bottom:20px">
-          <label class="form-label">Notes (optional)</label>
-          <textarea id="allocNotes" class="form-control" rows="3" placeholder="Any additional details..."></textarea>
-        </div>
-        <div style="display:flex;gap:10px;justify-content:flex-end">
-          <button class="btn btn-ghost" onclick="closeAllocateModal()">Cancel</button>
-          <button class="btn btn-primary" onclick="saveAllocateEvent()">Allocate</button>
-        </div>
-      </div>
-    </div>`;
-}
-
 function renderDealsByInitials(filtered) {
   // Build summary by initials — shown in totals if any
 }
@@ -11032,50 +10766,6 @@ async function runDealImport() {
   closeModal('dealImportModal');
   showToast(`Imported ${ok} deal${ok !== 1 ? 's' : ''}${fail ? ` (${fail} failed)` : ''}`, ok > 0 ? 'success' : 'error');
   if (ok > 0) loadDeals();
-}
-
-function adminPortfolioFilter(val) {
-  _adminPortfolioEmpFilter = val;
-  renderAdminPortfolioPage();
-}
-
-function openAllocateEvent(empId, empName) {
-  document.getElementById('allocateEmpId').value = empId;
-  document.getElementById('allocateModalTitle').textContent = 'Allocate Event — ' + empName;
-  document.getElementById('allocEventName').value = '';
-  document.getElementById('allocEventDate').value = '';
-  document.getElementById('allocNotes').value = '';
-  document.getElementById('allocateModal').style.display = 'flex';
-}
-
-function closeAllocateModal() {
-  document.getElementById('allocateModal').style.display = 'none';
-}
-
-async function saveAllocateEvent() {
-  const empId = document.getElementById('allocateEmpId').value;
-  const name  = document.getElementById('allocEventName').value.trim();
-  const date  = document.getElementById('allocEventDate').value;
-  const notes = document.getElementById('allocNotes').value.trim();
-  if (!name) { alert('Please enter an event name'); return; }
-  const res = await fetch('/api/admin/staff-portfolio', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ employee_id: parseInt(empId), event_name: name, event_date: date || null, notes })
-  });
-  if (res.ok) {
-    closeAllocateModal();
-    await loadAdminPortfolio();
-  } else {
-    const err = await res.json();
-    alert('Error: ' + (err.error || 'Failed to allocate'));
-  }
-}
-
-async function adminDeletePortfolioEvent(id) {
-  if (!confirm('Remove this event from the portfolio?')) return;
-  const res = await fetch('/api/admin/staff-portfolio/' + id, { method: 'DELETE' });
-  if (res.ok) await loadAdminPortfolio();
 }
 
 let _portfolioEvents = [];

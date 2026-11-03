@@ -8081,7 +8081,7 @@ button.pf-st-toggle:hover { background: var(--surface-2); }
 button.pf-st-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .pf-st-chev { display: inline-flex; width: 14px; height: 14px; flex-shrink: 0; color: var(--muted); transform: rotate(-90deg); transition: transform .2s var(--ease); }
 .pf-st-chev svg { width: 14px; height: 14px; }
-.pf-st-group.open .pf-st-chev { transform: none; }
+.pf-st-group.open > .pf-st-toggle .pf-st-chev { transform: none; }
 .pf-st-sub { display: none; margin: 0 0 10px 24px; border-left: 2px solid var(--border-bright, var(--border)); }
 .pf-st-group.open .pf-st-sub { display: block; }
 .pf-st-ev { padding: 9px 4px 9px 14px; }
@@ -8095,3 +8095,36 @@ button.pf-st-toggle:focus-visible { outline: 2px solid var(--accent); outline-of
 .pf-st-ev { padding: 9px 4px; }
 .pf-st-ev .pf-st-name { padding-left: 24px; box-shadow: inset 2px 0 0 var(--border-bright, var(--border)); margin-left: 6px; }
 @media (max-width: 900px) { .pf-st-sub { margin-left: 0; } }
+
+/* Events in the series drop-down open to list their deals */
+.pf-st-chev-gap { width: 14px; flex-shrink: 0; }
+.pf-st-evgroup { border-bottom: 1px solid var(--line, var(--border)); }
+.pf-st-sub .pf-st-evgroup:last-child { border-bottom: none; }
+.pf-st-evgroup > .pf-st-ev { border-bottom: none; }
+.pf-st-evgroup.open > .pf-st-ev .pf-st-chev { transform: none; }
+.pf-st-deals { display: none; padding-bottom: 6px; }
+.pf-st-evgroup.open .pf-st-deals { display: block; }
+.pf-st-deal { padding: 7px 4px; border-bottom: none; }
+.pf-st-deal .pf-st-name { margin-left: 30px; padding-left: 16px; box-shadow: inset 2px 0 0 var(--accent-soft, var(--border)); }
+.pf-st-deal .pf-st-name b { font: 500 12.5px/1.3 var(--font-sans); color: var(--text-2, var(--text)); }
+.pf-st-deal .pf-st-num { font-size: 12.5px; font-weight: 500; }
+.pf-st-deal .pf-paidbar { height: 5px; }
+.pf-st-deal .pf-paidbar > span { transition: none; }
+.pf-st-dmsg { padding: 6px 4px 6px 52px; font: 400 12px/1.4 var(--font-sans); color: var(--dim); }
+.pf-st-link { border: none; background: none; padding: 0; cursor: pointer; font: 500 12px/1.4 var(--font-sans); color: var(--accent); }
+.pf-st-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.pf-row-static { cursor: default; }
+.pf-row-static:hover .pf-row-name { color: var(--text); }
+@media (max-width: 900px) { .pf-st-deal .pf-st-name { margin-left: 12px; } .pf-st-dmsg { padding-left: 16px; } }
+
+/* Deal Tracker filtered to one event: a split deal shows that event's share */
+.deal-share { cursor: help; }
+.deal-share small { display: block; margin-top: 2px; font: 400 10.5px/1.2 var(--font-mono); color: var(--muted); white-space: nowrap; }
+
+/* Accounts login: the Portfolio is for reading; events and teams are edited by managers and admins */
+body[data-role="accounts"] #page-portfolio [onclick*="openPortTeamModal"],
+body[data-role="accounts"] #page-portfolio [onclick*="openPortfolioModal"],
+body[data-role="accounts"] #page-portfolio [onclick*="openPortAssign"],
+body[data-role="accounts"] #page-portfolio [onclick*="deletePortfolioEvent"],
+body[data-role="accounts"] #page-portfolio [onclick*="Programme"],
+body[data-role="accounts"] #page-portfolio .pf-row-actions { display: none !important; }
