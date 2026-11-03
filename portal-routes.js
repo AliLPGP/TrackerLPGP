@@ -4,8 +4,10 @@ const crypto = require('crypto');
 const express = require('express');
 const { PDFDocument } = require('pdf-lib');
 const { builtInHolidays, regionFor, splitWorkingDays, addDays } = require('./holidays');
-const { readFormFields, fillForm, imageToPdf, appendSignaturePage } = require('./pdf-sign');
+const { appendSignaturePage } = require('./pdf-sign');
 const { renderContractPdf } = require('./contract-pdf');
+const { STARTER_FORM, checkAnswers, starterDefaults } = require('./starter-form');
+const { renderStarterPdf } = require('./starter-pdf');
 const idCrypto = require('./id-crypto');
 
 /**
@@ -32,7 +34,6 @@ try { builtinAgreementBytes = fs.readFileSync(path.join(__dirname, 'assets', 'te
 catch (e) { console.warn('Built-in team member agreement missing:', e.message); }
 
 const MAX_FILE_BYTES = 3 * 1024 * 1024; // Vercel caps a request body at 4.5 MB and base64 adds a third
-const MAX_COMPLETED_BYTES = 2.5 * 1024 * 1024; // a completed form travels with a signature in one request
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const REGIONS = ['ALL', 'GB', 'AE', 'PH'];
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -80,7 +81,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     const { rows } = await q(
       `SELECT id, name, email, phone, currency, employment_type, start_date::TEXT AS start_date,
               termination_date::TEXT AS termination_date, job_title, annual_salary, working_pattern,
-              work_arrangement, country, work_schedule,
+              work_arrangement, country, work_schedule, starter_form_required,
               probation_end_date::TEXT AS probation_end_date, probation_review_done_at::TEXT AS probation_review_done_at
        FROM employees WHERE id = ?`, [id]);
     return rows[0] || null;
@@ -324,7 +325,8 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
   const onboardingRow = async id => (await q('SELECT *, date_of_birth::TEXT AS dob_text FROM employee_onboarding WHERE employee_id = ?', [id])).rows[0] || null;
 
   // The company files staff are asked to read and sign (see onboarding_templates)
-  const TEMPLATE_KEYS = ['nda', 'starter'];
+  // The starter form is built in (starter-form.js), so only the agreement is a file
+  const TEMPLATE_KEYS = ['nda'];
   async function templateMeta() {
     const { rows } = await q('SELECT key, file_name, file_size, uploaded_by, updated_at FROM onboarding_templates');
     const out = { nda: null, starter: null };
@@ -344,7 +346,13 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     : '');
   const money = n => Number(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const COUNTRY_BY_CURRENCY = { GBP: 'United Kingdom', PHP: 'Philippines', AED: 'United Arab Emirates' };
-  const DEFAULT_SCHEDULE = 'Monday to Friday\n9:00 AM – 5:00 PM (UK Time)\n40 Hours per Week';
+  // Working hours, chosen on the employee form. PHP staff in the Philippines work UK office
+  // hours (9 to 5); everyone else 10 to 6 unless set to 12 to 8.
+  const WORK_HOURS = { '10-6': '10:00 AM – 6:00 PM (UK Time)', '12-8': '12:00 PM – 8:00 PM (UK Time)', '9-5': '9:00 AM – 5:00 PM (UK Time)' };
+  const scheduleFor = (emp, pattern) => {
+    const key = WORK_HOURS[emp.work_schedule] ? emp.work_schedule : (emp.currency === 'PHP' ? '9-5' : '10-6');
+    return ['Monday to Friday', WORK_HOURS[key], ...(pattern === 'part-time' ? [] : ['40 Hours per Week'])].join('\n');
+  };
   // The position as the contract states it: co-production staff are contracted as producers
   const contractPosition = title => (/\bco[\s-]*produc/i.test(String(title || '')) ? 'Producer' : String(title || '').trim());
 
@@ -364,7 +372,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       working_pattern: pattern,
       work_arrangement: ['remote', 'office', 'hybrid'].includes(emp.work_arrangement) ? emp.work_arrangement : 'remote',
       country: String(emp.country || '').trim() || COUNTRY_BY_CURRENCY[currency] || 'United Kingdom',
-      schedule: String(emp.work_schedule || '').trim() || DEFAULT_SCHEDULE,
+      schedule: scheduleFor(emp, pattern),
       employment_type: emp.employment_type === 'self_employed' ? 'self_employed' : 'payroll',
       start_date: start || '',
       annual_salary: Number(emp.annual_salary) || 0,
@@ -439,7 +447,8 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     res.send(Buffer.from(bytes));
   };
 
-  // steps.starter is null when it does not apply (self-employed staff, or no starter sheet uploaded)
+  // steps.starter is null when it does not apply: self-employed staff, and payroll staff
+  // who were on the system before the form (they handed in a starter sheet already)
   // The newest contract sent to this person to sign (without the file itself)
   async function latestContract(empId) {
     const { rows } = await q(
@@ -450,7 +459,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
 
   // steps.contract is null when no contract has been sent to them
   function onboardingState(row, emp, tpl = { nda: null, starter: null }, contract = null) {
-    const needsStarter = emp.employment_type === 'payroll' && !!tpl.starter;
+    const needsStarter = emp.employment_type === 'payroll' && (!!emp.starter_form_required || !!(row && row.starter_done_at));
     const steps = {
       contract: contract ? !!contract.signed_at : null,
       details: !!(row && row.dob_text && String(row.address || '').trim() && String(emp.phone || '').trim()),
@@ -478,9 +487,22 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     return true;
   }
 
-  // A PDF stored on the employee's file; returns its id
-  async function storeEmployeeDoc(empId, docType, fileName, bytes, uploadedBy) {
+  // Saved starter answers (encrypted), to fill the form again if they reopen it
+  function starterAnswers(row) {
+    if (!row || !row.starter_answers) return {};
+    try { return JSON.parse(idCrypto.open(row.starter_answers).toString('utf8')); } catch { return {}; }
+  }
+
+  // A PDF stored on the employee's file; returns its id. `sealed` encrypts it (starter forms).
+  async function storeEmployeeDoc(empId, docType, fileName, bytes, uploadedBy, sealed) {
     const buf = Buffer.from(bytes);
+    if (sealed) {
+      const { rows } = await q(
+        `INSERT INTO employee_documents (employee_id, doc_type, file_name, file_data, file_size, uploaded_by)
+         VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+        [empId, docType, safeName(fileName, 'document.pdf'), idCrypto.seal(buf.toString('base64')), buf.length, uploadedBy]);
+      return rows[0].id;
+    }
     const { rows } = await q(
       `INSERT INTO employee_documents (employee_id, doc_type, file_name, file_data, file_size, uploaded_by)
        VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
@@ -536,7 +558,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
         id_doc: row && row.id_doc_name ? { type: row.id_doc_type, name: row.id_doc_name } : null,
         documents: {
           nda: tpl.nda ? { mode: 'pdf', file_name: tpl.nda.file_name } : { mode: 'text' },
-          starter: st.needs_starter ? { file_name: tpl.starter.file_name } : null,
+          starter: st.needs_starter ? { form: STARTER_FORM, answers: { ...starterDefaults(emp, row), ...starterAnswers(row) } } : null,
           contract: contract ? { id: contract.id, file_name: contract.file_name, sent_at: contract.created_at, signed_at: contract.signed_at, generated: contract.source === 'template' } : null,
         },
         signed: { nda: !!(row && row.nda_doc_id), starter: !!(row && row.starter_doc_id), contract: !!(contract && contract.signed_doc_id) },
@@ -639,17 +661,8 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     } catch (e) { fail(res, e); }
   });
 
-  // The starter sheet: where its fillable fields are, so the browser can lay inputs over each page
-  router.get('/employee/onboarding/starter/fields', requireAuth, staffOnly, async (req, res) => {
-    try {
-      const bytes = await templateBytes('starter');
-      if (!bytes) return res.status(404).json({ error: 'No starter sheet has been set up' });
-      res.json(await readFormFields(bytes));
-    } catch (e) { fail(res, e); }
-  });
-
-  // Complete the starter sheet: either answers for its fillable fields, or their own completed copy
-  // (a PDF or a photo). Either way it is signed and filed on their record.
+  // The new starter form: answers checked against starter-form.js, made into a PDF for the
+  // accountant, signed, and filed (encrypted) on their record
   router.post('/employee/onboarding/starter', requireAuth, staffOnly, async (req, res) => {
     try {
       const b = req.body || {};
@@ -658,29 +671,18 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       const empId = req.user.employee_id;
       if (!await agreementSigned(empId)) return res.status(409).json({ error: 'Please sign the team member agreement first' });
       const emp = await getEmployee(empId);
-      const tpl = await templateMeta();
-      if (emp.employment_type !== 'payroll' || !tpl.starter) return res.status(400).json({ error: 'There is no starter sheet for you to complete' });
-
-      let base;
-      if (b.file_data) {
-        const kind = sniff(b.file_data);
-        if (!kind) return res.status(400).json({ error: 'Upload a PDF, JPG or PNG' });
-        if (byteLength(b.file_data) > MAX_COMPLETED_BYTES) return res.status(413).json({ error: 'The file must be under 2.5 MB' });
-        const raw = Buffer.from(b.file_data, 'base64');
-        base = kind.ext === 'pdf' ? raw : await imageToPdf(raw, kind.ext);
-      } else {
-        const template = await templateBytes('starter');
-        const info = await readFormFields(template);
-        if (!info.fillable) return res.status(400).json({ error: 'This starter sheet cannot be filled in on screen. Upload your completed copy instead.' });
-        base = await fillForm(template, b.values && typeof b.values === 'object' ? b.values : {});
-      }
+      const row = await onboardingRow(empId);
+      if (!onboardingState(row, emp).needs_starter) return res.status(400).json({ error: 'There is no starter form for you to complete' });
+      const v = checkAnswers(b.answers);
+      if (v.errors) return res.status(400).json({ error: 'Some answers need checking', fields: v.errors });
       const signedAt = new Date();
-      const signed = await appendSignaturePage(base, { title: 'Starter sheet', signerName: sig.name, signaturePng: sig.signature, signedAt });
-      const docId = await storeEmployeeDoc(empId, 'starter_form', `Starter sheet - ${emp.name}.pdf`, signed, `${emp.name} (portal)`);
+      const pdf = await renderStarterPdf(v.answers, { employeeName: emp.name, signedName: sig.name, signedAt, signaturePng: sig.signature });
+      const docId = await storeEmployeeDoc(empId, 'starter_form', `New starter form - ${emp.name}.pdf`, pdf, `${emp.name} (portal)`, true);
       await q(
-        `INSERT INTO employee_onboarding (employee_id, starter_done_at, starter_doc_id) VALUES (?, ?, ?)
-         ON CONFLICT (employee_id) DO UPDATE SET starter_done_at = EXCLUDED.starter_done_at, starter_doc_id = EXCLUDED.starter_doc_id, updated_at = NOW()`,
-        [empId, signedAt.toISOString(), docId]);
+        `INSERT INTO employee_onboarding (employee_id, starter_done_at, starter_doc_id, starter_answers) VALUES (?, ?, ?, ?)
+         ON CONFLICT (employee_id) DO UPDATE SET starter_done_at = EXCLUDED.starter_done_at, starter_doc_id = EXCLUDED.starter_doc_id,
+           starter_answers = EXCLUDED.starter_answers, updated_at = NOW()`,
+        [empId, signedAt.toISOString(), docId, idCrypto.seal(Buffer.from(JSON.stringify(v.answers)).toString('base64'))]);
       const completed = await finishIfDone(empId);
       res.json({ ok: true, completed });
     } catch (e) { fail(res, e); }
@@ -697,6 +699,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       if (!docId) return res.status(404).json({ error: 'Not signed yet' });
       const { rows } = await q('SELECT file_name, file_data FROM employee_documents WHERE id = ? AND employee_id = ?', [docId, req.user.employee_id]);
       if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+      rows[0].file_data = idCrypto.open(rows[0].file_data).toString('base64');
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `${req.query.download ? 'attachment' : 'inline'}; filename="${safeName(rows[0].file_name, 'signed.pdf')}"`);
       res.setHeader('Cache-Control', 'private, no-store');
@@ -870,14 +873,13 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       let pages;
       try { pages = (await PDFDocument.load(bytes)).getPageCount(); }
       catch { return res.status(400).json({ error: 'That PDF could not be read. If it is password protected, remove the password and try again.' }); }
-      const info = key === 'starter' ? await readFormFields(bytes).catch(() => ({ fillable: false, fields: [] })) : null;
       await q(
         `INSERT INTO onboarding_templates (key, file_name, file_data, file_size, uploaded_by, updated_at)
          VALUES (?, ?, ?, ?, ?, NOW())
          ON CONFLICT (key) DO UPDATE SET file_name = EXCLUDED.file_name, file_data = EXCLUDED.file_data,
            file_size = EXCLUDED.file_size, uploaded_by = EXCLUDED.uploaded_by, updated_at = NOW()`,
         [key, safeName(file_name, `${key}.pdf`), file_data, size, req.admin.username || null]);
-      res.json({ ok: true, pages, fillable: info ? !!info.fillable : undefined, fields: info ? info.fields.length : undefined });
+      res.json({ ok: true, pages });
     } catch (e) { fail(res, e); }
   });
 

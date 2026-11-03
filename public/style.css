@@ -7641,3 +7641,27 @@ textarea.form-control { resize: vertical; }
 .sg-img { width: 180px; height: 64px; border: 1px dashed var(--border); border-radius: 8px; background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .sg-img img { max-width: 100%; max-height: 100%; }
 .sg-img span { color: #888; font-size: 0.75rem; }
+
+/* New starter form (onboarding) */
+.sf-sec { margin: 0 0 18px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; }
+.sf-sec-hd { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px; }
+.sf-sec-hd > span { width: 24px; height: 24px; border-radius: 50%; background: var(--primary); color: #fff; display: inline-flex; align-items: center; justify-content: center; font: 600 12px/1 var(--font-sans); flex-shrink: 0; }
+.sf-sec-hd b { display: block; color: var(--text); font-size: 0.95rem; }
+.sf-sec-hd small { color: var(--muted); font-size: 0.78rem; }
+.sf-field { margin-bottom: 16px; }
+.sf-field:last-child { margin-bottom: 0; }
+.sf-field > label { display: block; margin-bottom: 8px; }
+.sf-field[hidden] { display: none; }
+.sf-field.has-error .form-control, .sf-field.has-error .sf-seg label span, .sf-field.has-error .sf-choice span { border-color: var(--negative); }
+.sf-opt { font-weight: 400; color: var(--muted); font-size: 0.75rem; }
+.sf-seg { display: flex; flex-wrap: wrap; gap: 8px; }
+.sf-seg label { cursor: pointer; }
+.sf-seg input, .sf-choice input { position: absolute; opacity: 0; pointer-events: none; }
+.sf-seg span { display: inline-block; padding: 8px 16px; border: 1px solid var(--border); border-radius: 999px; font-size: 0.85rem; color: var(--text); background: var(--surface); transition: background .15s, border-color .15s; }
+.sf-seg input:checked + span { background: var(--primary); border-color: var(--primary); color: #fff; }
+.sf-seg input:focus-visible + span, .sf-choice input:focus-visible + span { outline: 2px solid var(--primary); outline-offset: 2px; }
+.sf-choices { display: flex; flex-direction: column; gap: 8px; }
+.sf-choice { cursor: pointer; display: block; }
+.sf-choice span { display: block; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; font-size: 0.83rem; line-height: 1.5; color: var(--muted); background: var(--surface); }
+.sf-choice span b { display: block; color: var(--text); margin-bottom: 2px; }
+.sf-choice input:checked + span { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary) inset; color: var(--text); }

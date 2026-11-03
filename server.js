@@ -763,7 +763,7 @@ app.get('/api/employees/all', requireAuth, async (req, res) => {
 const contractTerms = ({ work_arrangement, country, work_schedule }) => [
   ['remote', 'office', 'hybrid'].includes(work_arrangement) ? work_arrangement : 'remote',
   String(country || '').trim().slice(0, 80),
-  String(work_schedule || '').replace(/\r/g, '').trim().slice(0, 300),
+  ['10-6', '12-8', '9-5'].includes(work_schedule) ? work_schedule : '',
 ];
 
 app.post('/api/employees', requireAuth, async (req, res) => {
@@ -781,12 +781,13 @@ app.post('/api/employees', requireAuth, async (req, res) => {
     `INSERT INTO employees
        (name, daily_rate, employment_type, annual_salary, currency, start_date, pension_rate,
         job_title, department, phone, email, contract_end_date, probation_end_date, working_pattern, portal_pin,
-        work_arrangement, country, work_schedule)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        work_arrangement, country, work_schedule, starter_form_required)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     [name, daily_rate, employment_type || 'payroll', annualSal, cur, start_date ? String(start_date).slice(0, 10) : null, pensionRate,
      job_title || '', department || '', phone || '', email || '', contract_end_date ? String(contract_end_date).slice(0, 10) : null,
      probation_end_date ? String(probation_end_date).slice(0, 10) : null, working_pattern === 'part-time' ? 'part-time' : 'full-time', pinVal,
-     ...contractTerms({ work_arrangement, country, work_schedule })]
+     ...contractTerms({ work_arrangement, country, work_schedule }),
+     (employment_type || 'payroll') === 'payroll']
   );
   if (pinVal) await requireOnboardingForNewLogin(rows[0].id, false);
   res.json({ id: rows[0].id, name, daily_rate });
@@ -1817,7 +1818,9 @@ app.get('/api/employee-documents/:docId', requireAuth, requireAdmin, async (req,
     if (!r) return res.status(404).json({ error: 'Document not found' });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `${req.query.download ? 'attachment' : 'inline'}; filename="${r.file_name}"`);
-    res.send(Buffer.from(r.file_data, 'base64'));
+    res.setHeader('Cache-Control', 'private, no-store');
+    // Starter forms are stored encrypted (NI number, bank details); others open as they are
+    res.send(require('./id-crypto').open(r.file_data));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

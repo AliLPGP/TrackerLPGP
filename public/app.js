@@ -377,7 +377,7 @@ function openEmpModal(emp = null) {
   document.getElementById('empHours').value = emp && emp.working_pattern === 'part-time' ? 'part-time' : 'full-time';
   document.getElementById('empArrangement').value = emp && ['office', 'hybrid'].includes(emp.work_arrangement) ? emp.work_arrangement : 'remote';
   document.getElementById('empCountry').value = emp ? (emp.country || '') : '';
-  document.getElementById('empSchedule').value = emp ? (emp.work_schedule || '') : '';
+  document.getElementById('empSchedule').value = emp && ['10-6', '12-8', '9-5'].includes(emp.work_schedule) ? emp.work_schedule : '';
   document.getElementById('empCurrency').value = emp ? (emp.currency || 'GBP') : 'GBP';
   document.getElementById('empAnnualSalary').value = emp ? emp.annual_salary : 0;
   document.getElementById('empPensionRate').value = emp && emp.pension_rate != null ? emp.pension_rate : '';
@@ -444,7 +444,7 @@ async function saveEmployee() {
   const working_pattern = document.getElementById('empHours').value;
   const work_arrangement = document.getElementById('empArrangement').value;
   const country = document.getElementById('empCountry').value.trim();
-  const work_schedule = document.getElementById('empSchedule').value.trim();
+  const work_schedule = document.getElementById('empSchedule').value;
   const payload = { name, employment_type, annual_salary, currency, start_date, pension_rate,
                     job_title, department, phone, email, contract_end_date, probation_end_date, portal_pin, working_pattern,
                     work_arrangement, country, work_schedule };
@@ -1514,7 +1514,6 @@ async function epDeleteId(empId) {
 // ── Onboarding files: the company's own NDA and starter sheet (admin) ──
 const OB_FILES = {
   nda: { title: 'Team member agreement', who: 'Everyone signs this: employees and contractors', empty: 'Upload the agreement as a PDF. Staff read it in the platform and sign it; a signed copy goes on their employee file.' },
-  starter: { title: 'Starter sheet', who: 'Payroll staff only', empty: 'Upload the starter sheet payroll staff need to complete. If it has fillable fields they can fill it in on screen; otherwise they download it, complete it and upload it back.' },
 };
 
 async function openOnboardingFiles() {
@@ -1549,7 +1548,9 @@ async function openOnboardingFiles() {
   m.innerHTML = `<div class="modal" style="max-width:600px">
     <div class="modal-header"><h2>Onboarding files</h2><button class="modal-close" onclick="closeModal('obFilesModal')">✕</button></div>
     <p style="font-size:0.82rem;color:var(--muted);margin:0 0 14px">These are shown to staff in the onboarding screen. They read each one in full, then sign, and the signed PDF is stored on their employee file. PDFs up to 3 MB.</p>
-    ${slot('nda')}${slot('starter')}${await signatorySlot()}
+    ${slot('nda')}${await signatorySlot()}
+    <div class="obf-slot"><div class="obf-head"><div><h3>New starter form</h3><small>Payroll staff added from now on</small></div><span class="ep-status ep-status--on">Built in</span></div>
+      <p class="obf-empty">New payroll staff answer HMRC's starter checklist questions and give their bank details in onboarding. A PDF for your accountant is saved under Documents on file.</p></div>
     <div class="obf-foot">A new version applies to everyone who signs from now on. Copies people already signed stay on their files unchanged; to have someone sign the new version, open their profile and choose "Make them onboard again".</div>
   </div>`;
   openModal('obFilesModal');
@@ -1606,10 +1607,7 @@ async function uploadOnboardingFile(key, input) {
   const note = document.getElementById('obfNote-' + key);
   if (note) {
     note.className = 'obf-note is-ok';
-    note.textContent = key === 'starter'
-      ? (data.fillable ? `Uploaded. This form has ${data.fields} fillable field${data.fields === 1 ? '' : 's'}, so staff can fill it in on screen.`
-                       : 'Uploaded. This PDF has no fillable fields, so staff will download it, complete it and upload their copy.')
-      : `Uploaded (${data.pages} page${data.pages === 1 ? '' : 's'}). New signatures will be on this file.`;
+    note.textContent = `Uploaded (${data.pages} page${data.pages === 1 ? '' : 's'}). New signatures will be on this file.`;
   }
   showToast(OB_FILES[key].title + ' uploaded', 'success');
 }
@@ -8292,13 +8290,13 @@ async function loadEmployeePayslips() {
 // someone who already had a login gets a banner and can open it, do part, and
 // come back later. Progress is saved at every step.
 //
-// Steps: your details -> contract (made from the template, or one uploaded for them)
-// -> the team member agreement (IP, confidentiality, non-compete) -> starter sheet
-// (payroll staff, if one has been set up) -> ID, last, which can be skipped for now. The agreement is
+// Steps: your details -> contract (made from their record, or one uploaded for them)
+// -> the team member agreement (IP, confidentiality, non-compete) -> new starter form
+// (payroll staff added from now on) -> ID, last, which can be skipped for now. The agreement is
 // signed before anything is uploaded. It and the starter sheet are PDFs shown here page
 // by page; the person reads to the end, fills in (starter sheet) and signs, and a
 // signed copy is stored on their employee file.
-const OB = { data: null, key: 'details', resolve: null, closable: false, ink: [], values: {}, reads: {}, mode: 'fill', completedFile: null };
+const OB = { data: null, key: 'details', resolve: null, closable: false, ink: [], reads: {} };
 
 const OB_ICON = {
   user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
@@ -8312,7 +8310,7 @@ const OB_ICON = {
 const OB_STEP = {
   details: { label: 'Your details', icon: 'user' },
   id: { label: 'ID', icon: 'id' },
-  starter: { label: 'Starter sheet', icon: 'doc' },
+  starter: { label: 'Starter form', icon: 'doc' },
   nda: { label: 'Agreement', icon: 'pen' },
   contract: { label: 'Contract', icon: 'doc' },
 };
@@ -8339,7 +8337,7 @@ async function startOnboarding() {
 }
 
 function obOpen(data, closable) {
-  OB.data = data; OB.closable = closable; OB.values = {}; OB.reads = {}; OB.mode = 'fill'; OB.completedFile = null; OB.idSkipped = false;
+  OB.data = data; OB.closable = closable; OB.reads = {}; OB.idSkipped = false;
   let ov = obEl('obOverlay');
   if (!ov) { ov = document.createElement('div'); ov.id = 'obOverlay'; ov.className = 'ob-overlay'; document.body.appendChild(ov); }
   document.body.classList.add('ob-open');
@@ -8413,7 +8411,7 @@ function obGo(key) {
   const body = obEl('obBody');
   body.classList.remove('ob-in'); void body.offsetWidth; body.classList.add('ob-in');
   obEl('obOverlay').querySelector('.ob-card').scrollIntoView({ block: 'start' });
-  ({ details: obStepDetails, id: obStepId, starter: obStepDoc, nda: obStepDoc, contract: obStepDoc, done: obDone })[key](key);
+  ({ details: obStepDetails, id: obStepId, starter: obStepStarter, nda: obStepDoc, contract: obStepDoc, done: obDone })[key](key);
 }
 
 // Tiny helpers for inline validation
@@ -8606,8 +8604,6 @@ function loadPdfJs() {
 const OB_DOC = {
   nda: { url: '/api/onboarding/templates/nda/file', title: 'Team member agreement', icon: 'pen',
          help: 'Everyone who joins the team signs this: it covers intellectual property, confidentiality and non-compete. Read it to the end to unlock signing.', cta: 'Sign the agreement' },
-  starter: { url: '/api/onboarding/templates/starter/file', title: 'Starter sheet', icon: 'doc',
-         help: 'Your payroll details. Fill in the highlighted boxes, read to the end, then sign.', cta: 'Sign and submit' },
 };
 let _obPdf = { key: null, doc: null, info: null };
 
@@ -8659,16 +8655,9 @@ async function obStepDoc(key) {
     if (OB.key !== key) return;
     const buf = await (await fetch(meta.url)).arrayBuffer();
     const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
-    let info = null;
-    if (key === 'starter') {
-      const r = await fetch('/api/employee/onboarding/starter/fields');
-      info = r.ok ? await r.json() : { fillable: false, fields: [], pages: [] };
-      if (!info.fillable) OB.mode = 'upload';
-    }
-    _obPdf = { key, doc, info };
+    _obPdf = { key, doc };
     if (OB.key !== key) return;
     await obPaintPages();
-    if (key === 'starter') obStarterAlt();
   } catch (e) {
     // Never block signing because the viewer failed; offer the file directly
     obEl('obDocPages').innerHTML = '<div class="ob-doc-fail">The document could not be shown here. <a class="ob-link" href="' + meta.url + '" target="_blank" rel="noopener">Open it in a new tab</a> to read it, then come back to sign.</div>';
@@ -8677,16 +8666,15 @@ async function obStepDoc(key) {
   }
 }
 
-// Draw every page to a canvas at the available width; lay the starter-sheet inputs over them
+// Draw every page to a canvas at the available width
 async function obPaintPages() {
-  const { key, doc, info } = _obPdf;
+  const { key, doc } = _obPdf;
   const host = obEl('obDocPages');
   if (!host || OB.key !== key) return;
   const width = Math.max(260, Math.floor(obEl('obDocScroll').clientWidth - 2));
   _obLastWidth = obEl('obDocScroll').clientWidth;
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   host.innerHTML = '';
-  const showForm = key === 'starter' && info && info.fillable && OB.mode === 'fill';
   for (let n = 1; n <= doc.numPages; n++) {
     const page = await doc.getPage(n);
     if (OB.key !== key) return;
@@ -8703,73 +8691,8 @@ async function obPaintPages() {
     wrap.appendChild(canvas);
     host.appendChild(wrap);
     await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
-    if (showForm) obOverlayFields(wrap, n - 1, info, scale);
   }
   obEl('obDocScroll').dispatchEvent(new Event('scroll'));
-  obCountFields();
-}
-
-// Inputs positioned over each fillable field (PDF points from the top-left of the page)
-function obOverlayFields(wrap, pageIdx, info, scale) {
-  info.fields.filter(f => !f.readOnly).forEach(f => {
-    f.widgets.filter(w => w.page === pageIdx).forEach(w => {
-      let el;
-      if (f.type === 'checkbox') { el = document.createElement('input'); el.type = 'checkbox'; el.checked = OB.values[f.name] === true; }
-      else if (f.type === 'radio') { el = document.createElement('input'); el.type = 'radio'; el.name = 'r_' + f.name; el.value = (f.options || [])[w.index] || ''; el.checked = OB.values[f.name] === el.value; }
-      else if (f.type === 'dropdown') {
-        el = document.createElement('select');
-        el.innerHTML = '<option value=""></option>' + (f.options || []).map(o => '<option>' + esc(o) + '</option>').join('');
-        el.value = OB.values[f.name] || '';
-      } else if (f.multiline) { el = document.createElement('textarea'); el.value = OB.values[f.name] || ''; }
-      else { el = document.createElement('input'); el.type = 'text'; el.value = OB.values[f.name] || ''; if (f.maxLength) el.maxLength = f.maxLength; }
-      el.className = 'ob-f ob-f-' + f.type + (f.required ? ' is-required' : '');
-      el.style.cssText = 'left:' + (w.x * scale) + 'px;top:' + (w.y * scale) + 'px;width:' + (w.w * scale) + 'px;height:' + (w.h * scale) + 'px;font-size:' + Math.max(10, Math.min(16, w.h * scale * 0.62)) + 'px';
-      el.title = f.name.replace(/[_.]+/g, ' ');
-      const onChange = () => {
-        OB.values[f.name] = f.type === 'checkbox' ? el.checked : el.value;
-        el.classList.remove('has-error'); obCountFields();
-      };
-      el.addEventListener(f.type === 'text' ? 'input' : 'change', onChange);
-      wrap.appendChild(el);
-    });
-  });
-}
-
-function obCountFields() {
-  const info = _obPdf.info;
-  const note = obEl('obFieldCount');
-  if (!note || !info) return;
-  const fill = info.fields.filter(f => !f.readOnly && f.type !== 'checkbox');
-  const done = fill.filter(f => String(OB.values[f.name] || '').trim()).length;
-  note.textContent = done + ' of ' + fill.length + ' boxes filled';
-  note.classList.toggle('is-complete', fill.length > 0 && done === fill.length);
-}
-
-// The starter sheet can also be handed in as the person's own completed copy
-function obStarterAlt() {
-  const info = _obPdf.info, top = obEl('obDocTop'), alt = obEl('obAlt');
-  if (!info || !top) return;
-  if (info.fillable && OB.mode === 'fill') {
-    top.innerHTML = '<div class="ob-fillbar"><span id="obFieldCount"></span>' +
-      '<button type="button" class="ob-link" onclick="obSetMode(\'upload\')">Prefer to upload your own completed copy?</button></div>';
-    alt.innerHTML = '';
-    obCountFields();
-  } else {
-    top.innerHTML = '<div class="ob-note">' + (info.fillable
-      ? 'Upload your completed copy below, or <button type="button" class="ob-link" onclick="obSetMode(\'fill\')">fill it in on screen instead</button>.'
-      : 'This form cannot be filled in on screen. <a class="ob-link" href="' + OB_DOC.starter.url + '?download=1" download>Download it</a>, complete it, then upload your completed copy (a PDF or a clear photo).') + '</div>';
-    alt.innerHTML =
-      '<label class="ob-drop" id="obDoneDrop"><input id="obDoneFile" type="file" accept=".pdf,.jpg,.jpeg,.png,image/*,application/pdf">' +
-        '<div class="ob-drop-empty">' + OB_ICON.upload + '<b>Upload your completed starter sheet</b><small>PDF or photo, up to 2.5 MB. Click or drop it here.</small></div>' +
-        '<div class="ob-drop-preview"></div></label><div class="ob-err" id="obDoneErr"></div>';
-    obDropZone('obDoneDrop', f => { OB.completedFile = f; obEl('obDoneErr').textContent = ''; });
-  }
-}
-
-async function obSetMode(mode) {
-  OB.mode = mode; OB.completedFile = null;
-  await obPaintPages();
-  obStarterAlt();
 }
 
 // Unlock signing once the end of the document has been reached
@@ -8833,7 +8756,100 @@ function obInitSig() {
 function obClearSig() { OB.ink = []; OB._redrawSig && OB._redrawSig(); }
 function obUndoSig() { OB.ink.pop(); OB._redrawSig && OB._redrawSig(); }
 
-// ── Sign and submit (NDA or starter sheet) ──
+// ── New starter form (payroll) ──
+// Drawn from the questions the server sends (starter-form.js): HMRC's starter checklist and
+// bank details. Questions appear only once the answers before them make them relevant.
+function sfVal(f) {
+  if (f.type === 'checkboxes') return [...document.querySelectorAll('[name="sf_' + f.key + '"]:checked')].map(i => i.value);
+  if (f.type === 'radio' || f.type === 'choice') return (document.querySelector('[name="sf_' + f.key + '"]:checked') || {}).value || '';
+  const el = obEl('sf_' + f.key); return el ? el.value.trim() : '';
+}
+function sfAnswers() {
+  const a = {};
+  OB.data.documents.starter.form.forEach(sec => sec.fields.forEach(f => { if (sfShown(f, a)) a[f.key] = sfVal(f); }));
+  return a;
+}
+const sfShown = (f, a) => !f.show || Object.entries(f.show).every(([k, v]) => a[k] === v);
+function sfRefresh() {
+  const a = sfAnswers();
+  OB.data.documents.starter.form.forEach(sec => sec.fields.forEach(f => { const w = obEl('sfw_' + f.key); if (w) w.hidden = !sfShown(f, a); }));
+}
+function sfInput(f, v) {
+  const nm = 'sf_' + f.key;
+  if (f.type === 'radio') return '<div class="sf-seg">' + f.options.map(o => '<label><input type="radio" name="' + nm + '" value="' + esc(o) + '"' + (v === o ? ' checked' : '') + '><span>' + esc(o) + '</span></label>').join('') + '</div>';
+  if (f.type === 'choice') return '<div class="sf-choices">' + f.options.map(o => '<label class="sf-choice"><input type="radio" name="' + nm + '" value="' + esc(o.value) + '"' + (v === o.value ? ' checked' : '') + '><span><b>' + esc(o.label) + '</b>' + esc(o.text) + '</span></label>').join('') + '</div>';
+  if (f.type === 'checkboxes') return '<div class="sf-seg sf-multi">' + f.options.map(o => '<label><input type="checkbox" name="' + nm + '" value="' + esc(o) + '"' + ((v || []).includes(o) ? ' checked' : '') + '><span>' + esc(o) + '</span></label>').join('') + '</div>';
+  if (f.type === 'textarea') return '<textarea id="' + nm + '" class="form-control" rows="3" maxlength="' + (f.max || 300) + '">' + esc(v || '') + '</textarea>';
+  return '<input id="' + nm + '" class="form-control" type="' + (f.type === 'date' ? 'date' : 'text') + '"' + (f.max ? ' maxlength="' + f.max + '"' : '') + ' value="' + esc(v || '') + '"' +
+    (f.key === 'sort_code' || f.key === 'account_number' ? ' inputmode="numeric" autocomplete="off"' : '') + (f.key === 'ni_number' ? ' autocapitalize="characters" autocomplete="off"' : '') + '>';
+}
+
+function obStepStarter() {
+  const st = OB.data.documents.starter, a = st.answers || {};
+  const prev = obKeys()[obKeys().indexOf('starter') - 1];
+  obEl('obBody').innerHTML =
+    '<h2>' + OB_ICON.doc + ' New starter form</h2>' +
+    '<p class="ob-help">Our accountant uses this to set up your pay, tax code and any student loan repayments. We have filled in what we already know; check it and answer the rest. It takes about three minutes.</p>' +
+    st.form.map((sec, i) =>
+      '<div class="sf-sec"><div class="sf-sec-hd"><span>' + (i + 1) + '</span><div><b>' + esc(sec.title) + '</b>' + (sec.note ? '<small>' + esc(sec.note) + '</small>' : '') + '</div></div>' +
+      sec.fields.map(f => '<div class="ob-field sf-field" id="sfw_' + f.key + '"><label' + (['radio', 'choice', 'checkboxes'].includes(f.type) ? '' : ' for="sf_' + f.key + '"') + '>' + esc(f.label) + (f.required ? '' : ' <span class="sf-opt">optional</span>') + '</label>' +
+        sfInput(f, a[f.key]) + '<div class="ob-err" id="sfe_' + f.key + '"></div>' + (f.hint ? '<small>' + esc(f.hint) + '</small>' : '') + '</div>').join('') +
+      '</div>').join('') +
+    '<div class="ob-secure">' + '<div class="ob-secure-hd">' + OB_ICON.lock + '<b>Your answers are kept private</b></div>' +
+      '<ul><li>Your National Insurance number and bank details are encrypted when stored, and only the admin team and our accountant see them.</li></ul></div>' +
+    '<div class="ob-sign" id="obSignBox">' +
+      obField('obSignName', 'Type your full name', '<input id="obSignName" class="form-control" type="text" maxlength="120" autocomplete="name" value="' + esc((window.currentUser || {}).name || '') + '">') +
+      '<div class="ob-field" id="f-obSig"><label>Draw your signature <span class="ob-sigtools"><button type="button" class="ob-link" onclick="obUndoSig()">Undo</button><button type="button" class="ob-link" onclick="obClearSig()">Clear</button></span></label>' +
+        '<canvas id="obSig" class="ob-sig" height="150"></canvas><div class="ob-err" id="e-obSig"></div><small>Use your finger or mouse.</small></div>' +
+      '<label class="ob-agree" id="f-obAgree"><input id="obAgree" type="checkbox"> <span>I confirm that the information I have given on this form is correct.</span></label><div class="ob-err" id="e-obAgree"></div>' +
+      '<div class="ob-actions">' + (prev ? '<button class="btn btn-ghost" onclick="obGo(\'' + prev + '\')">Back</button>' : '') +
+      '<button class="btn btn-primary ob-primary" id="obSignBtn" onclick="obSubmitStarter(this)">Sign and submit</button></div>' +
+    '</div>';
+  obEl('obBody').querySelectorAll('input, textarea').forEach(el => el.addEventListener(el.type === 'radio' || el.type === 'checkbox' ? 'change' : 'input', () => {
+    const key = (el.name || el.id || '').replace(/^sf_/, '');
+    const e = obEl('sfe_' + key); if (e) { e.textContent = ''; obEl('sfw_' + key)?.classList.remove('has-error'); }
+    sfRefresh();
+  }));
+  sfRefresh();
+  obInitSig();
+  obClearOnInput(['obSignName']);
+  obEl('obAgree').addEventListener('change', () => { obEl('e-obAgree').textContent = ''; });
+}
+
+async function obSubmitStarter(btn) {
+  const answers = sfAnswers();
+  let bad = false, first = null;
+  const flag = (key, msg) => { const e = obEl('sfe_' + key); if (e) e.textContent = msg; obEl('sfw_' + key)?.classList.add('has-error'); first = first || obEl('sfw_' + key); bad = true; };
+  OB.data.documents.starter.form.forEach(sec => sec.fields.forEach(f => {
+    if (!sfShown(f, answers)) return;
+    const v = answers[f.key];
+    if (f.required && (Array.isArray(v) ? !v.length : !v)) flag(f.key, f.type === 'checkboxes' ? 'Tick at least one' : f.options ? 'Choose an answer' : 'Fill this in');
+    else if (v && f.pattern && !new RegExp(f.pattern, 'i').test(v)) flag(f.key, f.patternMessage);
+  }));
+  const signed_name = obEl('obSignName').value.trim();
+  if (signed_name.length < 3) { obErr('obSignName', 'Type your full name'); bad = true; }
+  if (!OB.ink.length) { obErr('obSig', 'Draw your signature in the box'); bad = true; }
+  const agree = obEl('obAgree').checked;
+  if (!agree) { obEl('e-obAgree').textContent = 'Tick the box to confirm'; bad = true; }
+  if (bad) { if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
+  btn.disabled = true; btn.classList.add('is-busy');
+  try {
+    const res = await fetch('/api/employee/onboarding/starter', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers, signed_name, agree, signature: obEl('obSig').toDataURL('image/png') }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (data.fields) Object.entries(data.fields).forEach(([k, m]) => flag(k, m));
+      if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      throw new Error(data.error || 'Could not save the form');
+    }
+    await obAfterStep();
+  } catch (e) {
+    showToast(e.message, 'error');
+    btn.disabled = false; btn.classList.remove('is-busy');
+  }
+}
+
+// ── Sign and submit (agreement or contract) ──
 async function obSubmitDoc(key, btn) {
   const signed_name = obEl('obSignName').value.trim();
   let bad = false;
@@ -8843,18 +8859,7 @@ async function obSubmitDoc(key, btn) {
   const agree = obEl('obAgree').checked;
   if (!agree) { obEl('e-obAgree').textContent = 'Tick the box to confirm'; bad = true; } else obEl('e-obAgree').textContent = '';
 
-  let payload = { signed_name, agree, signature: null };
-  if (key === 'starter') {
-    if (OB.mode === 'upload') {
-      if (!OB.completedFile) { obEl('obDoneErr').textContent = 'Choose your completed starter sheet to upload'; bad = true; }
-    } else {
-      const missing = _obPdf.info.fields.filter(f => f.required && !f.readOnly && !String(OB.values[f.name] == null ? '' : OB.values[f.name]).trim() && OB.values[f.name] !== true);
-      if (missing.length) {
-        missing.forEach(f => document.querySelectorAll('.ob-f').forEach(el => { if (el.title === f.name.replace(/[_.]+/g, ' ')) el.classList.add('has-error'); }));
-        showToast(missing.length + ' required box' + (missing.length === 1 ? ' is' : 'es are') + ' still empty (shown in red)', 'error'); bad = true;
-      }
-    }
-  }
+  const payload = { signed_name, agree, signature: null };
   if (bad) return;
 
   btn.disabled = true; btn.classList.add('is-busy');
@@ -8862,11 +8867,7 @@ async function obSubmitDoc(key, btn) {
     // The drawn signature as a PNG
     const sig = obEl('obSig');
     payload.signature = sig.toDataURL('image/png');
-    if (key === 'starter') {
-      if (OB.mode === 'upload') Object.assign(payload, await obPrepareFile(OB.completedFile, 2.5));
-      else payload.values = OB.values;
-    }
-    const res = await fetch({ nda: '/api/employee/onboarding/sign', contract: '/api/employee/onboarding/contract', starter: '/api/employee/onboarding/starter' }[key], {
+    const res = await fetch({ nda: '/api/employee/onboarding/sign', contract: '/api/employee/onboarding/contract' }[key], {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || 'Could not save your signature');
@@ -8885,7 +8886,7 @@ function obDone() {
     : '<li class="is-later"><span class="ob-tick-sm">…</span>' + OB_STEP[k].label + ' (add it later from My Profile)</li>').join('');
   const links = [d.signed.nda ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/nda?download=1">Your signed agreement</a>' : '',
                  d.signed.contract ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/contract?download=1">Your signed contract</a>' : '',
-                 d.signed.starter ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/starter?download=1">Your starter sheet</a>' : ''].join('');
+                 d.signed.starter ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/starter?download=1">Your starter form</a>' : ''].join('');
   obEl('obBody').innerHTML =
     '<div class="ob-done"><div class="ob-tick"><svg viewBox="0 0 52 52"><circle cx="26" cy="26" r="24" fill="none" stroke="currentColor" stroke-width="3"/><path d="M15 27l8 8 14-16" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg></div>' +
     '<h2>You are all set, ' + esc(obFirstName()) + '</h2><p>Everything has been saved to your employee file.</p>' +
@@ -8921,7 +8922,7 @@ function obShowBanner() {
 function onboardingCard(ob) {
   const keys = ['details', ...(ob.documents && ob.documents.contract ? ['contract'] : []), 'nda', ...(ob.needs_starter ? ['starter'] : []), 'id'];
   const done = keys.filter(k => ob.steps[k]).length;
-  const labels = { details: 'Your details', id: 'ID (passport or driving licence)', starter: 'Starter sheet', nda: 'Team member agreement', contract: 'Contract' };
+  const labels = { details: 'Your details', id: 'ID (passport or driving licence)', starter: 'New starter form', nda: 'Team member agreement', contract: 'Contract' };
   const pct = Math.round(done / keys.length * 100);
   return '<div class="card" style="padding:24px;margin-top:16px">' +
     '<div style="font:700 15px/1 var(--font-sans);color:var(--text);margin-bottom:6px">Profile checklist</div>' +
@@ -8933,7 +8934,7 @@ function onboardingCard(ob) {
     ((ob.signed.nda || ob.signed.starter || ob.signed.contract) ? '<div class="ob-links" style="margin-top:14px">' +
       (ob.signed.contract ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/contract?download=1">Download my signed contract</a>' : '') +
       (ob.signed.nda ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/nda?download=1">Download my signed agreement</a>' : '') +
-      (ob.signed.starter ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/starter?download=1">Download my starter sheet</a>' : '') + '</div>' : '') +
+      (ob.signed.starter ? '<a class="btn btn-ghost btn-sm" href="/api/employee/onboarding/signed/starter?download=1">Download my starter form</a>' : '') + '</div>' : '') +
   '</div>';
 }
 
