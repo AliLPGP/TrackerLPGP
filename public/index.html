@@ -913,7 +913,24 @@
           <option value="part-time">Part-time</option>
         </select>
       </div>
-      <div class="form-group"></div>
+      <div class="form-group">
+        <label>Works</label>
+        <select id="empArrangement">
+          <option value="remote">Remote</option>
+          <option value="office">In the office</option>
+          <option value="hybrid">Hybrid</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Country of employment <span style="font-weight:400;color:var(--muted)">(blank: from their currency)</span></label>
+        <input type="text" id="empCountry" maxlength="80" placeholder="e.g. Philippines">
+      </div>
+      <div class="form-group">
+        <label>Working schedule <span style="font-weight:400;color:var(--muted)">(one line each)</span></label>
+        <textarea id="empSchedule" rows="3" maxlength="300" placeholder="Monday to Friday&#10;9:00 AM – 5:00 PM (UK Time)&#10;40 Hours per Week"></textarea>
+      </div>
     </div>
 
     <div class="modal-section-label" style="margin-top:8px">Probation</div>
