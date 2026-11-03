@@ -8131,3 +8131,15 @@ body[data-role="accounts"] #page-portfolio .pf-row-actions { display: none !impo
 
 /* A button that cannot be pressed yet looks it (e.g. Delete until the name is typed) */
 .btn:disabled, .btn[disabled] { opacity: .45; cursor: not-allowed; pointer-events: none; }
+
+/* Salary overview, simplified: the amount left, its GBP value big enough to read, and % paid */
+:root .sal-ov-t-gbp { margin-top: 4px; font: 700 20px/1.15 var(--font-sans); letter-spacing: -0.02em; color: var(--text); }
+:root .sal-ov-t-alt { margin-top: 3px; font: 400 12.5px/1.3 var(--font-sans); color: var(--muted); }
+:root .sal-ov-meter { margin-top: 14px; }
+:root .sal-ov-t-foot { margin-top: 8px; }
+:root .sal-ov-t-pace { font: 600 13px/1.2 var(--font-sans); color: var(--text-2, var(--text)); }
+:root .sal-ov-fx { font: 400 12px/1.4 var(--font-sans); }
+/* Bars line up across tiles whether or not a tile has a GBP line */
+:root .sal-ov-tile { display: flex; flex-direction: column; }
+:root .sal-ov-tile .sal-ov-meter { margin-top: auto; }
+:root .sal-ov-tile .sal-ov-t-alt { margin-bottom: 14px; }
