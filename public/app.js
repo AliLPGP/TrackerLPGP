@@ -5840,26 +5840,26 @@ function renderPortfolioGrid() {
 
   const heroHtml =
     `<section class="pf-panel pf-hero">
-      <p class="pf-eyebrow">${esc(yearLabel)} · allocated to date</p>
+      <p class="pf-eyebrow">${esc(yearLabel)} · deals won to date</p>
       <div class="pf-hero-row">
         <p class="pf-hero-fig">${fmtGBP(allocated)}</p>
         <p class="pf-hero-sub">of which <b>${fmtGBP(paid)}</b> paid</p>
       </div>
-      <div class="pf-meter" role="img" aria-label="${collectPct}% of allocated is paid"><div class="pf-meter-fill pf-anim" data-pct="${meterPct}"></div></div>
+      <div class="pf-meter" role="img" aria-label="${collectPct}% of deals won is paid"><div class="pf-meter-fill pf-anim" data-pct="${meterPct}"></div></div>
       <p class="pf-hero-note">${allocated > 0
         ? `<b>${collectPct}%</b> collected · ${fmtGBP(outstanding)} outstanding across ${filtered.length} event${filtered.length === 1 ? '' : 's'}`
-        : `Nothing allocated yet across ${filtered.length} event${filtered.length === 1 ? '' : 's'}`}</p>
+        : `No deals won yet across ${filtered.length} event${filtered.length === 1 ? '' : 's'}`}</p>
     </section>`;
 
   const kpi = (label, value, sub, tone) =>
     `<div class="dss-card dss-card--${tone}"><div class="dss-label">${label}</div><div class="dss-value">${value}</div><div class="pf-kpi-sub">${sub}</div></div>`;
   const kpiHtml =
     `<div class="pf-kpis">` +
-      kpi('Events', filtered.length, `${deals} deal${deals === 1 ? '' : 's'} allocated`, 'neutral') +
-      kpi('Allocated', fmtGBP(allocated), 'sponsor money against these events', 'accent') +
+      kpi('Events', filtered.length, `${deals} deal${deals === 1 ? '' : 's'} won`, 'neutral') +
+      kpi('Deals won', fmtGBP(allocated), 'sponsor deals won for these events', 'accent') +
       kpi('Paid', fmtGBP(paid), 'invoiced and received', 'ok') +
-      kpi('Outstanding', fmtGBP(outstanding), outstanding > 0 ? 'allocated, not yet paid' : 'nothing owed', outstanding > 0 ? 'warn' : 'neutral') +
-      kpi('Collected', `${collectPct}%`, allocated > 0 ? 'of allocated is paid' : 'nothing allocated yet', 'neutral') +
+      kpi('Outstanding', fmtGBP(outstanding), outstanding > 0 ? 'won, not yet paid' : 'nothing owed', outstanding > 0 ? 'warn' : 'neutral') +
+      kpi('Collected', `${collectPct}%`, allocated > 0 ? 'of deals won is paid' : 'no deals won yet', 'neutral') +
     `</div>`;
 
   // ── Revenue by portfolio ──
@@ -5879,25 +5879,25 @@ function renderPortfolioGrid() {
       <div class="pf-panel-hd">
         <div>
           <h2 class="pf-panel-title">Revenue by series</h2>
-          <p class="pf-panel-desc">What each programme series has brought in: sponsor money allocated to its events, how much of it is paid, and what is still owed.</p>
+          <p class="pf-panel-desc">What each programme series has brought in: the sponsor deals won for its events, how much of it is paid, and what is still owed.</p>
         </div>
         <p class="pf-panel-aside">Amounts in GBP</p>
       </div>
       ${seriesRows.length ? `<div class="pf-st">
-        <div class="pf-st-row pf-st-head"><span>Series</span><span>Events</span><span>Allocated</span><span>Paid</span><span>Owed</span><span>Collected</span></div>
+        <div class="pf-st-row pf-st-head"><span>Series</span><span>Events</span><span>Deals won</span><span>Paid</span><span>Owed</span><span>Collected</span></div>
         ${seriesRows.map(r => {
           const owed = Math.max(0, r.allocated - r.paid);
           const pct = r.allocated > 0 ? Math.min(100, Math.round(r.paid / r.allocated * 100)) : 0;
           return `<div class="pf-st-row">
             <span class="pf-st-name"><span class="pf-chip" style="background:${r.color}"></span><span><b>${esc(r.short)}</b>${r.name && r.name !== r.short ? `<small>${esc(r.name)}</small>` : ''}</span></span>
             <span class="pf-st-num" data-l="Events">${r.events}<small>${r.deals} deal${r.deals === 1 ? '' : 's'}</small></span>
-            <span class="pf-st-num pf-st-big${r.allocated > 0 ? '' : ' pf-st-zero'}" data-l="Allocated">${fmtGBP(r.allocated)}</span>
+            <span class="pf-st-num pf-st-big${r.allocated > 0 ? '' : ' pf-st-zero'}" data-l="Deals won">${fmtGBP(r.allocated)}</span>
             <span class="pf-st-num ${r.paid > 0 ? 'pf-st-paid' : 'pf-st-zero'}" data-l="Paid">${fmtGBP(r.paid)}</span>
             <span class="pf-st-num${owed > 0 ? ' pf-st-owed' : ''}" data-l="Owed">${owed > 0 ? fmtGBP(owed) : '—'}</span>
-            <span class="pf-st-prog" data-l="Collected">${r.allocated > 0 ? `<span class="pf-paidbar"><span class="pf-anim" data-pct="${pct}"></span></span><b>${pct}%</b>` : '<small>nothing allocated</small>'}</span>
+            <span class="pf-st-prog" data-l="Collected">${r.allocated > 0 ? `<span class="pf-paidbar"><span class="pf-anim" data-pct="${pct}"></span></span><b>${pct}%</b>` : '<small>no deals won</small>'}</span>
           </div>`;
         }).join('')}
-      </div>` : '<div class="pf-empty">No events allocated yet.</div>'}
+      </div>` : '<div class="pf-empty">No deals won yet.</div>'}
     </section>`;
 
   // ── Event list by producer team ──
@@ -5941,7 +5941,7 @@ function renderPortfolioGrid() {
           <div class="pf-group-hd">
             <span class="pf-group-name">${p ? esc(p) : 'Other events'}</span>
             <span class="pf-group-n">${evs.length} event${evs.length === 1 ? '' : 's'}</span>
-            <span class="pf-group-total"><small>Allocated</small> ${fmtGBP(pAlloc)} <small>· Paid</small> ${fmtGBP(pPaid)} <small>· Owed</small> ${fmtGBP(Math.max(0, pAlloc - pPaid))}</span>
+            <span class="pf-group-total"><small>Deals won</small> ${fmtGBP(pAlloc)} <small>· Paid</small> ${fmtGBP(pPaid)} <small>· Owed</small> ${fmtGBP(Math.max(0, pAlloc - pPaid))}</span>
           </div>
           ${p ? renderGroupTeam(p) : ''}
           ${evs.map(e => renderPortfolioEventCard(e)).join('')}
@@ -6323,10 +6323,10 @@ async function loadEmpPortfolioRoles(empId, boxId = 'empPortfolioRoles') {
           <span class="epr-series">${esc(g.name)}</span>
           <span class="epr-roles">${g.roles.map(esc).join(' · ')}</span>
         </div>
-        <div class="epr-stats">${st.events} event${st.events === 1 ? '' : 's'} · ${fmtGBP(st.allocated)} allocated · ${fmtGBP(st.paid)} paid</div>
+        <div class="epr-stats">${st.events} event${st.events === 1 ? '' : 's'} · ${fmtGBP(st.allocated)} won · ${fmtGBP(st.paid)} paid</div>
       </div>`;
     }).join('');
-    box.innerHTML = rows + (grouped.size > 1 ? `<div class="epr-total">Across these groups: ${fmtGBP(total.allocated)} allocated, ${fmtGBP(total.paid)} paid</div>` : '');
+    box.innerHTML = rows + (grouped.size > 1 ? `<div class="epr-total">Across these groups: ${fmtGBP(total.allocated)} won, ${fmtGBP(total.paid)} paid</div>` : '');
   } catch {
     box.innerHTML = '<div class="epr-empty">Could not load producer teams.</div>';
   }
@@ -6387,12 +6387,12 @@ function renderPortfolioEventCard(ev) {
       </div>
       <div class="pf-row-figs-wrap">
         ${pipeline > 0 ? `<div class="pf-money">
-          <span><small>Allocated</small><b>${fmtGBP(pipeline)}</b></span>
+          <span><small>Deals won</small><b>${fmtGBP(pipeline)}</b></span>
           <span class="${won > 0 ? 'pf-st-paid' : 'pf-st-zero'}"><small>Paid</small><b>${fmtGBP(won)}</b></span>
           <span class="${outstanding > 0 ? 'pf-st-owed' : ''}"><small>Owed</small><b>${outstanding > 0 ? fmtGBP(outstanding) : '—'}</b></span>
         </div>
         <div class="pf-paidline"><span class="pf-paidbar"><span class="pf-anim" data-pct="${paidPct}"></span></span><em>${outstanding > 0 ? `${paidPct}% paid` : 'Fully paid'}</em></div>`
-        : '<div class="pf-money-none">No sponsor money allocated yet</div>'}
+        : '<div class="pf-money-none">No deals won yet</div>'}
       </div>
       <div class="pf-row-actions sub-actions">
         <button class="sub-action-btn" onclick="openPortfolioModal(${ev.id})">Edit</button>
