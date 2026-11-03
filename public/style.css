@@ -8120,3 +8120,11 @@ button.pf-st-toggle:focus-visible { outline: 2px solid var(--accent); outline-of
 /* Deal Tracker filtered to one event: a split deal shows that event's share */
 .deal-share { cursor: help; }
 .deal-share small { display: block; margin-top: 2px; font: 400 10.5px/1.2 var(--font-mono); color: var(--muted); white-space: nowrap; }
+
+/* Accounts login: the Portfolio is for reading; events and teams are edited by managers and admins */
+body[data-role="accounts"] #page-portfolio [onclick*="openPortTeamModal"],
+body[data-role="accounts"] #page-portfolio [onclick*="openPortfolioModal"],
+body[data-role="accounts"] #page-portfolio [onclick*="openPortAssign"],
+body[data-role="accounts"] #page-portfolio [onclick*="deletePortfolioEvent"],
+body[data-role="accounts"] #page-portfolio [onclick*="Programme"],
+body[data-role="accounts"] #page-portfolio .pf-row-actions { display: none !important; }

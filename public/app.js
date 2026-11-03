@@ -138,8 +138,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (currentUser.role === 'admin') {
     document.querySelectorAll('.admin-only').forEach(el => el.classList.remove('hidden'));
   }
-  if (currentUser.role === 'admin' || currentUser.role === 'manager') {
+  if (['admin', 'manager', 'accounts'].includes(currentUser.role)) {
     document.querySelectorAll('.admin-manager-only').forEach(el => el.classList.remove('hidden'));
+  }
+  document.body.dataset.role = currentUser.role; // lets the page hide controls a role cannot use
+  // The accounts login runs the money side only: no staff, tracking or event kits
+  if (currentUser.role === 'accounts') {
+    document.querySelectorAll('.nav-item[data-page], .bottom-nav-item[data-page]').forEach(el => {
+      if (!ACCOUNTS_PAGES.includes(el.dataset.page)) el.classList.add('hidden');
+    });
   }
 
   const m = thisMonth();
@@ -270,9 +277,13 @@ function initSidebarCollapse() {
 }
 
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
+// What the accounts login can open: deals and invoices, costs, the portfolio's revenue, the calendar
+const ACCOUNTS_PAGES = ['dashboard', 'calendar', 'deals', 'portfolio', 'expenses', 'subscriptions', 'hotels'];
+
 function navigate(page) {
   // Salary and Employees sections are admin-only
   if ((page === 'salary' || page === 'employees') && currentUser?.role !== 'admin') return;
+  if (currentUser?.role === 'accounts' && !ACCOUNTS_PAGES.includes(page)) return;
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.querySelectorAll('.bottom-nav-item').forEach(n => n.classList.remove('active'));
@@ -619,7 +630,7 @@ async function loadDashboard() {
 
   const [summaryRes, salaryRes, upcomingRes, expiringRes, allEmpRes, hotelRes, dealsRes, evtRevRes, calCurRes, calNextRes] = await Promise.all([
     fetch(`/api/summary?from=${year}-01-01&to=${year}-12-31`),
-    fetch(`/api/salary-overview?year=${year}`),
+    currentUser.role === 'admin' ? fetch(`/api/salary-overview?year=${year}`) : null, // pay is admin-only
     fetch(`/api/calendar-reminders/upcoming?days=30`),
     fetch(`/api/contracts/expiring?days=60`),
     fetch(`/api/employees/all`),
@@ -631,7 +642,7 @@ async function loadDashboard() {
   ]);
 
   const summary       = summaryRes.ok   ? await summaryRes.json()   : [];
-  const salaryData    = salaryRes.ok    ? await salaryRes.json()    : [];
+  const salaryData    = salaryRes && salaryRes.ok ? await salaryRes.json() : [];
   const upcoming      = upcomingRes.ok  ? await upcomingRes.json()  : [];
   const expiring      = expiringRes.ok  ? await expiringRes.json()  : [];
   const allEmps       = allEmpRes.ok    ? await allEmpRes.json()    : [];
@@ -5664,6 +5675,8 @@ async function loadPortfolio() {
 }
 
 async function loadProgramme2027() {
+  // Matching events to the programme is a manager's job; the accounts login only reads the Portfolio
+  if (currentUser && currentUser.role === 'accounts') { _programme2027 = { status: 'ready', data: null, error: null }; return; }
   _programme2027 = { status: 'loading', data: null, error: null };
   try {
     const res = await fetch('/api/programme/2027');
@@ -6284,6 +6297,7 @@ async function loadEmpPortfolioRoles(empId, boxId = 'empPortfolioRoles') {
 
 // Programme data without re-rendering the Portfolio page.
 async function loadProgramme2027Quiet() {
+  if (currentUser && currentUser.role === 'accounts') return;
   try {
     const res = await fetch('/api/programme/2027');
     if (res.ok) _programme2027 = { status: 'ready', data: await res.json(), error: null };
@@ -7661,120 +7675,6 @@ async function initEmployeePortal(user) {
 
   // Show dashboard
   window.navigate('dashboard');
-}
-
-// ─── ACCOUNTS PORTAL ─────────────────────────────────────────────────────────
-async function initAccountsPortal(user) {
-  window.currentUser = user;
-  initSidebarCollapse();
-
-  document.getElementById('logoutBtn')?.addEventListener('click', async () => {
-    await fetch('/api/logout', { method: 'POST' });
-    window.location.href = '/login.html';
-  });
-
-  const initials = user.username.slice(0,2).toUpperCase();
-  document.getElementById('userLabel').innerHTML =
-    '<div class="sidebar-user-pill"><div class="sidebar-user-avatar">' + esc(initials) + '</div>' +
-    '<span class="sidebar-user-name">' + esc(user.username) + '</span>' +
-    '<span class="sidebar-user-role" style="font:500 9px/1 var(--font-mono);color:var(--accent);text-transform:uppercase;letter-spacing:.5px">Accounts</span></div>';
-
-  document.title = 'LPGP – Accounts';
-
-  const ACC_PAGES = ['dashboard', 'calendar', 'deals'];
-
-  // Hide pages not allowed
-  document.querySelectorAll('.nav-item').forEach(el => {
-    if (!ACC_PAGES.includes(el.dataset.page)) el.style.display = 'none';
-  });
-  document.querySelectorAll('.nav-section-label').forEach(el => el.style.display = 'none');
-
-  window.navigate = function(page) {
-    if (!ACC_PAGES.includes(page)) return;
-    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-    document.querySelectorAll('.nav-item, .bottom-nav-item').forEach(n => n.classList.remove('active'));
-    const pageEl = document.getElementById('page-' + page);
-    if (pageEl) pageEl.classList.add('active');
-    document.querySelectorAll('[data-page="' + page + '"]').forEach(n => n.classList.add('active'));
-    const titles = { dashboard: 'Accounts Dashboard', calendar: 'Calendar', deals: 'Deal Tracker' };
-    document.getElementById('pageTitle').textContent = titles[page] || page;
-    if (page === 'dashboard') loadAccountsDashboard(user);
-    if (page === 'calendar')  loadCalendar();
-    if (page === 'deals')     loadDealTracker();
-  };
-
-  document.querySelectorAll('.nav-item').forEach(el => {
-    el.addEventListener('click', () => { if (ACC_PAGES.includes(el.dataset.page)) window.navigate(el.dataset.page); });
-  });
-
-  window.navigate('dashboard');
-}
-
-async function loadAccountsDashboard(user) {
-  const page = document.getElementById('page-dashboard');
-  if (!page) return;
-  page.innerHTML = '<div style="padding:32px 24px"><div style="font:500 11px/1 var(--font-mono);color:var(--muted)">Loading…</div></div>';
-
-  let deals = [];
-  try {
-    const r = await fetch('/api/deal-tracker');
-    if (r.ok) deals = await r.json();
-  } catch(e) {}
-
-  const active = deals.filter(d => d.status !== 'cancelled');
-  const totalPaid  = active.reduce((s,d) => s + (parseFloat(d.paid_inc_vat)||0), 0);
-  const totalDeal  = active.reduce((s,d) => s + (parseFloat(d.deal_amount)||0), 0);
-  const outstanding = totalDeal - totalPaid;
-  const fmtAmt = v => '£' + v.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2});
-
-  let lastInv = '', nextInv = '';
-  let maxN = -1;
-  active.forEach(d => {
-    if (!d.invoice_number) return;
-    const m = String(d.invoice_number).match(/(\d+)\s*$/);
-    if (m) { const n = parseInt(m[1]); if (n > maxN) { maxN = n; lastInv = d.invoice_number; } }
-  });
-  if (maxN >= 0) nextInv = lastInv.replace(/\d+$/, String(maxN + 1));
-
-  const card = (label, val, color) =>
-    '<div style="flex:1;min-width:140px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px">' +
-      '<div style="font:600 9px/1 var(--font-mono);color:var(--muted);letter-spacing:.5px;text-transform:uppercase;margin-bottom:8px">' + label + '</div>' +
-      '<div style="font:700 22px/1 var(--font-sans);color:' + (color||'var(--text)') + '">' + val + '</div>' +
-    '</div>';
-
-  const greeting = 'Good ' + (new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening') + ', ' + user.username;
-
-  page.innerHTML =
-    '<div style="padding:28px 24px">' +
-      '<div style="margin-bottom:24px">' +
-        '<div style="font:700 20px/1.2 var(--font-sans);color:var(--text);margin-bottom:4px">' + esc(greeting) + '</div>' +
-        '<div style="font:500 11px/1 var(--font-mono);color:var(--muted)">Accounts overview · ' + active.length + ' active deal' + (active.length!==1?'s':'') + '</div>' +
-      '</div>' +
-
-      '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px">' +
-        card('Total Paid', fmtAmt(totalPaid), 'var(--positive)') +
-        card('Total Deal Value', fmtAmt(totalDeal)) +
-        card('Outstanding', fmtAmt(outstanding), outstanding > 0 ? 'var(--negative)' : 'var(--positive)') +
-        (lastInv ?
-          '<div style="flex:1;min-width:180px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px">' +
-            '<div style="font:600 9px/1 var(--font-mono);color:var(--muted);letter-spacing:.5px;text-transform:uppercase;margin-bottom:8px">Last Invoice</div>' +
-            '<div style="font:600 12px/1.3 var(--font-mono);color:var(--text);word-break:break-all">' + esc(lastInv) + '</div>' +
-            '<div style="font:500 11px/1 var(--font-mono);color:var(--primary);margin-top:10px">Next → ' + esc(nextInv) + '</div>' +
-          '</div>'
-        : '') +
-      '</div>' +
-
-      '<div style="display:flex;gap:12px;flex-wrap:wrap">' +
-        '<button class="btn btn-primary" onclick="window.navigate(\'deals\')" style="gap:8px">' +
-          '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>' +
-          'Open Deal Tracker' +
-        '</button>' +
-        '<button class="btn btn-ghost" onclick="window.navigate(\'calendar\')" style="gap:8px">' +
-          '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>' +
-          'View Calendar' +
-        '</button>' +
-      '</div>' +
-    '</div>';
 }
 
 async function loadEmpNotifications() {

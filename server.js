@@ -476,6 +476,14 @@ function calcProRatedPay(annualSalary, startDateStr) {
 // annual salary. A self-employed person whose salary changed (history holds two or more
 // salaries) is paid month by month at the salary in force; the first month is priced at
 // their starting salary, and `pay_bands` lists the salary steps so it can be shown.
+// Only admins see pay. These are every figure that is a salary or is worked out from
+// one (day rates, money deducted for days off or lost time), so a manager or the
+// accounts login cannot work out what someone earns.
+const PAY_FIELDS = ['annual_salary', 'daily_rate', 'pension_rate', 'salary_remaining', 'total_paid_year', 'ref_time_amount', 'ref_amount',
+  'excess_day_deduction', 'excess_deduction', 'waived_deduction', 'total_deduction', 'office_deductions', 'breakdown'];
+const withoutPay = row => Object.fromEntries(Object.entries(row).filter(([k]) => !PAY_FIELDS.includes(k)));
+const payFor = (req, row) => (req.admin && req.admin.role === 'admin' ? row : withoutPay(row));
+
 // Office deductions and bonuses belong to the year they are dated in
 const sumForYear = (rows, dateKey, year) =>
   parseFloat(rows.filter(r => String(r[dateKey] || '').startsWith(String(year))).reduce((a, r) => a + (parseFloat(r.amount) || 0), 0).toFixed(2));
@@ -784,7 +792,7 @@ app.put('/api/admins/:id/password', requireAuth, async (req, res) => {
 
 // What a non-admin may see of an employee row: no pay, and never the portal PIN
 // (colleagues could read each other's PINs and log in as them). has_pin says whether one is set.
-const publicEmployee = ({ annual_salary, daily_rate, pension_rate, portal_pin, ...rest }) => ({ ...rest, has_pin: !!portal_pin });
+const publicEmployee = ({ portal_pin, ...rest }) => ({ ...withoutPay(rest), has_pin: !!portal_pin });
 // Staff see colleagues in the team directory: who they are and how to reach them, nothing from HR
 const staffEmployee = ({ id, name, job_title, department, email, phone, active, employment_type }) =>
   ({ id, name, job_title, department, email, phone, active, employment_type });
@@ -1212,7 +1220,7 @@ app.get('/api/employees/:id/year-stats', requireAuth, async (req, res) => {
   const annualSalary = parseFloat(emp.annual_salary) || 0;
   const calc = await calcExcessDeductions(req.params.id, year, annualSalary, allowance);
 
-  res.json({
+  res.json(payFor(req, {
     year,
     total_days_off:     calc.total_days_off,
     allowance_days:     allowance,
@@ -1224,7 +1232,7 @@ app.get('/api/employees/:id/year-stats', requireAuth, async (req, res) => {
     waived_deduction:   calc.waived_deduction,
     breakdown:          calc.breakdown,
     employment_type:    emp.employment_type
-  });
+  }));
 });
 
 // ─── DAILY RECORDS ───────────────────────────────────────────────────────────
@@ -1271,7 +1279,7 @@ app.get('/api/records/:employeeId', requireAuth, async (req, res) => {
       manual_adj_minutes:  adjMins
     };
   });
-  res.json(enriched);
+  res.json(enriched.map(r => payFor(req, r)));
 });
 
 app.post('/api/records', requireAuth, async (req, res) => {
@@ -1600,8 +1608,7 @@ app.get('/api/summary', requireAuth, async (req, res) => {
   }));
 
   // Pay figures are for admins; managers see days off and time only
-  if (req.admin.role !== 'admin') return res.json(summary.map(({ annual_salary, daily_rate, salary_remaining, total_paid_year, ...rest }) => rest));
-  res.json(summary);
+  res.json(summary.map(r => payFor(req, r)));
 });
 
 // ─── OFFICE DEDUCTIONS ───────────────────────────────────────────────────────
@@ -2068,14 +2075,14 @@ app.patch('/api/hotel-expenses/:id', requireAuth, async (req, res) => {
 
 // ─── COMPANY EXPENSES ─────────────────────────────────────────────────────────
 
-app.get('/api/expenses', requireAuth, requireAdminOrManager, async (req, res) => {
+app.get('/api/expenses', requireAuth, requireFinance, async (req, res) => {
   try {
     const { rows } = await q('SELECT id, category, description, vat_status, amount, vat_amount, currency, expense_date, notes, status, due_date, receipt_name, (receipt_data IS NOT NULL) AS has_receipt, created_at FROM company_expenses ORDER BY expense_date DESC, id DESC');
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/expenses', requireAuth, requireAdminOrManager, async (req, res) => {
+app.post('/api/expenses', requireAuth, requireFinance, async (req, res) => {
   try {
     const { category, description, vat_status, amount, vat_amount, currency, expense_date, notes, status, due_date, receipt_name, receipt_data } = req.body;
     if (!expense_date) return res.status(400).json({ error: 'expense_date required' });
@@ -2093,7 +2100,7 @@ app.post('/api/expenses', requireAuth, requireAdminOrManager, async (req, res) =
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/expenses/:id', requireAuth, requireAdminOrManager, async (req, res) => {
+app.put('/api/expenses/:id', requireAuth, requireFinance, async (req, res) => {
   try {
     const { category, description, vat_status, amount, vat_amount, currency, expense_date, notes, status, due_date } = req.body;
     const isVat = vat_status === 'vat';
@@ -2112,7 +2119,7 @@ app.put('/api/expenses/:id', requireAuth, requireAdminOrManager, async (req, res
 
 // Mark a pending invoice as paid — stamps the payment date so it is
 // allocated to the right month/quarter alongside regular expenses
-app.patch('/api/expenses/:id/paid', requireAuth, requireAdminOrManager, async (req, res) => {
+app.patch('/api/expenses/:id/paid', requireAuth, requireFinance, async (req, res) => {
   try {
     const paidDate = req.body?.paid_date || new Date().toISOString().slice(0, 10);
     const { rows } = await q(
@@ -2125,7 +2132,7 @@ app.patch('/api/expenses/:id/paid', requireAuth, requireAdminOrManager, async (r
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/expenses/:id', requireAuth, requireAdminOrManager, async (req, res) => {
+app.delete('/api/expenses/:id', requireAuth, requireFinance, async (req, res) => {
   try {
     await q('DELETE FROM company_expenses WHERE id = ?', [req.params.id]);
     res.json({ ok: true });
@@ -2133,7 +2140,7 @@ app.delete('/api/expenses/:id', requireAuth, requireAdminOrManager, async (req, 
 });
 
 // Upload receipt (base64) for an expense
-app.post('/api/expenses/:id/receipt', requireAuth, requireAdminOrManager, async (req, res) => {
+app.post('/api/expenses/:id/receipt', requireAuth, requireFinance, async (req, res) => {
   try {
     const { receipt_name, receipt_data } = req.body;
     if (!receipt_name || !receipt_data) return res.status(400).json({ error: 'receipt_name and receipt_data required' });
@@ -2147,7 +2154,7 @@ app.post('/api/expenses/:id/receipt', requireAuth, requireAdminOrManager, async 
 });
 
 // Download/view receipt
-app.get('/api/expenses/:id/receipt', requireAuth, requireAdminOrManager, async (req, res) => {
+app.get('/api/expenses/:id/receipt', requireAuth, requireFinance, async (req, res) => {
   try {
     const { rows } = await q(`SELECT receipt_name, receipt_data FROM company_expenses WHERE id=?`, [req.params.id]);
     const r = rows[0];
@@ -2161,7 +2168,7 @@ app.get('/api/expenses/:id/receipt', requireAuth, requireAdminOrManager, async (
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/expenses/:id/receipt', requireAuth, requireAdminOrManager, async (req, res) => {
+app.delete('/api/expenses/:id/receipt', requireAuth, requireFinance, async (req, res) => {
   try {
     await q(`UPDATE company_expenses SET receipt_name=NULL, receipt_data=NULL WHERE id=?`, [req.params.id]);
     res.json({ ok: true });
@@ -2175,14 +2182,22 @@ function requireAdminOrManager(req, res, next) {
   next();
 }
 
+// The money side of the business (deals, invoices, expenses, subscriptions): admins,
+// managers and the accounts login. Never salaries, which stay admin-only.
+function requireFinance(req, res, next) {
+  const r = req.admin?.role;
+  if (r !== 'admin' && r !== 'manager' && r !== 'accounts') return res.status(403).json({ error: 'Access restricted' });
+  next();
+}
+
 // ─── SUBSCRIPTIONS ────────────────────────────────────────────────────────────
-app.get('/api/subscriptions', requireAuth, requireAdminOrManager, async (req, res) => {
+app.get('/api/subscriptions', requireAuth, requireFinance, async (req, res) => {
   try {
     const { rows } = await q('SELECT * FROM subscriptions ORDER BY created_at DESC');
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.post('/api/subscriptions', requireAuth, requireAdminOrManager, async (req, res) => {
+app.post('/api/subscriptions', requireAuth, requireFinance, async (req, res) => {
   try {
     const { name, vendor, amount, currency, billing_cycle, renewal_date, notes, quantity } = req.body;
     const { rows } = await q(
@@ -2193,7 +2208,7 @@ app.post('/api/subscriptions', requireAuth, requireAdminOrManager, async (req, r
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.put('/api/subscriptions/:id', requireAuth, requireAdminOrManager, async (req, res) => {
+app.put('/api/subscriptions/:id', requireAuth, requireFinance, async (req, res) => {
   try {
     const { name, vendor, amount, currency, billing_cycle, renewal_date, notes, active, quantity } = req.body;
     const { rows } = await q(
@@ -2205,7 +2220,7 @@ app.put('/api/subscriptions/:id', requireAuth, requireAdminOrManager, async (req
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 // Toggle active/inactive without touching the rest of the row; records when it was deactivated
-app.patch('/api/subscriptions/:id/active', requireAuth, requireAdminOrManager, async (req, res) => {
+app.patch('/api/subscriptions/:id/active', requireAuth, requireFinance, async (req, res) => {
   try {
     const active = req.body.active !== false;
     const { rows } = await q(
@@ -2219,7 +2234,7 @@ app.patch('/api/subscriptions/:id/active', requireAuth, requireAdminOrManager, a
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.delete('/api/subscriptions/:id', requireAuth, requireAdminOrManager, async (req, res) => {
+app.delete('/api/subscriptions/:id', requireAuth, requireFinance, async (req, res) => {
   try { await q('DELETE FROM subscriptions WHERE id=?', [req.params.id]); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -2246,7 +2261,7 @@ app.get('/api/portfolio-events', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 // GET /api/portfolio-events/:id/deals — deals linked to an event with paid status
-app.get('/api/portfolio-events/:id/deals', requireAuth, requireAdminOrManager, async (req, res) => {
+app.get('/api/portfolio-events/:id/deals', requireAuth, requireFinance, async (req, res) => {
   try {
     const { rows } = await q(`
       SELECT d.id, COALESCE(NULLIF(d.company,''),d.title) AS company,
@@ -2336,7 +2351,7 @@ const PRODUCER_TEAM_SELECT = `
   FROM producer_teams t
   ${PRODUCER_TEAM_ROLES.map(r => `LEFT JOIN employees e_${r} ON e_${r}.id = t.${r}_id`).join('\n  ')}`;
 
-app.get('/api/producer-teams', requireAuth, requireAdminOrManager, async (_req, res) => {
+app.get('/api/producer-teams', requireAuth, requireFinance, async (_req, res) => {
   try {
     const { rows } = await q(`${PRODUCER_TEAM_SELECT} ORDER BY t.name`);
     res.json(rows);
@@ -2421,7 +2436,7 @@ app.get('/api/employees/:id/producer-teams', requireAuth, requireAdminOrManager,
 });
 
 // ─── DEALS ────────────────────────────────────────────────────────────────────
-app.get('/api/deals', requireAuth, requireAdminOrManager, async (req, res) => {
+app.get('/api/deals', requireAuth, requireFinance, async (req, res) => {
   try {
     const { rows: deals } = await q(`
       SELECT d.*, se.name AS sales_name,
@@ -2439,7 +2454,7 @@ app.get('/api/deals', requireAuth, requireAdminOrManager, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 // GET /api/deals/revenue-by-event — per-event revenue & payment breakdown
-app.get('/api/deals/revenue-by-event', requireAuth, requireAdminOrManager, async (req, res) => {
+app.get('/api/deals/revenue-by-event', requireAuth, requireFinance, async (req, res) => {
   try {
     const { rows } = await q(`
       SELECT
@@ -2486,7 +2501,7 @@ app.get('/api/employee/portfolio', requireAuth, async (req, res) => {
 });
 
 // GET /api/deals/last-invoice — return last invoice number used (must be before /:id routes)
-app.get('/api/deals/last-invoice', requireAuth, requireAdminOrManager, async (req, res) => {
+app.get('/api/deals/last-invoice', requireAuth, requireFinance, async (req, res) => {
   try {
     const { rows } = await q(`SELECT id, invoice_number FROM deals WHERE invoice_number IS NOT NULL AND invoice_number != '' ORDER BY created_at DESC LIMIT 20`);
     let maxNum = 0; let lastRow = null;
@@ -2554,7 +2569,7 @@ async function setDealSalesPerson(dealId, empId) {
   await q('UPDATE deals SET sales_employee_id=(SELECT id FROM employees WHERE id=?) WHERE id=?', [id, dealId]);
 }
 
-app.post('/api/deals', requireAuth, requireAdminOrManager, async (req, res) => {
+app.post('/api/deals', requireAuth, requireFinance, async (req, res) => {
   try {
     const { title, company, contact_name, amount, currency, stage, event_ids, event_packages, notes,
             invoice1_name, invoice1_data, invoice2_name, invoice2_data,
@@ -2588,7 +2603,7 @@ app.post('/api/deals', requireAuth, requireAdminOrManager, async (req, res) => {
     res.json(deal);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.put('/api/deals/:id', requireAuth, requireAdminOrManager, async (req, res) => {
+app.put('/api/deals/:id', requireAuth, requireFinance, async (req, res) => {
   try {
     const { title, company, contact_name, amount, currency, stage, event_ids, event_packages, notes,
             invoice1_name, invoice1_data, invoice2_name, invoice2_data,
@@ -2625,7 +2640,7 @@ app.put('/api/deals/:id', requireAuth, requireAdminOrManager, async (req, res) =
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.patch('/api/deals/:id/stage', requireAuth, requireAdminOrManager, async (req, res) => {
+app.patch('/api/deals/:id/stage', requireAuth, requireFinance, async (req, res) => {
   try {
     const { stage } = req.body;
     const { rows } = await q('UPDATE deals SET stage=? WHERE id=? RETURNING *', [stage, req.params.id]);
@@ -2633,7 +2648,7 @@ app.patch('/api/deals/:id/stage', requireAuth, requireAdminOrManager, async (req
     res.json(rows[0]);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.delete('/api/deals/bulk', requireAuth, requireAdminOrManager, async (req, res) => {
+app.delete('/api/deals/bulk', requireAuth, requireFinance, async (req, res) => {
   try {
     const { ids } = req.body;
     if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ids required' });
@@ -2668,11 +2683,11 @@ async function dealsFiledAgainstTheirEvents() {
     events_year: Number(r.y_min), n_events: Number(r.n_events),
   }));
 }
-app.get('/api/deals/refile-by-events', requireAuth, requireAdminOrManager, async (_req, res) => {
+app.get('/api/deals/refile-by-events', requireAuth, requireFinance, async (_req, res) => {
   try { res.json({ deals: await dealsFiledAgainstTheirEvents() }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.post('/api/deals/refile-by-events', requireAuth, requireAdminOrManager, async (req, res) => {
+app.post('/api/deals/refile-by-events', requireAuth, requireFinance, async (req, res) => {
   try {
     const pending = await dealsFiledAgainstTheirEvents();
     const only = Array.isArray(req.body && req.body.ids) ? new Set(req.body.ids.map(Number)) : null;
@@ -2681,7 +2696,7 @@ app.post('/api/deals/refile-by-events', requireAuth, requireAdminOrManager, asyn
     res.json({ ok: true, refiled: todo.map((d) => ({ id: d.id, company: d.company, from: d.fiscal_year, to: d.events_year })) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.patch('/api/deals/bulk-year', requireAuth, requireAdminOrManager, async (req, res) => {
+app.patch('/api/deals/bulk-year', requireAuth, requireFinance, async (req, res) => {
   try {
     const { ids, fiscal_year } = req.body;
     if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'ids required' });
@@ -2692,11 +2707,11 @@ app.patch('/api/deals/bulk-year', requireAuth, requireAdminOrManager, async (req
     res.json({ ok: true, updated: safe.length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.delete('/api/deals/:id', requireAuth, requireAdminOrManager, async (req, res) => {
+app.delete('/api/deals/:id', requireAuth, requireFinance, async (req, res) => {
   try { await q('DELETE FROM deals WHERE id=?', [req.params.id]); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.get('/api/deals/:id/invoice/:n', requireAuth, requireAdminOrManager, async (req, res) => {
+app.get('/api/deals/:id/invoice/:n', requireAuth, requireFinance, async (req, res) => {
   try {
     const n = req.params.n === '2' ? 2 : 1;
     const { rows } = await q(`SELECT invoice${n}_name AS name, invoice${n}_data AS data FROM deals WHERE id=?`, [req.params.id]);
@@ -2711,7 +2726,7 @@ app.get('/api/deals/:id/invoice/:n', requireAuth, requireAdminOrManager, async (
 });
 
 // POST /api/deals/:id/invoice/:n — upload invoice file (base64)
-app.post('/api/deals/:id/invoice/:n', requireAuth, requireAdminOrManager, async (req, res) => {
+app.post('/api/deals/:id/invoice/:n', requireAuth, requireFinance, async (req, res) => {
   try {
     const n = req.params.n === '2' ? 2 : 1;
     const { invoice_name, invoice_data } = req.body;
@@ -2726,7 +2741,7 @@ app.post('/api/deals/:id/invoice/:n', requireAuth, requireAdminOrManager, async 
 });
 
 // DELETE /api/deals/:id/invoice/:n — remove invoice file
-app.delete('/api/deals/:id/invoice/:n', requireAuth, requireAdminOrManager, async (req, res) => {
+app.delete('/api/deals/:id/invoice/:n', requireAuth, requireFinance, async (req, res) => {
   try {
     const n = req.params.n === '2' ? 2 : 1;
     await q(`UPDATE deals SET invoice${n}_name=NULL, invoice${n}_data=NULL WHERE id=?`, [req.params.id]);
@@ -2735,7 +2750,7 @@ app.delete('/api/deals/:id/invoice/:n', requireAuth, requireAdminOrManager, asyn
 });
 
 // PATCH /api/deals/:id/row-status — set row color status
-app.patch('/api/deals/:id/row-status', requireAuth, requireAdminOrManager, async (req, res) => {
+app.patch('/api/deals/:id/row-status', requireAuth, requireFinance, async (req, res) => {
   try {
     const { row_status } = req.body;
     const valid = ['none','paid','flagged','issue','urgent'];
@@ -2747,7 +2762,7 @@ app.patch('/api/deals/:id/row-status', requireAuth, requireAdminOrManager, async
 });
 
 // PATCH /api/deals/:id/field — inline cell edit (single field update)
-app.patch('/api/deals/:id/field', requireAuth, requireAdminOrManager, async (req, res) => {
+app.patch('/api/deals/:id/field', requireAuth, requireFinance, async (req, res) => {
   const ALLOWED = ['title','company','initials','stage','amount','currency','paid_inc_vat',
     'tax_vat','invoice_number','invoice_date','paid_date','bank','deal_month','fiscal_year',
     'invoice_agreement_sent','signature_received','notes','cancelled_reason','is_flagged'];
@@ -2768,7 +2783,7 @@ app.patch('/api/deals/:id/field', requireAuth, requireAdminOrManager, async (req
 });
 
 // PATCH /api/deals/:id/cancel — mark deal as cancelled with optional reason
-app.patch('/api/deals/:id/cancel', requireAuth, requireAdminOrManager, async (req, res) => {
+app.patch('/api/deals/:id/cancel', requireAuth, requireFinance, async (req, res) => {
   try {
     const { reason = '' } = req.body;
     const { rows } = await q(
@@ -2781,7 +2796,7 @@ app.patch('/api/deals/:id/cancel', requireAuth, requireAdminOrManager, async (re
 });
 
 // PATCH /api/deals/:id/uncancel — restore a cancelled deal
-app.patch('/api/deals/:id/uncancel', requireAuth, requireAdminOrManager, async (req, res) => {
+app.patch('/api/deals/:id/uncancel', requireAuth, requireFinance, async (req, res) => {
   try {
     const { rows } = await q(
       `UPDATE deals SET stage_cancelled=false, cancelled_reason='', stage='Prospect' WHERE id=? RETURNING id`,
@@ -2799,7 +2814,7 @@ app.patch('/api/deals/:id/uncancel', requireAuth, requireAdminOrManager, async (
 // invoiced it; after that it is the office's record.
 
 // Office: portal deals nobody in the office has looked at yet.
-app.get('/api/deals/portal-new', requireAuth, requireAdminOrManager, async (_req, res) => {
+app.get('/api/deals/portal-new', requireAuth, requireFinance, async (_req, res) => {
   try {
     const { rows } = await q(`
       SELECT d.id, COALESCE(NULLIF(d.company,''), d.title) AS company, d.amount, d.currency, d.created_at,
@@ -2809,7 +2824,7 @@ app.get('/api/deals/portal-new', requireAuth, requireAdminOrManager, async (_req
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-app.patch('/api/deals/:id/seen', requireAuth, requireAdminOrManager, async (req, res) => {
+app.patch('/api/deals/:id/seen', requireAuth, requireFinance, async (req, res) => {
   try {
     await q('UPDATE deals SET office_seen=TRUE WHERE id=?', [req.params.id]);
     res.json({ ok: true });
@@ -3349,7 +3364,7 @@ function markInvoicePaid(zip, paidDate, method) {
   zip.file(file, xml);
 }
 
-app.post('/api/generate-invoice', requireAuth, requireAdminOrManager, async (req, res) => {
+app.post('/api/generate-invoice', requireAuth, requireFinance, async (req, res) => {
   try {
     const templatePath = path.join(__dirname, 'public', 'invoice_template.docx');
     if (!fs.existsSync(templatePath)) return res.status(404).json({ error: 'Invoice template not found' });
