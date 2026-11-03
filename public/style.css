@@ -7699,20 +7699,15 @@ textarea.form-control { resize: vertical; }
   --bg-2:         transparent;
 }
 
-/* The glows: large soft circles of colour behind everything */
+/* Behind the glass: a faint, even wash of colour (no shapes), so the frosted
+   panels have something soft to sit on */
 body:not(.login-body) { background: var(--bg); }
 body:not(.login-body)::before {
-  content: ''; position: fixed; inset: -10vmax; z-index: -1; pointer-events: none;
-  /* Spheres lit from the top-left, like the reference: amber, teal, green, blue, grey */
+  content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
   background:
-    radial-gradient(circle 15vmax at 80% 14%, #f4b25e 0%, #d9822b 45%, rgba(170, 90, 20, 0.85) 68%, transparent 71%),
-    radial-gradient(circle 19vmax at 95% 92%, #6ff0ea 0%, #1bb5b8 45%, rgba(10, 110, 120, 0.85) 68%, transparent 71%),
-    radial-gradient(circle 7vmax at 46% 86%, #6ee08f 0%, #2fae5c 50%, rgba(20, 110, 55, 0.9) 68%, transparent 71%),
-    radial-gradient(circle 22vmax at 2% 72%, #4f8dff 0%, #2357d9 45%, rgba(15, 50, 160, 0.85) 68%, transparent 71%),
-    radial-gradient(circle 5vmax at 62% 42%, #c9cdd8 0%, #8a90a0 50%, rgba(70, 75, 90, 0.9) 68%, transparent 71%);
-  filter: blur(2px);
+    radial-gradient(120vmax 80vmax at 0% 0%, rgb(var(--accent-rgb) / 0.10), transparent 60%),
+    radial-gradient(110vmax 80vmax at 100% 100%, rgba(40, 160, 170, 0.07), transparent 60%);
 }
-:root:not([data-theme="dark"]) body:not(.login-body)::before { opacity: 0.5; }
 
 /* Frosted panels */
 .card, .stat-card, .modal, .pf-panel, .notif-panel, .ep-drawer, .ob-card, .wm-panel,
