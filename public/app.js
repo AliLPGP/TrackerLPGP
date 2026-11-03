@@ -46,30 +46,6 @@ function fmtEventDate(ev, opts = {}) {
 const SAL_FX = { GBP: 1, AED: 1 / 4.67, PHP: 0.0138 };
 const salFxToGBP = (v, c) => v * (SAL_FX[c] || 1);
 
-/**
- * What a person should have been paid by now, in their own currency.
- *
- * Salaries land monthly, so this counts whole months rather than days -- on
- * the 21st of September, September's payment is due, and someone who has had
- * it is not "behind" just because the month has nine days left. The window is
- * the person's own: a mid-year starter is measured from their start month, so
- * they are never shown as behind for months they did not work.
- */
-function salaryExpectedByNow(row, year, now) {
-  const effective = (parseFloat(row.net_remaining) || 0) + (parseFloat(row.total_paid) || 0);
-  if (effective <= 0) return 0;
-  const y = parseInt(year, 10);
-  const curY = now.getFullYear();
-  if (y < curY) return effective;   // the year is over; all of it fell due
-  if (y > curY) return 0;           // hasn't started
-
-  const inYear = (d) => d && String(d).slice(0, 4) === String(y);
-  const startM = inYear(row.start_date)       ? parseInt(String(row.start_date).slice(5, 7), 10) : 1;
-  const endM   = inYear(row.termination_date) ? parseInt(String(row.termination_date).slice(5, 7), 10) : 12;
-  const span   = Math.max(1, endM - startM + 1);
-  const due    = Math.min(span, Math.max(0, (now.getMonth() + 1) - startM + 1));
-  return effective * (due / span);
-}
 function fmtMoney(amount, currency) { return currencySymbol(currency) + Number(amount || 0).toLocaleString('en-GB', {minimumFractionDigits:2}); }
 function fmt(n) { return Number(n||0).toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2}); }
 
@@ -2781,7 +2757,6 @@ async function loadSalaryPage() {
     // and search filters do apply, because those narrow who you are asking
     // about rather than which slice of them you are looking at.
     const ovRows = searched.filter(e => !e.is_terminated);
-    const ovNow  = new Date();
 
     // Fixed list, fixed order. Payroll appears even when nobody is on it, so
     // "nothing owed on payroll" is a visible answer rather than a missing
@@ -2823,7 +2798,6 @@ async function loadSalaryPage() {
     const ovOverOf  = r => Math.max(0, -(parseFloat(r.net_remaining) || 0));
     const ovPaidOf  = r => parseFloat(r.total_paid) || 0;
 
-    const ovMonth = MONTHS[ovNow.getMonth() + 1].slice(0, 3);
     const ovTiles = ovGroups.map(g => {
       const curs  = [...new Set(g.rows.map(r => r.currency || 'GBP'))];
       // A group in one currency is reported in it. A group spanning several
@@ -2835,14 +2809,10 @@ async function loadSalaryPage() {
         (a, r) => a + (mixed ? salFxToGBP(pick(r), r.currency || 'GBP') : pick(r)), 0);
 
       const owed = sum(ovOwedOf);
-      const over = sum(ovOverOf);
       const eff  = sum(ovEffective);
       const paid = sum(ovPaidOf);
-      const exp  = sum(r => salaryExpectedByNow(r, year, ovNow));
 
       const pctPaid = eff > 0 ? Math.min(100, Math.round(paid / eff * 100)) : 0;
-      const pctExp  = eff > 0 ? Math.min(100, Math.round(exp  / eff * 100)) : 0;
-      const due     = g.rows.filter(r => unpaidSet.has(r.employee_id)).length;
       const showGBP = !mixed && cur !== 'GBP' && owed > 0;
       const money   = v => sym + Math.round(v).toLocaleString('en-GB');
 
@@ -2862,22 +2832,12 @@ async function loadSalaryPage() {
           <span class="sal-ov-t-count">${g.rows.length} ${g.rows.length === 1 ? 'person' : 'people'}</span>
         </div>
         <div class="sal-ov-t-owed${owed <= 0 ? ' sal-ov-t-owed--done' : ''}">${owed > 0 ? money(owed) : 'Fully paid'}</div>
-        <div class="sal-ov-t-alt">${
-          owed <= 0 ? 'nothing outstanding'
-          : showGBP ? `${fmtGBP(salFxToGBP(owed, cur))} still owed`
-          : mixed ? 'still owed this year, mixed currencies in GBP'
-          : 'still owed this year'
-        }</div>
-        <div class="sal-ov-meter" role="img"
-             aria-label="${pctPaid}% paid, ${pctExp}% expected by the end of ${ovMonth}">
+        ${showGBP ? `<div class="sal-ov-t-gbp">≈ ${fmtGBP(salFxToGBP(owed, cur))}</div>` : ''}
+        <div class="sal-ov-t-alt">${owed <= 0 ? 'nothing left to pay' : 'left to pay'}${mixed ? ', in GBP' : ''}</div>
+        <div class="sal-ov-meter" role="img" aria-label="${pctPaid}% paid">
           <span class="sal-ov-meter-fill" style="width:${pctPaid}%"></span>
-          <span class="sal-ov-meter-mark" style="left:${pctExp}%"></span>
         </div>
-        <div class="sal-ov-t-foot">
-          <span class="sal-ov-t-pace">${pctPaid}% paid<span class="sal-ov-t-exp"> · ${pctExp}% expected by ${ovMonth}</span></span>
-          ${due > 0 ? `<span class="sal-ov-chip">${due} to pay</span>` : ''}
-        </div>
-        ${over > 0 ? `<div class="sal-ov-t-over">${money(over)} overpaid, kept separate</div>` : ''}
+        <div class="sal-ov-t-foot"><span class="sal-ov-t-pace">${pctPaid}% paid</span></div>
       </article>`;
     }).join('');
 
@@ -2900,21 +2860,18 @@ async function loadSalaryPage() {
             <div class="sal-ov-eyebrow">Overview</div>
             <h3 class="sal-ov-title">Still to pay in ${year}</h3>
             <p class="sal-ov-note">${ovRows.length} active ${ovRows.length === 1 ? 'person' : 'people'}${
-              ovOverGBP > 0 ? ` · ${fmtGBP(ovOverGBP)} overpaid elsewhere, not netted off` : ''}</p>
+              ovOverGBP > 0 ? ` · ${fmtGBP(ovOverGBP)} overpaid (not taken off)` : ''}</p>
           </div>
           <div class="sal-ov-total">
-            <div class="sal-ov-total-label">All groups, in GBP</div>
+            <div class="sal-ov-total-label">Total left to pay, in GBP</div>
             <div class="sal-ov-total-value">${fmtGBP(ovOwedGBP)}</div>
             <div class="sal-ov-total-note">${ovPaidGBP > ovEffGBP
               ? `${fmtGBP(ovPaidGBP)} paid, ${fmtGBP(ovPaidGBP - ovEffGBP)} ahead of what is owed`
-              : `${fmtGBP(ovPaidGBP)} of ${fmtGBP(ovEffGBP)} paid · ${ovPct}%`}</div>
+              : `${fmtGBP(ovPaidGBP)} of ${fmtGBP(ovEffGBP)} paid (${ovPct}%)`}</div>
           </div>
         </header>
         <div class="sal-ov-grid">${ovTiles}</div>
-        <p class="sal-ov-fx">
-          The bar fills to what has been paid; the notch is where the year says you should be by the end of ${ovMonth}.${
-          ovNonGBP.length ? ` GBP conversions use ${ovNonGBP.map(c => `1 ${c} = £${SAL_FX[c]}`).join(', ')}.` : ''}
-        </p>
+        ${ovNonGBP.length ? `<p class="sal-ov-fx">≈ GBP at ${ovNonGBP.map(c => `1 ${c} = £${Number(SAL_FX[c]).toFixed(4).replace(/0+$/, '')}`).join(' · ')}</p>` : ''}
       </section>` : '';
 
     window._salGrpOpen = window._salGrpOpen || {};
