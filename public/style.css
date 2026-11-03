@@ -7765,7 +7765,7 @@ select option { background: var(--glass-strong); color: var(--text); }
   }
   .sidebar .sidebar-nav::-webkit-scrollbar { display: none; }
   .sidebar .nav-section-label { font-size: 0 !important; width: 1px; height: 18px; padding: 0 !important; margin: 0 8px !important; background: var(--glass-line); flex: none; }
-  .sidebar .sidebar-nav > .nav-section-label:first-child { display: none; }
+  .sidebar .sidebar-nav > .nav-section-label:first-child, .sidebar .sidebar-nav > .nav-pill + .nav-section-label { display: none; }
   .sidebar .nav-item {
     flex: none; width: auto; margin: 0 !important; padding: 6px 11px !important; gap: 6px !important;
     border-radius: 999px !important; border: 1px solid transparent !important; white-space: nowrap; font-size: 13px;
@@ -7774,10 +7774,18 @@ select option { background: var(--glass-strong); color: var(--text); }
   .sidebar .nav-item .icon { display: none !important; }
   .sidebar .nav-item .nav-label { display: inline !important; }
   .sidebar .nav-item:hover { background: var(--surface-3) !important; }
-  .sidebar .nav-item.active {
-    background: rgb(var(--accent-rgb) / 0.16) !important; border-color: rgb(var(--accent-rgb) / 0.35) !important; color: var(--text) !important;
-    box-shadow: none !important;
+  /* The highlight is one sliding bubble (initNavPill), not a background on each pill */
+  .sidebar .sidebar-nav { position: relative; }
+  .sidebar .nav-item { position: relative; z-index: 1; }
+  .sidebar .nav-item.active { background: transparent !important; border-color: transparent !important; color: var(--text) !important; box-shadow: none !important; }
+  .sidebar .nav-pill {
+    position: absolute; left: 0; top: 0; z-index: 0; pointer-events: none; border-radius: 999px; opacity: 0;
+    background: rgb(var(--accent-rgb) / 0.18); border: 1px solid rgb(var(--accent-rgb) / 0.38);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 4px 14px -6px rgb(var(--accent-rgb) / 0.55);
+    transition: transform .42s cubic-bezier(.34, 1.45, .5, 1), width .42s cubic-bezier(.34, 1.45, .5, 1), opacity .2s;
   }
+  .sidebar .nav-pill.is-stretching { transition: transform .17s ease-out, width .17s ease-out, opacity .2s; }
+  .sidebar .nav-pill.no-anim { transition: none; }
   .sidebar .nav-item.active::before, .sidebar .nav-item.active::after { display: none !important; }
   /* Theme, install and sign out: small round buttons on the right */
   .sidebar .sidebar-footer {
@@ -7813,3 +7821,7 @@ select option { background: var(--glass-strong); color: var(--text); }
   .topbar .hamburger { display: none; }
   .content { padding-top: 14px; }
 }
+
+/* The sliding menu highlight is for the computer layout only */
+@media (max-width: 768px) { .nav-pill { display: none; } }
+@media (prefers-reduced-motion: reduce) { .sidebar .nav-pill { transition: none !important; } }
