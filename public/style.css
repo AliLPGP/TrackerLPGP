@@ -7964,3 +7964,107 @@ select option { background: var(--glass-strong); color: var(--text); }
 :root .modal .deal-event-group-hd { background: var(--dlg-soft) !important; }
 :root .modal .deal-event-group + .deal-event-group { border-top-color: var(--dlg-rule); }
 :root .modal .deal-package-row, :root .modal .ig-event-card { background: var(--dlg-soft) !important; border-color: var(--dlg-field-line) !important; }
+
+/* Starter form: a single tick box under a field (no NI number yet) */
+.sf-field--tick { margin-top: -6px; }
+.sf-field .sf-tick, label.sf-tick { display: inline-flex !important; align-items: center; justify-content: flex-start !important; width: auto !important; gap: 9px; cursor: pointer; font-size: 0.85rem; color: var(--text-2); }
+.sf-tick input { position: static !important; opacity: 1 !important; pointer-events: auto !important; width: 16px !important; height: 16px; min-height: 0 !important; margin: 0; padding: 0; flex: none; }
+.sf-field input:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   An employee's own page: the profile laid out full width, in two columns
+   ═══════════════════════════════════════════════════════════════════════════ */
+.ep-page { max-width: 1240px; margin: 0 auto; }
+.ep-back {
+  display: inline-flex; align-items: center; gap: 6px; margin: 0 0 14px; padding: 6px 12px 6px 8px;
+  border: none; border-radius: 999px; background: transparent; cursor: pointer;
+  font: 500 13px/1.2 var(--font-sans); color: var(--muted);
+}
+.ep-back:hover { background: var(--surface-3); color: var(--text); }
+:root .ep-card { margin-bottom: 18px; padding: 0; overflow: hidden; }
+.ep-card--head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.ep-card--head .ep-head { padding: 26px 28px; }
+.ep-card--head .ep-avatar { width: 72px; height: 72px; border-radius: 20px; font-size: 24px; }
+.ep-card--head .ep-who h2 { font-size: 26px; }
+.ep-card--head .ep-who p { font-size: 14.5px; }
+.ep-card--head .ep-actions { padding: 0 28px; border-bottom: none; margin-left: auto; }
+.ep-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.ep-col { min-width: 0; }
+.ep-page .ep-details { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.ep-page .ep-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.ep-page #epDaysOff, .ep-page #epPayments { max-height: 340px; overflow-y: auto; }
+@media (max-width: 1100px) {
+  .ep-page .ep-tiles { grid-template-columns: 1fr 1fr; }
+  .ep-page .ep-details { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 900px) {
+  .ep-cols { grid-template-columns: 1fr; gap: 0; }
+  .ep-card--head .ep-actions { margin-left: 0; padding: 0 20px 20px; }
+}
+@media (max-width: 520px) {
+  .ep-card--head .ep-head { padding: 22px 20px 16px; }
+  .ep-card--head .ep-avatar { width: 56px; height: 56px; font-size: 19px; }
+  .ep-card--head .ep-who h2 { font-size: 21px; }
+  .ep-page .ep-details, .ep-page .ep-tiles { grid-template-columns: 1fr; }
+}
+
+/* Salary cards: a clear way into the person's profile */
+.sc-emp-name .emp-link { cursor: pointer; }
+.sc-profile {
+  border: none; background: none; padding: 0; margin-left: 2px; cursor: pointer;
+  font: 500 12px/1.3 var(--font-sans); color: var(--accent);
+}
+.sc-profile:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Portfolio money, easy to read: Allocated, Paid and Owed always labelled,
+   and every bar shows how much of the allocated money has been paid.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.pf-st { display: flex; flex-direction: column; margin-top: 4px; }
+.pf-st-row {
+  display: grid; grid-template-columns: minmax(0, 2fr) 0.7fr 1fr 1fr 1fr minmax(150px, 1.3fr);
+  align-items: center; gap: 14px; padding: 12px 4px; border-bottom: 1px solid var(--line, var(--border));
+}
+.pf-st-row:last-child { border-bottom: none; }
+.pf-st-head { padding-top: 4px; padding-bottom: 8px; font: 600 10.5px/1 var(--font-mono); text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
+.pf-st-head span:not(:first-child) { text-align: right; }
+.pf-st-name { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.pf-st-name .pf-chip { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.pf-st-name b { display: block; font: 600 14px/1.25 var(--font-sans); color: var(--text); }
+.pf-st-name small { display: block; margin-top: 2px; font: 400 11.5px/1.3 var(--font-sans); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-st-num { text-align: right; font: 600 14px/1.2 var(--font-mono); color: var(--text); font-feature-settings: "tnum"; }
+.pf-st-num small { display: block; margin-top: 2px; font: 400 11px/1.2 var(--font-sans); color: var(--muted); }
+.pf-st-big { font-size: 15px; }
+:root .pf-st-paid, :root .pf-st-paid b { color: var(--positive); }
+:root .pf-st-owed, :root .pf-st-owed b { color: var(--warning, #d97706); }
+.pf-st-prog { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.pf-st-prog b { min-width: 38px; text-align: right; font: 600 13px/1 var(--font-mono); color: var(--text); }
+.pf-st-prog small { font: 400 12px/1.3 var(--font-sans); color: var(--dim); }
+.pf-paidbar { position: relative; display: block; flex: 1; min-width: 60px; height: 8px; border-radius: 999px; background: var(--surface-3, var(--border)); overflow: hidden; }
+.pf-paidbar > span { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 999px; background: var(--positive); transition: width .7s var(--ease); }
+
+/* Each event: three labelled figures, then how much is paid */
+.pf-money { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.pf-money span { min-width: 0; }
+.pf-money small { display: block; font: 500 10.5px/1 var(--font-mono); text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+.pf-money b { display: block; margin-top: 5px; font: 600 14px/1.1 var(--font-mono); color: var(--text); font-feature-settings: "tnum"; white-space: nowrap; }
+.pf-paidline { display: flex; align-items: center; gap: 10px; margin-top: 9px; }
+.pf-paidline em { font: 500 11.5px/1 var(--font-sans); font-style: normal; color: var(--muted); white-space: nowrap; min-width: 62px; text-align: right; }
+.pf-money-none { font: 400 12.5px/1.4 var(--font-sans); color: var(--dim); }
+.pf-group-total { font-size: 12.5px; }
+.pf-group-total small { text-transform: none; }
+
+@media (max-width: 900px) {
+  .pf-st-head { display: none; }
+  .pf-st-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+  .pf-st-name, .pf-st-prog { grid-column: 1 / -1; }
+  .pf-st-num { text-align: left; }
+  .pf-st-num::before { content: attr(data-l); display: block; margin-bottom: 4px; font: 500 10.5px/1 var(--font-mono); text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+  .pf-group-hd { flex-wrap: wrap; }
+  .pf-group-total { margin-left: 0; width: 100%; }
+}
+:root .pf-st-zero, :root .pf-st-zero b { color: var(--dim); font-weight: 500; }
+.pf-st-row { column-gap: 22px; }
+.pf-st-prog { padding-left: 8px; }
+.pf-paidbar { background: var(--border-bright, var(--border)); }
+@media (max-width: 900px) { .pf-st-row { align-items: start; } }

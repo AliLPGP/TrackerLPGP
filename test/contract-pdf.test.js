@@ -6,7 +6,7 @@ const { renderContractPdf, sections, spell } = require('../contract-pdf');
 
 const base = {
   employee_name: 'Jane Example', employee_address: '1 Sample Street, London', position: 'Producer', country: 'Philippines',
-  employment_label: 'Full-Time Remote', schedule: ['Monday to Friday', '9:00 AM - 5:00 PM (UK Time)'], monthly_salary: 'PHP 30,000.00',
+  employment_label: 'Full-Time Remote', schedule: ['Monday to Friday', '9:00 AM - 5:00 PM (UK Time)'], annual_salary: 'PHP 360,000.00',
   start_date: '2 November 2026', employment_type: 'self_employed', work_arrangement: 'remote', holiday_days: 5,
   probation: { state: 'none' }, signed_date: '',
 };
@@ -31,6 +31,9 @@ const textOf = c => sections(c).map(s => s[1].join(' ')).join(' ');
   // Hours: PHP staff work fixed UK office hours; UK staff one of two shifts the Company sets
   assert.ok(textOf({ ...base, flexible_hours: false }).includes('time zone differences'));
   assert.ok(textOf({ ...base, flexible_hours: true }).includes('may change them during the year'));
+
+  // Pay is stated as the annual salary before tax
+  assert.ok(textOf(base).includes('annual salary of PHP 360,000.00 before tax'));
 
   // Where they work
   assert.ok(textOf(base).includes('fully remote position'));

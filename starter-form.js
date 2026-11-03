@@ -20,8 +20,9 @@ const STARTER_FORM = [
       { key: 'date_of_birth', label: 'Date of birth', type: 'date', required: true },
       { key: 'address', label: 'Home address', type: 'textarea', required: true, max: 300 },
       { key: 'postcode', label: 'Postcode', type: 'text', required: true, max: 12 },
-      { key: 'ni_number', label: 'National Insurance number', type: 'text', max: 13, pattern: '^[A-CEGHJ-PR-TW-Z]{2}\\s?\\d{2}\\s?\\d{2}\\s?\\d{2}\\s?[A-D]$',
-        patternMessage: 'Enter it like QQ 12 34 56 C', hint: 'Leave it blank if you do not have one yet.' },
+      { key: 'ni_number', label: 'National Insurance number', type: 'text', required: true, requiredUnless: { no_ni: 'Yes' }, max: 13, pattern: '^[A-CEGHJ-PR-TW-Z]{2}\\s?\\d{2}\\s?\\d{2}\\s?\\d{2}\\s?[A-D]$',
+        patternMessage: 'Enter it like QQ 12 34 56 C', hint: 'On your payslips, P60 or the HMRC app.' },
+      { key: 'no_ni', label: 'I don\u2019t have a National Insurance number yet', type: 'tick' },
       { key: 'start_date', label: 'Employment start date', type: 'date', required: true },
     ],
   },
@@ -62,6 +63,8 @@ const STARTER_FORM = [
 ];
 
 const allFields = () => STARTER_FORM.flatMap(s => s.fields);
+// A field that need not be answered when another answer says so (no NI number yet)
+const excused = (f, raw) => !!f.requiredUnless && Object.entries(f.requiredUnless).every(([k, v]) => String(raw[k] || '') === v);
 const shown = (f, a) => !f.show || Object.entries(f.show).every(([k, v]) => a[k] === v);
 
 /** Checked, tidied answers, or { errors: {key: message} }. Hidden questions are dropped. */
@@ -71,6 +74,9 @@ function checkAnswers(raw) {
   for (const f of allFields()) {
     if (!shown(f, out)) continue;
     let v = a[f.key];
+    if (f.type === 'tick') { out[f.key] = v === 'Yes' || v === true ? 'Yes' : ''; continue; }
+    // Not needed and not given: nothing to check (an NI number is dropped if they say they have none)
+    if (excused(f, a)) { out[f.key] = ''; continue; }
     if (f.type === 'checkboxes') {
       v = (Array.isArray(v) ? v : []).filter(x => f.options.includes(x));
       if (f.required && !v.length) errors[f.key] = 'Tick at least one';

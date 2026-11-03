@@ -373,7 +373,8 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       job_title: contractPosition(emp.job_title),
       working_pattern: pattern,
       work_arrangement: ['remote', 'office', 'hybrid'].includes(emp.work_arrangement) ? emp.work_arrangement : 'remote',
-      country: String(emp.country || '').trim() || COUNTRY_BY_CURRENCY[currency] || 'United Kingdom',
+      // From the employment type: Self-Employed PHP staff work from the Philippines
+      country: isPhpStaff(emp) ? 'Philippines' : (COUNTRY_BY_CURRENCY[currency] || 'United Kingdom'),
       schedule: scheduleFor(emp, pattern),
       flexible_hours: !isPhpStaff(emp),
       employment_type: emp.employment_type === 'self_employed' ? 'self_employed' : 'payroll',
@@ -411,7 +412,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       work_arrangement: fd.work_arrangement,
       schedule: String(fd.schedule).split(/\r?\n/).map(s => s.trim()).filter(Boolean),
       flexible_hours: fd.flexible_hours !== false,
-      monthly_salary: `${fd.currency} ${money(fd.annual_salary / 12)}`,
+      annual_salary: `${fd.currency} ${money(fd.annual_salary)}`,
       start_date: longDate(fd.start_date),
       employment_type: fd.employment_type,
       holiday_days: fd.holiday_days,

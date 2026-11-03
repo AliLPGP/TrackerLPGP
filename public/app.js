@@ -277,9 +277,12 @@ function navigate(page) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.querySelectorAll('.bottom-nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('page-' + page).classList.add('active');
-  document.querySelector(`.nav-item[data-page="${page}"]`)?.classList.add('active');
-  document.querySelector(`.bottom-nav-item[data-page="${page}"]`)?.classList.add('active');
-  const titles = { dashboard:'Dashboard', tracking:'Daily Tracking', salary:'Salary Tracker', employees:'Employees', reports:'Reports', calendar:'Calendar', admins:'Admin Users', hotels:'Hotel Expenses', expenses:'Expenses', subscriptions:'Subscriptions', portfolio:'Portfolio', deals:'Deal Tracker', eventkit:'Event Kit' };
+  // An employee's own page keeps the menu on the page it was opened from
+  const navPage = page === 'employee' ? _empPageReturn : page;
+  if (page !== 'employee' && _profileMode === 'page') { _profileEmpId = null; const pb = document.getElementById('empPageBody'); if (pb) pb.innerHTML = ''; }
+  document.querySelector(`.nav-item[data-page="${navPage}"]`)?.classList.add('active');
+  document.querySelector(`.bottom-nav-item[data-page="${navPage}"]`)?.classList.add('active');
+  const titles = { dashboard:'Dashboard', tracking:'Daily Tracking', salary:'Salary Tracker', employees:'Employees', reports:'Reports', calendar:'Calendar', admins:'Admin Users', hotels:'Hotel Expenses', expenses:'Expenses', subscriptions:'Subscriptions', portfolio:'Portfolio', deals:'Deal Tracker', eventkit:'Event Kit', employee:'Employee' };
   document.getElementById('pageTitle').textContent = titles[page] || page;
   if (page === 'employees') loadEmpTable();
   if (page === 'admins') loadAdmins();
@@ -323,6 +326,8 @@ async function loadEmpTable() {
   if (sub) sub.innerHTML = `<strong>${active.length}</strong> active · ${payroll} payroll · ${active.length - payroll} self-employed` +
     (allEmployeesData.length > active.length ? ` · ${allEmployeesData.length - active.length} left` : '');
   renderEmpTable();
+  // Someone's own page is open: show their saved changes there too
+  if (_profileMode === 'page' && _profileEmpId && document.getElementById('page-employee')?.classList.contains('active')) openEmployeeProfile(_profileEmpId);
 }
 
 function setEmpFilter(key, value) {
@@ -445,7 +450,6 @@ function openEmpModal(emp = null) {
     : emp.currency === 'PHP' ? 'self_employed_php' : 'self_employed_uk';
   document.getElementById('empHours').value = emp && emp.working_pattern === 'part-time' ? 'part-time' : 'full-time';
   document.getElementById('empArrangement').value = emp && ['office', 'hybrid'].includes(emp.work_arrangement) ? emp.work_arrangement : 'remote';
-  document.getElementById('empCountry').value = emp ? (emp.country || '') : '';
   document.getElementById('empCurrency').value = emp ? (emp.currency || 'GBP') : 'GBP';
   document.getElementById('empAnnualSalary').value = emp ? emp.annual_salary : 0;
   document.getElementById('empPensionRate').value = emp && emp.pension_rate != null ? emp.pension_rate : '';
@@ -522,10 +526,9 @@ async function saveEmployee() {
 
   const working_pattern = document.getElementById('empHours').value;
   const work_arrangement = document.getElementById('empArrangement').value;
-  const country = document.getElementById('empCountry').value.trim();
   const payload = { name, employment_type, annual_salary, currency, start_date, pension_rate,
                     job_title, department, phone, email, contract_end_date, probation_end_date, portal_pin, working_pattern,
-                    work_arrangement, country };
+                    work_arrangement };
   if (id) {
     await fetch(`/api/employees/${id}`, {
       method: 'PUT',
@@ -738,7 +741,7 @@ async function loadDashboard() {
       <td class="${row.total_deduction > 0 ? 'text-danger fw-bold' : ''}">${row.total_deduction > 0 ? fmtMoney(row.total_deduction, currency) : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${annualCell}</td>
       <td>${lastCell}</td>
-      <td><button class="btn btn-ghost btn-sm" onclick="goToTracking(${row.employee_id})">View</button></td>
+      <td><button class="btn btn-ghost btn-sm" onclick="openEmployeeProfile(${row.employee_id})">View</button></td>
     `;
     tbody.appendChild(tr);
   });
@@ -1158,66 +1161,107 @@ function ensureProfileDrawer() {
 
 function closeEmployeeProfile() {
   document.getElementById('empDrawer')?.classList.remove('open');
-  _profileEmpId = null;
+  // On their own page the profile stays open behind any dialog opened from it
+  if (_profileMode !== 'page') _profileEmpId = null;
 }
 
-async function openEmployeeProfile(empId) {
+// Admins and managers get the person's own page (everything about them, laid out in two
+// columns); staff viewing a teammate get the side panel. Both are filled by the same code,
+// so the sections never drift apart. Only one of the two holds the content at a time.
+let _profileMode = 'drawer';
+let _empPageReturn = 'employees';
+
+function closeEmployeePage() {
+  const back = _empPageReturn && _empPageReturn !== 'employee' ? _empPageReturn : 'employees';
+  _profileEmpId = null;
+  navigate(back);
+}
+
+async function openEmployeeProfile(empId, opts = {}) {
   empId = Number(empId);
   if (!empId) return;
-  const drawer = ensureProfileDrawer();
-  const body = document.getElementById('epBody');
-  _profileEmpId = empId;
+  const isAdmin = currentUser && currentUser.role === 'admin';
+  const canManage = currentUser && ['admin', 'manager'].includes(currentUser.role);
+  const asPage = canManage && !opts.drawer && !!document.getElementById('page-employee');
   if (!(allEmployeesData || []).some(e => e.id === empId)) {
     try { const r = await fetch('/api/employees/all'); if (r.ok) allEmployeesData = await r.json(); } catch {}
   }
   const emp = (allEmployeesData || []).find(e => e.id === empId);
   if (!emp) { showToast('Employee not found', 'error'); return; }
-  const isAdmin = currentUser && currentUser.role === 'admin';
-  const canManage = currentUser && ['admin', 'manager'].includes(currentUser.role);
+
+  let body;
+  if (asPage) {
+    document.getElementById('empDrawer')?.classList.remove('open');
+    const db = document.getElementById('epBody'); if (db) db.innerHTML = '';
+    body = document.getElementById('empPageBody');
+    const pageEl = document.getElementById('page-employee');
+    if (!pageEl.classList.contains('active')) {
+      _empPageReturn = document.querySelector('.page.active')?.id.replace('page-', '') || 'employees';
+      navigate('employee');
+      window.scrollTo({ top: 0 });
+    }
+  } else {
+    const drawer = ensureProfileDrawer();
+    const pb = document.getElementById('empPageBody'); if (pb) pb.innerHTML = '';
+    body = document.getElementById('epBody');
+    drawer.classList.add('open');
+  }
+  _profileMode = asPage ? 'page' : 'drawer';
+  _profileEmpId = empId;
+  if (asPage) document.getElementById('pageTitle').textContent = 'Employee profile';
+
   const year = new Date().getFullYear();
-  const typeLabel = emp.employment_type === 'self_employed' ? 'Self-employed' : 'Payroll';
+  const typeLabel = emp.employment_type === 'self_employed' ? (emp.currency === 'PHP' ? 'Self-employed PHP' : 'Self-employed UK') : 'Payroll';
   const status = emp.active
     ? '<span class="ep-status ep-status--on">Active</span>'
     : `<span class="ep-status">${emp.termination_date ? 'Left ' + fmtDateShort(emp.termination_date) : 'Inactive'}</span>`;
   const detail = (label, value) => `<div class="ep-detail"><span>${label}</span><strong>${value || '<em>—</em>'}</strong></div>`;
+  // Hours follow the employment type, as on their contract
+  const shift = emp.employment_type === 'self_employed' && emp.currency === 'PHP' ? '9am to 5pm (UK time)' : '10am to 6pm or 12pm to 8pm (UK time)';
 
-  body.innerHTML = `
+  const head = `
     <header class="ep-head">
       <div class="ep-avatar">${esc(empInitials(emp.name))}</div>
       <div class="ep-who">
         <h2 id="epName">${esc(emp.name)}</h2>
         <p>${esc([emp.job_title, emp.department].filter(Boolean).join(' · ') || 'No role set')}</p>
-        <div class="ep-chips">${status}<span class="ep-chip">${typeLabel}</span>${emp.currency && emp.currency !== 'GBP' ? `<span class="ep-chip">${esc(emp.currency)}</span>` : ''}</div>
+        <div class="ep-chips">${status}<span class="ep-chip">${typeLabel}</span>${emp.currency && emp.currency !== 'GBP' ? `<span class="ep-chip">${esc(emp.currency)}</span>` : ''}${emp.working_pattern === 'part-time' ? '<span class="ep-chip">Part-time</span>' : ''}</div>
       </div>
-      <button class="modal-close ep-close" onclick="closeEmployeeProfile()" aria-label="Close">✕</button>
-    </header>
-    ${canManage ? `<div class="ep-actions">
+      ${asPage ? '' : '<button class="modal-close ep-close" onclick="closeEmployeeProfile()" aria-label="Close">✕</button>'}
+    </header>`;
+  const actions = canManage ? `<div class="ep-actions">
       <button class="btn btn-sm" onclick="epEdit(${emp.id})">Edit details</button>
+      ${asPage ? `<button class="btn btn-sm" onclick="goToTracking(${emp.id})">Daily tracking</button>` : ''}
       ${isAdmin ? `<button class="btn btn-sm" onclick="closeEmployeeProfile();openAddPinModal(${emp.id}, ${esc(JSON.stringify(emp.name))})">${emp.portal_pin ? 'Change PIN' : 'Add portal PIN'}</button>` : ''}
       ${isAdmin ? (emp.active
         ? `<button class="btn btn-sm ep-danger" onclick="closeEmployeeProfile();openTerminateModal(${emp.id}, ${esc(JSON.stringify(emp.name))})">Terminate</button>`
         : `<button class="btn btn-sm" onclick="closeEmployeeProfile();reactivateEmployee(${emp.id})">Reactivate</button>`) : ''}
-    </div>` : ''}
+    </div>` : '';
 
-    <section class="ep-sec">
+  const secDetails = `<section class="ep-sec">
       <h3>Details</h3>
       <div class="ep-details">
         ${detail('Email', emp.email ? `<a href="mailto:${esc(emp.email)}">${esc(emp.email)}</a>` : '')}
         ${detail('Phone', emp.phone ? `<a href="tel:${esc(emp.phone)}">${esc(emp.phone)}</a>` : '')}
         ${detail('Started', emp.start_date ? fmtDateShort(emp.start_date) : '')}
         ${detail('Contract ends', emp.contract_end_date ? fmtDateShort(emp.contract_end_date) : (emp.active ? 'Permanent' : ''))}
+        ${asPage ? detail('Employment', typeLabel + (emp.working_pattern === 'part-time' ? ', part-time' : ', full-time')) : ''}
+        ${asPage && shift ? detail('Hours', esc(shift)) : ''}
+        ${asPage && emp.work_arrangement ? detail('Works', ({ remote: 'Remotely', office: 'In the office', hybrid: 'Hybrid' })[emp.work_arrangement] || esc(emp.work_arrangement)) : ''}
         ${isAdmin ? detail('Annual salary', emp.annual_salary > 0 ? fmtMoney(emp.annual_salary, emp.currency) : '') : ''}
         ${isAdmin && emp.employment_type === 'payroll' ? detail('Pension', emp.pension_rate ? emp.pension_rate + '%' : 'None') : ''}
         ${isAdmin && emp.probation_end_date ? detail('Probation', probationDetailHtml(emp)) : ''}
       </div>
-    </section>
-
-    <section class="ep-sec">
+    </section>`;
+  const secYear = `<section class="ep-sec">
       <h3>${year} so far</h3>
       <div class="ep-tiles" id="epTiles"><div class="ep-loading">Loading…</div></div>
-    </section>
-
-    ${isAdmin ? `<section class="ep-sec">
+    </section>`;
+  const secDaysOff = asPage ? `<section class="ep-sec">
+      <h3>Days off in ${year}</h3>
+      <div id="epDaysOff" class="ep-list"><div class="ep-loading">Loading…</div></div>
+    </section>` : '';
+  const secWarnings = isAdmin ? `<section class="ep-sec">
       <div class="ep-sec-head">
         <div><h3>Warnings <span class="ep-count" id="epWarnCount"></span></h3><p class="ep-sec-note">They see each warning and its reason in their portal, and get a notification when one is added.</p></div>
         <button class="btn btn-sm" onclick="epToggleWarningForm(true)">Add warning</button>
@@ -1238,16 +1282,14 @@ async function openEmployeeProfile(empId) {
         </div>
       </div>
       <div id="epWarnings" class="ep-list"><div class="ep-loading">Loading…</div></div>
-    </section>
-
-    <section class="ep-sec ep-sec--sign">
+    </section>` : '';
+  const secContract = isAdmin ? `<section class="ep-sec ep-sec--sign">
       <div class="ep-sec-head">
         <div><h3>Contract</h3><p class="ep-sec-note">Their employment contract is made from your template and their details, and they sign it in onboarding. The signed copy is filed below automatically.</p></div>
       </div>
       <div id="epContract"><div class="ep-loading">Loading…</div></div>
-    </section>
-
-    <section class="ep-sec">
+    </section>` : '';
+  const secDocs = isAdmin ? `<section class="ep-sec">
       <div class="ep-sec-head">
         <div><h3>Documents on file</h3><p class="ep-sec-note">Files you already have, such as signed contracts. Staff are not asked to sign these.</p></div>
         <div class="ep-doc-add">
@@ -1258,12 +1300,11 @@ async function openEmployeeProfile(empId) {
         </div>
       </div>
       <div id="epDocs" class="ep-list"><div class="ep-loading">Loading…</div></div>
-    </section>` : ''}
-
-    ${isAdmin ? `<section class="ep-sec">
+    </section>` : '';
+  const secOnboarding = isAdmin ? `<section class="ep-sec">
       <div id="epOnboarding"><div class="ep-loading">Loading…</div></div>
-    </section>
-    ${emp.employment_type === 'payroll' ? `<section class="ep-sec">
+    </section>` : '';
+  const secPayslips = isAdmin && emp.employment_type === 'payroll' ? `<section class="ep-sec">
       <div class="ep-sec-head">
         <h3>Payslips</h3>
         <div class="ep-doc-add">
@@ -1272,42 +1313,69 @@ async function openEmployeeProfile(empId) {
         </div>
       </div>
       <div id="epPayslips" class="ep-list"><div class="ep-loading">Loading…</div></div>
-    </section>` : ''}` : ''}
-
-    ${isAdmin ? `<section class="ep-sec">
-      <h3>Recent payments</h3>
+    </section>` : '';
+  const secPayments = isAdmin ? `<section class="ep-sec">
+      <h3>${asPage ? 'Payment history' : 'Recent payments'}</h3>
       <div id="epPayments" class="ep-list"><div class="ep-loading">Loading…</div></div>
-    </section>` : ''}
-
-    ${canManage ? `<section class="ep-sec">
+    </section>` : '';
+  const secEvents = canManage ? `<section class="ep-sec">
       <h3>Events</h3>
       <div id="epEvents" class="ep-list"><div class="ep-loading">Loading…</div></div>
-    </section>
-    <section class="ep-sec">
+    </section>` : '';
+  const secTeams = canManage ? `<section class="ep-sec">
       <h3>Producer teams</h3>
       <div id="epPortfolio" class="epr-list"></div>
-    </section>` : ''}`;
-  drawer.classList.add('open');
+    </section>` : '';
+
+  body.innerHTML = asPage
+    ? `<button type="button" class="ep-back" onclick="closeEmployeePage()">← Back to ${esc(({ salary: 'Salary', employees: 'Employees', dashboard: 'Dashboard', deals: 'Deal Tracker', portfolio: 'Portfolio', eventkit: 'Event Kit', tracking: 'Daily Tracking', calendar: 'Calendar' })[_empPageReturn] || 'Employees')}</button>
+      <div class="card ep-card ep-card--head">${head}${actions}</div>
+      <div class="ep-cols">
+        <div class="ep-col">
+          <div class="card ep-card">${secDetails}</div>
+          <div class="card ep-card">${secYear}${secDaysOff}</div>
+          ${secPayments ? `<div class="card ep-card">${secPayments}</div>` : ''}
+          ${canManage ? `<div class="card ep-card">${secEvents}${secTeams}</div>` : ''}
+        </div>
+        <div class="ep-col">
+          ${isAdmin ? `<div class="card ep-card">${secOnboarding}</div>
+          <div class="card ep-card">${secContract}</div>
+          <div class="card ep-card">${secWarnings}</div>
+          <div class="card ep-card">${secDocs}${secPayslips}</div>` : ''}
+        </div>
+      </div>`
+    : head + actions + secDetails + secYear + secWarnings + secContract + secDocs + secOnboarding + secPayslips + secPayments + secEvents + secTeams;
 
   // Figures that need their own calls; each fills its section when ready.
-  const [statsRes, payRes] = await Promise.all([
+  const [statsRes, payRes, recRes] = await Promise.all([
     fetch(`/api/employees/${empId}/year-stats?year=${year}`).catch(() => null),
     isAdmin ? fetch(`/api/payments/${empId}`).catch(() => null) : null,
+    asPage ? fetch(`/api/records/${empId}?from=${year}-01-01&to=${year}-12-31`).catch(() => null) : null,
   ]);
   if (_profileEmpId !== empId) return;
   const stats = statsRes && statsRes.ok ? await statsRes.json() : null;
   const pays = payRes && payRes.ok ? await payRes.json() : [];
+  const records = recRes && recRes.ok ? await recRes.json() : [];
+  if (_profileEmpId !== empId) return;
   const paidYear = pays.filter(p => Number(p.payment_year) === year).reduce((a, p) => a + (parseFloat(p.amount) || 0), 0);
   const last = pays[0];
   const tile = (label, value, sub) => `<div class="ep-tile"><span>${label}</span><strong>${value}</strong>${sub ? `<small>${sub}</small>` : ''}</div>`;
-  document.getElementById('epTiles').innerHTML =
+  const tilesEl = document.getElementById('epTiles');
+  if (tilesEl) tilesEl.innerHTML =
     (isAdmin ? tile('Paid', fmtMoney(paidYear, emp.currency), `${pays.filter(p => Number(p.payment_year) === year).length} payments`) : '') +
     (isAdmin ? tile('Last payment', last ? fmtMoney(last.amount, last.currency || emp.currency) : '—', last ? `${MONTHS[Number(last.payment_month)]} ${last.payment_year}` : 'None yet') : '') +
     (stats ? tile('Days off', `${stats.total_days_off} / ${stats.allowance_days}`, stats.excess_days > 0 ? `${stats.excess_days} over allowance` : `${stats.remaining_allowance} left`) : '') +
     (stats && isAdmin ? tile('Day-off deductions', stats.excess_deduction > 0 ? fmtMoney(stats.excess_deduction, emp.currency) : 'None', '') : '');
+  const offEl = document.getElementById('epDaysOff');
+  if (offEl) {
+    const off = records.filter(r => r.is_day_off > 0);
+    offEl.innerHTML = off.length
+      ? off.map(r => `<div class="ep-row"><span>${fmtDateShort(r.record_date)}${r.notes ? `<small>${esc(r.notes)}</small>` : ''}</span><strong>${r.is_day_off === 1 ? 'Full day' : 'Half day'}${r.no_deduction ? ' <span class="ep-chip">Not deducted</span>' : ''}</strong></div>`).join('')
+      : '<div class="ep-empty">No days off recorded this year.</div>';
+  }
   const payEl = document.getElementById('epPayments');
   if (payEl) payEl.innerHTML = pays.length
-    ? pays.slice(0, 6).map(p => `<div class="ep-row"><span>${MONTHS[Number(p.payment_month)]} ${p.payment_year}${p.notes ? `<small>${esc(p.notes)}</small>` : ''}</span><strong>${fmtMoney(p.amount, p.currency || emp.currency)}</strong></div>`).join('')
+    ? pays.slice(0, asPage ? 24 : 6).map(p => `<div class="ep-row"><span>${MONTHS[Number(p.payment_month)]} ${p.payment_year}${p.notes ? `<small>${esc(p.notes)}</small>` : ''}</span><strong>${fmtMoney(p.amount, p.currency || emp.currency)}</strong></div>`).join('')
     : '<div class="ep-empty">No payments recorded.</div>';
   if (isAdmin) { loadEmpWarnings(empId); loadEmpContract(empId); loadEmpDocs(empId); loadEmpOnboarding(empId); if (emp.employment_type === 'payroll') loadEmpPayslips(empId); }
   if (canManage) {
@@ -1482,7 +1550,7 @@ async function epProbationDone(empId) {
   if (!res || !res.ok) { showToast('Could not save', 'error'); return; }
   showToast('Probation review marked done', 'success');
   await loadEmpTable();
-  openEmployeeProfile(empId);
+  if (_profileMode !== 'page') openEmployeeProfile(empId);
 }
 
 const ID_TYPE_LABEL = { passport: 'Passport', driving_licence: 'Driving licence', other: 'ID document' };
@@ -1504,7 +1572,7 @@ async function loadEmpOnboarding(empId) {
     const detail = (label, value, wide) => `<div class="ep-detail"${wide ? ' style="grid-column:1/-1"' : ''}><span>${label}</span><strong style="white-space:pre-line">${value || '<em>—</em>'}</strong></div>`;
     // Collapsed by default: what they entered at onboarding, plus their ID. Signed documents
     // are listed once, under Documents on file.
-    box.innerHTML = `<details class="ep-pd">
+    box.innerHTML = `<details class="ep-pd"${_profileMode === 'page' ? ' open' : ''}>
       <summary><h3>Personal details</h3>${status}</summary>
       ${o.started ? `<div class="ep-details" style="margin:12px 0">
         ${detail('Date of birth', o.date_of_birth ? fmtDateShort(o.date_of_birth) : '')}
@@ -3064,6 +3132,7 @@ async function loadSalaryPage() {
             <div class="sc-emp-badges">
               <span class="badge ${typeBadge}" style="font-size:0.67rem">${typeLabel}</span>
               ${emp.start_date ? `<span class="sc-emp-since">${isTerminated ? 'Started' : 'Since'} ${emp.start_date}</span>` : ''}
+              <button type="button" class="sc-profile" onclick="event.stopPropagation();openEmployeeProfile(${Number(emp.employee_id)})">View profile →</button>
             </div>
           </div>
           <div class="sc-annual">
@@ -5771,26 +5840,26 @@ function renderPortfolioGrid() {
 
   const heroHtml =
     `<section class="pf-panel pf-hero">
-      <p class="pf-eyebrow">${esc(yearLabel)} · allocated to date</p>
+      <p class="pf-eyebrow">${esc(yearLabel)} · deals won to date</p>
       <div class="pf-hero-row">
         <p class="pf-hero-fig">${fmtGBP(allocated)}</p>
         <p class="pf-hero-sub">of which <b>${fmtGBP(paid)}</b> paid</p>
       </div>
-      <div class="pf-meter" role="img" aria-label="${collectPct}% of allocated is paid"><div class="pf-meter-fill pf-anim" data-pct="${meterPct}"></div></div>
+      <div class="pf-meter" role="img" aria-label="${collectPct}% of deals won is paid"><div class="pf-meter-fill pf-anim" data-pct="${meterPct}"></div></div>
       <p class="pf-hero-note">${allocated > 0
         ? `<b>${collectPct}%</b> collected · ${fmtGBP(outstanding)} outstanding across ${filtered.length} event${filtered.length === 1 ? '' : 's'}`
-        : `Nothing allocated yet across ${filtered.length} event${filtered.length === 1 ? '' : 's'}`}</p>
+        : `No deals won yet across ${filtered.length} event${filtered.length === 1 ? '' : 's'}`}</p>
     </section>`;
 
   const kpi = (label, value, sub, tone) =>
     `<div class="dss-card dss-card--${tone}"><div class="dss-label">${label}</div><div class="dss-value">${value}</div><div class="pf-kpi-sub">${sub}</div></div>`;
   const kpiHtml =
     `<div class="pf-kpis">` +
-      kpi('Events', filtered.length, `${deals} deal${deals === 1 ? '' : 's'} allocated`, 'neutral') +
-      kpi('Allocated', fmtGBP(allocated), 'sponsor money against these events', 'accent') +
+      kpi('Events', filtered.length, `${deals} deal${deals === 1 ? '' : 's'} won`, 'neutral') +
+      kpi('Deals won', fmtGBP(allocated), 'sponsor deals won for these events', 'accent') +
       kpi('Paid', fmtGBP(paid), 'invoiced and received', 'ok') +
-      kpi('Outstanding', fmtGBP(outstanding), outstanding > 0 ? 'allocated, not yet paid' : 'nothing owed', outstanding > 0 ? 'warn' : 'neutral') +
-      kpi('Collected', `${collectPct}%`, allocated > 0 ? 'of allocated is paid' : 'nothing allocated yet', 'neutral') +
+      kpi('Outstanding', fmtGBP(outstanding), outstanding > 0 ? 'won, not yet paid' : 'nothing owed', outstanding > 0 ? 'warn' : 'neutral') +
+      kpi('Collected', `${collectPct}%`, allocated > 0 ? 'of deals won is paid' : 'no deals won yet', 'neutral') +
     `</div>`;
 
   // ── Revenue by portfolio ──
@@ -5805,38 +5874,30 @@ function renderPortfolioGrid() {
     ...PORT_SERIES.filter(s => bySeries.has(s.id)).map(s => ({ ...bySeries.get(s.id), short: s.short, name: s.name, color: `var(--chart-${s.chart})` })),
     ...(bySeries.has('unassigned') ? [{ ...bySeries.get('unassigned'), short: 'Unassigned', name: 'No series yet', color: 'var(--dim)' }] : []),
   ];
-  const seriesScale = Math.max(1, ...seriesRows.map(r => r.allocated));
   const seriesHtml =
     `<section class="pf-panel">
       <div class="pf-panel-hd">
         <div>
-          <h2 class="pf-panel-title">Revenue by portfolio</h2>
-          <p class="pf-panel-desc">Allocated per programme series. The tick on each bar is how much of it has been paid.</p>
+          <h2 class="pf-panel-title">Revenue by series</h2>
+          <p class="pf-panel-desc">What each programme series has brought in: the sponsor deals won for its events, how much of it is paid, and what is still owed.</p>
         </div>
         <p class="pf-panel-aside">Amounts in GBP</p>
       </div>
-      <div class="pf-series">${seriesRows.map(r => {
-        const w = r.allocated / seriesScale * 100;
-        const pw = Math.min(100, r.paid / seriesScale * 100);
-        return `<div class="pf-series-row" tabindex="0">
-          <div class="pf-series-top">
-            <span class="pf-series-name"><span class="pf-chip" style="background:${r.color}"></span><span class="pf-series-short">${esc(r.short)}</span><span class="pf-series-n">${r.events} event${r.events === 1 ? '' : 's'}</span></span>
-            <span class="pf-series-val">${fmtGBP(r.allocated)} <small>· ${fmtGBP(r.paid)} paid</small></span>
-          </div>
-          <div class="pf-track">
-            <div class="pf-bar pf-anim" data-pct="${w}" style="background:${r.color}"></div>
-            ${r.paid > 0 && r.paid < r.allocated ? `<span class="pf-mark" style="left:calc(${pw}% - 1px)" title="Paid ${fmtGBP(r.paid)}"></span>` : ''}
-          </div>
-          <div class="pf-tip">
-            <div class="pf-tip-title">${esc(r.name)}</div>
-            <div class="pf-tip-row"><span>Allocated</span><span>${fmtGBP(r.allocated)}</span></div>
-            <div class="pf-tip-row"><span>Paid</span><span>${fmtGBP(r.paid)}</span></div>
-            <div class="pf-tip-row"><span>Outstanding</span><span>${fmtGBP(Math.max(0, r.allocated - r.paid))}</span></div>
-            <div class="pf-tip-row"><span>Events</span><span>${r.events}</span></div>
-            <div class="pf-tip-row"><span>Deals</span><span>${r.deals}</span></div>
-          </div>
-        </div>`;
-      }).join('') || '<div class="pf-empty">No events allocated yet.</div>'}</div>
+      ${seriesRows.length ? `<div class="pf-st">
+        <div class="pf-st-row pf-st-head"><span>Series</span><span>Events</span><span>Deals won</span><span>Paid</span><span>Owed</span><span>Collected</span></div>
+        ${seriesRows.map(r => {
+          const owed = Math.max(0, r.allocated - r.paid);
+          const pct = r.allocated > 0 ? Math.min(100, Math.round(r.paid / r.allocated * 100)) : 0;
+          return `<div class="pf-st-row">
+            <span class="pf-st-name"><span class="pf-chip" style="background:${r.color}"></span><span><b>${esc(r.short)}</b>${r.name && r.name !== r.short ? `<small>${esc(r.name)}</small>` : ''}</span></span>
+            <span class="pf-st-num" data-l="Events">${r.events}<small>${r.deals} deal${r.deals === 1 ? '' : 's'}</small></span>
+            <span class="pf-st-num pf-st-big${r.allocated > 0 ? '' : ' pf-st-zero'}" data-l="Deals won">${fmtGBP(r.allocated)}</span>
+            <span class="pf-st-num ${r.paid > 0 ? 'pf-st-paid' : 'pf-st-zero'}" data-l="Paid">${fmtGBP(r.paid)}</span>
+            <span class="pf-st-num${owed > 0 ? ' pf-st-owed' : ''}" data-l="Owed">${owed > 0 ? fmtGBP(owed) : '—'}</span>
+            <span class="pf-st-prog" data-l="Collected">${r.allocated > 0 ? `<span class="pf-paidbar"><span class="pf-anim" data-pct="${pct}"></span></span><b>${pct}%</b>` : '<small>no deals won</small>'}</span>
+          </div>`;
+        }).join('')}
+      </div>` : '<div class="pf-empty">No deals won yet.</div>'}
     </section>`;
 
   // ── Event list by producer team ──
@@ -5866,7 +5927,6 @@ function renderPortfolioGrid() {
     if (!bd) return -1;
     return ad.localeCompare(bd) || String(a.name).localeCompare(String(b.name));
   };
-  const rowScale = Math.max(1, ...filtered.map(e => num(e.total_pipeline)));
   const listHtml =
     `<section class="pf-list">
       <div class="pf-list-hd">
@@ -5881,10 +5941,10 @@ function renderPortfolioGrid() {
           <div class="pf-group-hd">
             <span class="pf-group-name">${p ? esc(p) : 'Other events'}</span>
             <span class="pf-group-n">${evs.length} event${evs.length === 1 ? '' : 's'}</span>
-            <span class="pf-group-total">${fmtGBP(pAlloc)} <small>· ${fmtGBP(pPaid)} paid</small></span>
+            <span class="pf-group-total"><small>Deals won</small> ${fmtGBP(pAlloc)} <small>· Paid</small> ${fmtGBP(pPaid)} <small>· Owed</small> ${fmtGBP(Math.max(0, pAlloc - pPaid))}</span>
           </div>
           ${p ? renderGroupTeam(p) : ''}
-          ${evs.map(e => renderPortfolioEventCard(e, rowScale)).join('')}
+          ${evs.map(e => renderPortfolioEventCard(e)).join('')}
         </div>`;
       }).join('')}
       ${newTeams.map(t => `<div class="pf-group" data-producer="${esc(t.name.toLowerCase())}">
@@ -6263,10 +6323,10 @@ async function loadEmpPortfolioRoles(empId, boxId = 'empPortfolioRoles') {
           <span class="epr-series">${esc(g.name)}</span>
           <span class="epr-roles">${g.roles.map(esc).join(' · ')}</span>
         </div>
-        <div class="epr-stats">${st.events} event${st.events === 1 ? '' : 's'} · ${fmtGBP(st.allocated)} allocated · ${fmtGBP(st.paid)} paid</div>
+        <div class="epr-stats">${st.events} event${st.events === 1 ? '' : 's'} · ${fmtGBP(st.allocated)} won · ${fmtGBP(st.paid)} paid</div>
       </div>`;
     }).join('');
-    box.innerHTML = rows + (grouped.size > 1 ? `<div class="epr-total">Across these groups: ${fmtGBP(total.allocated)} allocated, ${fmtGBP(total.paid)} paid</div>` : '');
+    box.innerHTML = rows + (grouped.size > 1 ? `<div class="epr-total">Across these groups: ${fmtGBP(total.allocated)} won, ${fmtGBP(total.paid)} paid</div>` : '');
   } catch {
     box.innerHTML = '<div class="epr-empty">Could not load producer teams.</div>';
   }
@@ -6296,12 +6356,12 @@ function renderSeriesChip(seriesId) {
  * bar lengths are comparable; the bar is one hue because the series chip
  * already carries identity.
  */
-function renderPortfolioEventCard(ev, scale) {
+function renderPortfolioEventCard(ev) {
   const won         = parseFloat(ev.total_won) || 0;
   const pipeline    = parseFloat(ev.total_pipeline) || 0;
   const outstanding = Math.max(0, pipeline - won);
   const dealCount   = parseInt(ev.deal_count) || 0;
-  const pct         = pipeline / Math.max(1, scale || pipeline) * 100;
+  const paidPct     = pipeline > 0 ? Math.min(100, Math.round(won / pipeline * 100)) : 0;
   const series      = portSeriesFor(ev);
   const when        = fmtEventDate(ev, { long: true });
   const isTbc       = !!ev.date_tbc || !ev.event_date;
@@ -6326,13 +6386,13 @@ function renderPortfolioEventCard(ev, scale) {
         </button>
       </div>
       <div class="pf-row-figs-wrap">
-        <div class="pf-row-figs">
-          <span class="pf-row-alloc">${fmtGBP(pipeline)}</span>
-          <span class="pf-row-paid">${pipeline > 0
-            ? (outstanding > 0 ? `${fmtGBP(won)} paid · ${fmtGBP(outstanding)} owed` : 'fully paid')
-            : 'nothing allocated'}</span>
+        ${pipeline > 0 ? `<div class="pf-money">
+          <span><small>Deals won</small><b>${fmtGBP(pipeline)}</b></span>
+          <span class="${won > 0 ? 'pf-st-paid' : 'pf-st-zero'}"><small>Paid</small><b>${fmtGBP(won)}</b></span>
+          <span class="${outstanding > 0 ? 'pf-st-owed' : ''}"><small>Owed</small><b>${outstanding > 0 ? fmtGBP(outstanding) : '—'}</b></span>
         </div>
-        <div class="pf-track"><div class="pf-bar pf-anim" data-pct="${pct}"></div></div>
+        <div class="pf-paidline"><span class="pf-paidbar"><span class="pf-anim" data-pct="${paidPct}"></span></span><em>${outstanding > 0 ? `${paidPct}% paid` : 'Fully paid'}</em></div>`
+        : '<div class="pf-money-none">No deals won yet</div>'}
       </div>
       <div class="pf-row-actions sub-actions">
         <button class="sub-action-btn" onclick="openPortfolioModal(${ev.id})">Edit</button>
@@ -8751,6 +8811,7 @@ function obUndoSig() { OB.ink.pop(); OB._redrawSig && OB._redrawSig(); }
 // Drawn from the questions the server sends (starter-form.js): HMRC's starter checklist and
 // bank details. Questions appear only once the answers before them make them relevant.
 function sfVal(f) {
+  if (f.type === 'tick') { const el = obEl('sf_' + f.key); return el && el.checked ? 'Yes' : ''; }
   if (f.type === 'checkboxes') return [...document.querySelectorAll('[name="sf_' + f.key + '"]:checked')].map(i => i.value);
   if (f.type === 'radio' || f.type === 'choice') return (document.querySelector('[name="sf_' + f.key + '"]:checked') || {}).value || '';
   const el = obEl('sf_' + f.key); return el ? el.value.trim() : '';
@@ -8763,12 +8824,16 @@ function sfAnswers() {
 const sfShown = (f, a) => !f.show || Object.entries(f.show).every(([k, v]) => a[k] === v);
 function sfRefresh() {
   const a = sfAnswers();
+  // No NI number yet: the box is greyed out and not asked for
+  const ni = obEl('sf_ni_number'), noNi = a.no_ni === 'Yes';
+  if (ni) { ni.disabled = noNi; if (noNi) { ni.value = ''; obEl('sfw_ni_number')?.classList.remove('has-error'); const e = obEl('sfe_ni_number'); if (e) e.textContent = ''; } }
   OB.data.documents.starter.form.forEach(sec => sec.fields.forEach(f => { const w = obEl('sfw_' + f.key); if (w) w.hidden = !sfShown(f, a); }));
 }
 function sfInput(f, v) {
   const nm = 'sf_' + f.key;
   if (f.type === 'radio') return '<div class="sf-seg">' + f.options.map(o => '<label><input type="radio" name="' + nm + '" value="' + esc(o) + '"' + (v === o ? ' checked' : '') + '><span>' + esc(o) + '</span></label>').join('') + '</div>';
   if (f.type === 'choice') return '<div class="sf-choices">' + f.options.map(o => '<label class="sf-choice"><input type="radio" name="' + nm + '" value="' + esc(o.value) + '"' + (v === o.value ? ' checked' : '') + '><span><b>' + esc(o.label) + '</b>' + esc(o.text) + '</span></label>').join('') + '</div>';
+  if (f.type === 'tick') return '<label class="sf-tick"><input type="checkbox" id="' + nm + '"' + (v === 'Yes' ? ' checked' : '') + '><span>' + esc(f.label) + '</span></label>';
   if (f.type === 'checkboxes') return '<div class="sf-seg sf-multi">' + f.options.map(o => '<label><input type="checkbox" name="' + nm + '" value="' + esc(o) + '"' + ((v || []).includes(o) ? ' checked' : '') + '><span>' + esc(o) + '</span></label>').join('') + '</div>';
   if (f.type === 'textarea') return '<textarea id="' + nm + '" class="form-control" rows="3" maxlength="' + (f.max || 300) + '">' + esc(v || '') + '</textarea>';
   return '<input id="' + nm + '" class="form-control" type="' + (f.type === 'date' ? 'date' : 'text') + '"' + (f.max ? ' maxlength="' + f.max + '"' : '') + ' value="' + esc(v || '') + '"' +
@@ -8783,7 +8848,7 @@ function obStepStarter() {
     '<p class="ob-help">Our accountant uses this to set up your pay, tax code and any student loan repayments. We have filled in what we already know; check it and answer the rest. It takes about three minutes.</p>' +
     st.form.map((sec, i) =>
       '<div class="sf-sec"><div class="sf-sec-hd"><span>' + (i + 1) + '</span><div><b>' + esc(sec.title) + '</b>' + (sec.note ? '<small>' + esc(sec.note) + '</small>' : '') + '</div></div>' +
-      sec.fields.map(f => '<div class="ob-field sf-field" id="sfw_' + f.key + '"><label' + (['radio', 'choice', 'checkboxes'].includes(f.type) ? '' : ' for="sf_' + f.key + '"') + '>' + esc(f.label) + (f.required ? '' : ' <span class="sf-opt">optional</span>') + '</label>' +
+      sec.fields.map(f => '<div class="ob-field sf-field' + (f.type === 'tick' ? ' sf-field--tick' : '') + '" id="sfw_' + f.key + '">' + (f.type === 'tick' ? '' : '<label' + (['radio', 'choice', 'checkboxes'].includes(f.type) ? '' : ' for="sf_' + f.key + '"') + '>' + esc(f.label) + (f.required || f.requiredUnless ? '' : ' <span class="sf-opt">optional</span>') + '</label>') +
         sfInput(f, a[f.key]) + '<div class="ob-err" id="sfe_' + f.key + '"></div>' + (f.hint ? '<small>' + esc(f.hint) + '</small>' : '') + '</div>').join('') +
       '</div>').join('') +
     '<div class="ob-secure">' + '<div class="ob-secure-hd">' + OB_ICON.lock + '<b>Your answers are kept private</b></div>' +
@@ -8814,6 +8879,7 @@ async function obSubmitStarter(btn) {
   OB.data.documents.starter.form.forEach(sec => sec.fields.forEach(f => {
     if (!sfShown(f, answers)) return;
     const v = answers[f.key];
+    if (f.requiredUnless && Object.entries(f.requiredUnless).every(([k, x]) => answers[k] === x)) return;
     if (f.required && (Array.isArray(v) ? !v.length : !v)) flag(f.key, f.type === 'checkboxes' ? 'Tick at least one' : f.options ? 'Choose an answer' : 'Fill this in');
     else if (v && f.pattern && !new RegExp(f.pattern, 'i').test(v)) flag(f.key, f.patternMessage);
   }));
