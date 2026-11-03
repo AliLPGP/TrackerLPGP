@@ -7964,3 +7964,9 @@ select option { background: var(--glass-strong); color: var(--text); }
 :root .modal .deal-event-group-hd { background: var(--dlg-soft) !important; }
 :root .modal .deal-event-group + .deal-event-group { border-top-color: var(--dlg-rule); }
 :root .modal .deal-package-row, :root .modal .ig-event-card { background: var(--dlg-soft) !important; border-color: var(--dlg-field-line) !important; }
+
+/* Starter form: a single tick box under a field (no NI number yet) */
+.sf-field--tick { margin-top: -6px; }
+.sf-field .sf-tick, label.sf-tick { display: inline-flex !important; align-items: center; justify-content: flex-start !important; width: auto !important; gap: 9px; cursor: pointer; font-size: 0.85rem; color: var(--text-2); }
+.sf-tick input { position: static !important; opacity: 1 !important; pointer-events: auto !important; width: 16px !important; height: 16px; min-height: 0 !important; margin: 0; padding: 0; flex: none; }
+.sf-field input:disabled { opacity: 0.45; cursor: not-allowed; }

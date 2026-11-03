@@ -445,7 +445,6 @@ function openEmpModal(emp = null) {
     : emp.currency === 'PHP' ? 'self_employed_php' : 'self_employed_uk';
   document.getElementById('empHours').value = emp && emp.working_pattern === 'part-time' ? 'part-time' : 'full-time';
   document.getElementById('empArrangement').value = emp && ['office', 'hybrid'].includes(emp.work_arrangement) ? emp.work_arrangement : 'remote';
-  document.getElementById('empCountry').value = emp ? (emp.country || '') : '';
   document.getElementById('empCurrency').value = emp ? (emp.currency || 'GBP') : 'GBP';
   document.getElementById('empAnnualSalary').value = emp ? emp.annual_salary : 0;
   document.getElementById('empPensionRate').value = emp && emp.pension_rate != null ? emp.pension_rate : '';
@@ -522,10 +521,9 @@ async function saveEmployee() {
 
   const working_pattern = document.getElementById('empHours').value;
   const work_arrangement = document.getElementById('empArrangement').value;
-  const country = document.getElementById('empCountry').value.trim();
   const payload = { name, employment_type, annual_salary, currency, start_date, pension_rate,
                     job_title, department, phone, email, contract_end_date, probation_end_date, portal_pin, working_pattern,
-                    work_arrangement, country };
+                    work_arrangement };
   if (id) {
     await fetch(`/api/employees/${id}`, {
       method: 'PUT',
@@ -8751,6 +8749,7 @@ function obUndoSig() { OB.ink.pop(); OB._redrawSig && OB._redrawSig(); }
 // Drawn from the questions the server sends (starter-form.js): HMRC's starter checklist and
 // bank details. Questions appear only once the answers before them make them relevant.
 function sfVal(f) {
+  if (f.type === 'tick') { const el = obEl('sf_' + f.key); return el && el.checked ? 'Yes' : ''; }
   if (f.type === 'checkboxes') return [...document.querySelectorAll('[name="sf_' + f.key + '"]:checked')].map(i => i.value);
   if (f.type === 'radio' || f.type === 'choice') return (document.querySelector('[name="sf_' + f.key + '"]:checked') || {}).value || '';
   const el = obEl('sf_' + f.key); return el ? el.value.trim() : '';
@@ -8763,12 +8762,16 @@ function sfAnswers() {
 const sfShown = (f, a) => !f.show || Object.entries(f.show).every(([k, v]) => a[k] === v);
 function sfRefresh() {
   const a = sfAnswers();
+  // No NI number yet: the box is greyed out and not asked for
+  const ni = obEl('sf_ni_number'), noNi = a.no_ni === 'Yes';
+  if (ni) { ni.disabled = noNi; if (noNi) { ni.value = ''; obEl('sfw_ni_number')?.classList.remove('has-error'); const e = obEl('sfe_ni_number'); if (e) e.textContent = ''; } }
   OB.data.documents.starter.form.forEach(sec => sec.fields.forEach(f => { const w = obEl('sfw_' + f.key); if (w) w.hidden = !sfShown(f, a); }));
 }
 function sfInput(f, v) {
   const nm = 'sf_' + f.key;
   if (f.type === 'radio') return '<div class="sf-seg">' + f.options.map(o => '<label><input type="radio" name="' + nm + '" value="' + esc(o) + '"' + (v === o ? ' checked' : '') + '><span>' + esc(o) + '</span></label>').join('') + '</div>';
   if (f.type === 'choice') return '<div class="sf-choices">' + f.options.map(o => '<label class="sf-choice"><input type="radio" name="' + nm + '" value="' + esc(o.value) + '"' + (v === o.value ? ' checked' : '') + '><span><b>' + esc(o.label) + '</b>' + esc(o.text) + '</span></label>').join('') + '</div>';
+  if (f.type === 'tick') return '<label class="sf-tick"><input type="checkbox" id="' + nm + '"' + (v === 'Yes' ? ' checked' : '') + '><span>' + esc(f.label) + '</span></label>';
   if (f.type === 'checkboxes') return '<div class="sf-seg sf-multi">' + f.options.map(o => '<label><input type="checkbox" name="' + nm + '" value="' + esc(o) + '"' + ((v || []).includes(o) ? ' checked' : '') + '><span>' + esc(o) + '</span></label>').join('') + '</div>';
   if (f.type === 'textarea') return '<textarea id="' + nm + '" class="form-control" rows="3" maxlength="' + (f.max || 300) + '">' + esc(v || '') + '</textarea>';
   return '<input id="' + nm + '" class="form-control" type="' + (f.type === 'date' ? 'date' : 'text') + '"' + (f.max ? ' maxlength="' + f.max + '"' : '') + ' value="' + esc(v || '') + '"' +
@@ -8783,7 +8786,7 @@ function obStepStarter() {
     '<p class="ob-help">Our accountant uses this to set up your pay, tax code and any student loan repayments. We have filled in what we already know; check it and answer the rest. It takes about three minutes.</p>' +
     st.form.map((sec, i) =>
       '<div class="sf-sec"><div class="sf-sec-hd"><span>' + (i + 1) + '</span><div><b>' + esc(sec.title) + '</b>' + (sec.note ? '<small>' + esc(sec.note) + '</small>' : '') + '</div></div>' +
-      sec.fields.map(f => '<div class="ob-field sf-field" id="sfw_' + f.key + '"><label' + (['radio', 'choice', 'checkboxes'].includes(f.type) ? '' : ' for="sf_' + f.key + '"') + '>' + esc(f.label) + (f.required ? '' : ' <span class="sf-opt">optional</span>') + '</label>' +
+      sec.fields.map(f => '<div class="ob-field sf-field' + (f.type === 'tick' ? ' sf-field--tick' : '') + '" id="sfw_' + f.key + '">' + (f.type === 'tick' ? '' : '<label' + (['radio', 'choice', 'checkboxes'].includes(f.type) ? '' : ' for="sf_' + f.key + '"') + '>' + esc(f.label) + (f.required || f.requiredUnless ? '' : ' <span class="sf-opt">optional</span>') + '</label>') +
         sfInput(f, a[f.key]) + '<div class="ob-err" id="sfe_' + f.key + '"></div>' + (f.hint ? '<small>' + esc(f.hint) + '</small>' : '') + '</div>').join('') +
       '</div>').join('') +
     '<div class="ob-secure">' + '<div class="ob-secure-hd">' + OB_ICON.lock + '<b>Your answers are kept private</b></div>' +
@@ -8814,6 +8817,7 @@ async function obSubmitStarter(btn) {
   OB.data.documents.starter.form.forEach(sec => sec.fields.forEach(f => {
     if (!sfShown(f, answers)) return;
     const v = answers[f.key];
+    if (f.requiredUnless && Object.entries(f.requiredUnless).every(([k, x]) => answers[k] === x)) return;
     if (f.required && (Array.isArray(v) ? !v.length : !v)) flag(f.key, f.type === 'checkboxes' ? 'Tick at least one' : f.options ? 'Choose an answer' : 'Fill this in');
     else if (v && f.pattern && !new RegExp(f.pattern, 'i').test(v)) flag(f.key, f.patternMessage);
   }));

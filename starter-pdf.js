@@ -20,6 +20,7 @@ async function renderStarterPdf(a, { employeeName, signedName, signedAt, signatu
     const v = a[f.key];
     if (f.type === 'date') return ukDate(v);
     if (f.type === 'checkboxes') return (v || []).join(', ');
+    if (f.key === 'ni_number' && a.no_ni === 'Yes') return 'Not issued yet';
     return v;
   };
 
@@ -31,7 +32,7 @@ async function renderStarterPdf(a, { employeeName, signedName, signedAt, signatu
   // Name in one block; the employee statement is on the next page with its wording
   const fullName = [a.first_names, a.last_name].filter(Boolean).join(' ');
   const cells = [['Employer', employer], ['Full name', fullName || '\u2014'],
-    ...about.filter(f => !['first_names', 'last_name'].includes(f.key) && (f.key !== 'gender' || a.gender)).map(f => [f.label, val(f) || '\u2014'])];
+    ...about.filter(f => !['first_names', 'last_name', 'no_ni'].includes(f.key) && (f.key !== 'gender' || a.gender)).map(f => [f.label, val(f) || '\u2014'])];
   cells.forEach(([label, value], i) => {
     const x = i % 2 ? 307 : 68, top = 250 + Math.floor(i / 2) * 76;
     text(cover, label.toUpperCase(), x, top, { font: fonts.mono, size: 9.6, color: BLUE });
