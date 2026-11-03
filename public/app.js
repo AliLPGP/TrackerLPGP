@@ -277,9 +277,12 @@ function navigate(page) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.querySelectorAll('.bottom-nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('page-' + page).classList.add('active');
-  document.querySelector(`.nav-item[data-page="${page}"]`)?.classList.add('active');
-  document.querySelector(`.bottom-nav-item[data-page="${page}"]`)?.classList.add('active');
-  const titles = { dashboard:'Dashboard', tracking:'Daily Tracking', salary:'Salary Tracker', employees:'Employees', reports:'Reports', calendar:'Calendar', admins:'Admin Users', hotels:'Hotel Expenses', expenses:'Expenses', subscriptions:'Subscriptions', portfolio:'Portfolio', deals:'Deal Tracker', eventkit:'Event Kit' };
+  // An employee's own page keeps the menu on the page it was opened from
+  const navPage = page === 'employee' ? _empPageReturn : page;
+  if (page !== 'employee' && _profileMode === 'page') { _profileEmpId = null; const pb = document.getElementById('empPageBody'); if (pb) pb.innerHTML = ''; }
+  document.querySelector(`.nav-item[data-page="${navPage}"]`)?.classList.add('active');
+  document.querySelector(`.bottom-nav-item[data-page="${navPage}"]`)?.classList.add('active');
+  const titles = { dashboard:'Dashboard', tracking:'Daily Tracking', salary:'Salary Tracker', employees:'Employees', reports:'Reports', calendar:'Calendar', admins:'Admin Users', hotels:'Hotel Expenses', expenses:'Expenses', subscriptions:'Subscriptions', portfolio:'Portfolio', deals:'Deal Tracker', eventkit:'Event Kit', employee:'Employee' };
   document.getElementById('pageTitle').textContent = titles[page] || page;
   if (page === 'employees') loadEmpTable();
   if (page === 'admins') loadAdmins();
@@ -323,6 +326,8 @@ async function loadEmpTable() {
   if (sub) sub.innerHTML = `<strong>${active.length}</strong> active · ${payroll} payroll · ${active.length - payroll} self-employed` +
     (allEmployeesData.length > active.length ? ` · ${allEmployeesData.length - active.length} left` : '');
   renderEmpTable();
+  // Someone's own page is open: show their saved changes there too
+  if (_profileMode === 'page' && _profileEmpId && document.getElementById('page-employee')?.classList.contains('active')) openEmployeeProfile(_profileEmpId);
 }
 
 function setEmpFilter(key, value) {
@@ -736,7 +741,7 @@ async function loadDashboard() {
       <td class="${row.total_deduction > 0 ? 'text-danger fw-bold' : ''}">${row.total_deduction > 0 ? fmtMoney(row.total_deduction, currency) : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${annualCell}</td>
       <td>${lastCell}</td>
-      <td><button class="btn btn-ghost btn-sm" onclick="goToTracking(${row.employee_id})">View</button></td>
+      <td><button class="btn btn-ghost btn-sm" onclick="openEmployeeProfile(${row.employee_id})">View</button></td>
     `;
     tbody.appendChild(tr);
   });
@@ -1156,66 +1161,107 @@ function ensureProfileDrawer() {
 
 function closeEmployeeProfile() {
   document.getElementById('empDrawer')?.classList.remove('open');
-  _profileEmpId = null;
+  // On their own page the profile stays open behind any dialog opened from it
+  if (_profileMode !== 'page') _profileEmpId = null;
 }
 
-async function openEmployeeProfile(empId) {
+// Admins and managers get the person's own page (everything about them, laid out in two
+// columns); staff viewing a teammate get the side panel. Both are filled by the same code,
+// so the sections never drift apart. Only one of the two holds the content at a time.
+let _profileMode = 'drawer';
+let _empPageReturn = 'employees';
+
+function closeEmployeePage() {
+  const back = _empPageReturn && _empPageReturn !== 'employee' ? _empPageReturn : 'employees';
+  _profileEmpId = null;
+  navigate(back);
+}
+
+async function openEmployeeProfile(empId, opts = {}) {
   empId = Number(empId);
   if (!empId) return;
-  const drawer = ensureProfileDrawer();
-  const body = document.getElementById('epBody');
-  _profileEmpId = empId;
+  const isAdmin = currentUser && currentUser.role === 'admin';
+  const canManage = currentUser && ['admin', 'manager'].includes(currentUser.role);
+  const asPage = canManage && !opts.drawer && !!document.getElementById('page-employee');
   if (!(allEmployeesData || []).some(e => e.id === empId)) {
     try { const r = await fetch('/api/employees/all'); if (r.ok) allEmployeesData = await r.json(); } catch {}
   }
   const emp = (allEmployeesData || []).find(e => e.id === empId);
   if (!emp) { showToast('Employee not found', 'error'); return; }
-  const isAdmin = currentUser && currentUser.role === 'admin';
-  const canManage = currentUser && ['admin', 'manager'].includes(currentUser.role);
+
+  let body;
+  if (asPage) {
+    document.getElementById('empDrawer')?.classList.remove('open');
+    const db = document.getElementById('epBody'); if (db) db.innerHTML = '';
+    body = document.getElementById('empPageBody');
+    const pageEl = document.getElementById('page-employee');
+    if (!pageEl.classList.contains('active')) {
+      _empPageReturn = document.querySelector('.page.active')?.id.replace('page-', '') || 'employees';
+      navigate('employee');
+      window.scrollTo({ top: 0 });
+    }
+  } else {
+    const drawer = ensureProfileDrawer();
+    const pb = document.getElementById('empPageBody'); if (pb) pb.innerHTML = '';
+    body = document.getElementById('epBody');
+    drawer.classList.add('open');
+  }
+  _profileMode = asPage ? 'page' : 'drawer';
+  _profileEmpId = empId;
+  if (asPage) document.getElementById('pageTitle').textContent = 'Employee profile';
+
   const year = new Date().getFullYear();
-  const typeLabel = emp.employment_type === 'self_employed' ? 'Self-employed' : 'Payroll';
+  const typeLabel = emp.employment_type === 'self_employed' ? (emp.currency === 'PHP' ? 'Self-employed PHP' : 'Self-employed UK') : 'Payroll';
   const status = emp.active
     ? '<span class="ep-status ep-status--on">Active</span>'
     : `<span class="ep-status">${emp.termination_date ? 'Left ' + fmtDateShort(emp.termination_date) : 'Inactive'}</span>`;
   const detail = (label, value) => `<div class="ep-detail"><span>${label}</span><strong>${value || '<em>—</em>'}</strong></div>`;
+  // Hours follow the employment type, as on their contract
+  const shift = emp.employment_type === 'self_employed' && emp.currency === 'PHP' ? '9am to 5pm (UK time)' : '10am to 6pm or 12pm to 8pm (UK time)';
 
-  body.innerHTML = `
+  const head = `
     <header class="ep-head">
       <div class="ep-avatar">${esc(empInitials(emp.name))}</div>
       <div class="ep-who">
         <h2 id="epName">${esc(emp.name)}</h2>
         <p>${esc([emp.job_title, emp.department].filter(Boolean).join(' · ') || 'No role set')}</p>
-        <div class="ep-chips">${status}<span class="ep-chip">${typeLabel}</span>${emp.currency && emp.currency !== 'GBP' ? `<span class="ep-chip">${esc(emp.currency)}</span>` : ''}</div>
+        <div class="ep-chips">${status}<span class="ep-chip">${typeLabel}</span>${emp.currency && emp.currency !== 'GBP' ? `<span class="ep-chip">${esc(emp.currency)}</span>` : ''}${emp.working_pattern === 'part-time' ? '<span class="ep-chip">Part-time</span>' : ''}</div>
       </div>
-      <button class="modal-close ep-close" onclick="closeEmployeeProfile()" aria-label="Close">✕</button>
-    </header>
-    ${canManage ? `<div class="ep-actions">
+      ${asPage ? '' : '<button class="modal-close ep-close" onclick="closeEmployeeProfile()" aria-label="Close">✕</button>'}
+    </header>`;
+  const actions = canManage ? `<div class="ep-actions">
       <button class="btn btn-sm" onclick="epEdit(${emp.id})">Edit details</button>
+      ${asPage ? `<button class="btn btn-sm" onclick="goToTracking(${emp.id})">Daily tracking</button>` : ''}
       ${isAdmin ? `<button class="btn btn-sm" onclick="closeEmployeeProfile();openAddPinModal(${emp.id}, ${esc(JSON.stringify(emp.name))})">${emp.portal_pin ? 'Change PIN' : 'Add portal PIN'}</button>` : ''}
       ${isAdmin ? (emp.active
         ? `<button class="btn btn-sm ep-danger" onclick="closeEmployeeProfile();openTerminateModal(${emp.id}, ${esc(JSON.stringify(emp.name))})">Terminate</button>`
         : `<button class="btn btn-sm" onclick="closeEmployeeProfile();reactivateEmployee(${emp.id})">Reactivate</button>`) : ''}
-    </div>` : ''}
+    </div>` : '';
 
-    <section class="ep-sec">
+  const secDetails = `<section class="ep-sec">
       <h3>Details</h3>
       <div class="ep-details">
         ${detail('Email', emp.email ? `<a href="mailto:${esc(emp.email)}">${esc(emp.email)}</a>` : '')}
         ${detail('Phone', emp.phone ? `<a href="tel:${esc(emp.phone)}">${esc(emp.phone)}</a>` : '')}
         ${detail('Started', emp.start_date ? fmtDateShort(emp.start_date) : '')}
         ${detail('Contract ends', emp.contract_end_date ? fmtDateShort(emp.contract_end_date) : (emp.active ? 'Permanent' : ''))}
+        ${asPage ? detail('Employment', typeLabel + (emp.working_pattern === 'part-time' ? ', part-time' : ', full-time')) : ''}
+        ${asPage && shift ? detail('Hours', esc(shift)) : ''}
+        ${asPage && emp.work_arrangement ? detail('Works', ({ remote: 'Remotely', office: 'In the office', hybrid: 'Hybrid' })[emp.work_arrangement] || esc(emp.work_arrangement)) : ''}
         ${isAdmin ? detail('Annual salary', emp.annual_salary > 0 ? fmtMoney(emp.annual_salary, emp.currency) : '') : ''}
         ${isAdmin && emp.employment_type === 'payroll' ? detail('Pension', emp.pension_rate ? emp.pension_rate + '%' : 'None') : ''}
         ${isAdmin && emp.probation_end_date ? detail('Probation', probationDetailHtml(emp)) : ''}
       </div>
-    </section>
-
-    <section class="ep-sec">
+    </section>`;
+  const secYear = `<section class="ep-sec">
       <h3>${year} so far</h3>
       <div class="ep-tiles" id="epTiles"><div class="ep-loading">Loading…</div></div>
-    </section>
-
-    ${isAdmin ? `<section class="ep-sec">
+    </section>`;
+  const secDaysOff = asPage ? `<section class="ep-sec">
+      <h3>Days off in ${year}</h3>
+      <div id="epDaysOff" class="ep-list"><div class="ep-loading">Loading…</div></div>
+    </section>` : '';
+  const secWarnings = isAdmin ? `<section class="ep-sec">
       <div class="ep-sec-head">
         <div><h3>Warnings <span class="ep-count" id="epWarnCount"></span></h3><p class="ep-sec-note">They see each warning and its reason in their portal, and get a notification when one is added.</p></div>
         <button class="btn btn-sm" onclick="epToggleWarningForm(true)">Add warning</button>
@@ -1236,16 +1282,14 @@ async function openEmployeeProfile(empId) {
         </div>
       </div>
       <div id="epWarnings" class="ep-list"><div class="ep-loading">Loading…</div></div>
-    </section>
-
-    <section class="ep-sec ep-sec--sign">
+    </section>` : '';
+  const secContract = isAdmin ? `<section class="ep-sec ep-sec--sign">
       <div class="ep-sec-head">
         <div><h3>Contract</h3><p class="ep-sec-note">Their employment contract is made from your template and their details, and they sign it in onboarding. The signed copy is filed below automatically.</p></div>
       </div>
       <div id="epContract"><div class="ep-loading">Loading…</div></div>
-    </section>
-
-    <section class="ep-sec">
+    </section>` : '';
+  const secDocs = isAdmin ? `<section class="ep-sec">
       <div class="ep-sec-head">
         <div><h3>Documents on file</h3><p class="ep-sec-note">Files you already have, such as signed contracts. Staff are not asked to sign these.</p></div>
         <div class="ep-doc-add">
@@ -1256,12 +1300,11 @@ async function openEmployeeProfile(empId) {
         </div>
       </div>
       <div id="epDocs" class="ep-list"><div class="ep-loading">Loading…</div></div>
-    </section>` : ''}
-
-    ${isAdmin ? `<section class="ep-sec">
+    </section>` : '';
+  const secOnboarding = isAdmin ? `<section class="ep-sec">
       <div id="epOnboarding"><div class="ep-loading">Loading…</div></div>
-    </section>
-    ${emp.employment_type === 'payroll' ? `<section class="ep-sec">
+    </section>` : '';
+  const secPayslips = isAdmin && emp.employment_type === 'payroll' ? `<section class="ep-sec">
       <div class="ep-sec-head">
         <h3>Payslips</h3>
         <div class="ep-doc-add">
@@ -1270,42 +1313,69 @@ async function openEmployeeProfile(empId) {
         </div>
       </div>
       <div id="epPayslips" class="ep-list"><div class="ep-loading">Loading…</div></div>
-    </section>` : ''}` : ''}
-
-    ${isAdmin ? `<section class="ep-sec">
-      <h3>Recent payments</h3>
+    </section>` : '';
+  const secPayments = isAdmin ? `<section class="ep-sec">
+      <h3>${asPage ? 'Payment history' : 'Recent payments'}</h3>
       <div id="epPayments" class="ep-list"><div class="ep-loading">Loading…</div></div>
-    </section>` : ''}
-
-    ${canManage ? `<section class="ep-sec">
+    </section>` : '';
+  const secEvents = canManage ? `<section class="ep-sec">
       <h3>Events</h3>
       <div id="epEvents" class="ep-list"><div class="ep-loading">Loading…</div></div>
-    </section>
-    <section class="ep-sec">
+    </section>` : '';
+  const secTeams = canManage ? `<section class="ep-sec">
       <h3>Producer teams</h3>
       <div id="epPortfolio" class="epr-list"></div>
-    </section>` : ''}`;
-  drawer.classList.add('open');
+    </section>` : '';
+
+  body.innerHTML = asPage
+    ? `<button type="button" class="ep-back" onclick="closeEmployeePage()">← Back to ${esc(({ salary: 'Salary', employees: 'Employees', dashboard: 'Dashboard', deals: 'Deal Tracker', portfolio: 'Portfolio', eventkit: 'Event Kit', tracking: 'Daily Tracking', calendar: 'Calendar' })[_empPageReturn] || 'Employees')}</button>
+      <div class="card ep-card ep-card--head">${head}${actions}</div>
+      <div class="ep-cols">
+        <div class="ep-col">
+          <div class="card ep-card">${secDetails}</div>
+          <div class="card ep-card">${secYear}${secDaysOff}</div>
+          ${secPayments ? `<div class="card ep-card">${secPayments}</div>` : ''}
+          ${canManage ? `<div class="card ep-card">${secEvents}${secTeams}</div>` : ''}
+        </div>
+        <div class="ep-col">
+          ${isAdmin ? `<div class="card ep-card">${secOnboarding}</div>
+          <div class="card ep-card">${secContract}</div>
+          <div class="card ep-card">${secWarnings}</div>
+          <div class="card ep-card">${secDocs}${secPayslips}</div>` : ''}
+        </div>
+      </div>`
+    : head + actions + secDetails + secYear + secWarnings + secContract + secDocs + secOnboarding + secPayslips + secPayments + secEvents + secTeams;
 
   // Figures that need their own calls; each fills its section when ready.
-  const [statsRes, payRes] = await Promise.all([
+  const [statsRes, payRes, recRes] = await Promise.all([
     fetch(`/api/employees/${empId}/year-stats?year=${year}`).catch(() => null),
     isAdmin ? fetch(`/api/payments/${empId}`).catch(() => null) : null,
+    asPage ? fetch(`/api/records/${empId}?from=${year}-01-01&to=${year}-12-31`).catch(() => null) : null,
   ]);
   if (_profileEmpId !== empId) return;
   const stats = statsRes && statsRes.ok ? await statsRes.json() : null;
   const pays = payRes && payRes.ok ? await payRes.json() : [];
+  const records = recRes && recRes.ok ? await recRes.json() : [];
+  if (_profileEmpId !== empId) return;
   const paidYear = pays.filter(p => Number(p.payment_year) === year).reduce((a, p) => a + (parseFloat(p.amount) || 0), 0);
   const last = pays[0];
   const tile = (label, value, sub) => `<div class="ep-tile"><span>${label}</span><strong>${value}</strong>${sub ? `<small>${sub}</small>` : ''}</div>`;
-  document.getElementById('epTiles').innerHTML =
+  const tilesEl = document.getElementById('epTiles');
+  if (tilesEl) tilesEl.innerHTML =
     (isAdmin ? tile('Paid', fmtMoney(paidYear, emp.currency), `${pays.filter(p => Number(p.payment_year) === year).length} payments`) : '') +
     (isAdmin ? tile('Last payment', last ? fmtMoney(last.amount, last.currency || emp.currency) : '—', last ? `${MONTHS[Number(last.payment_month)]} ${last.payment_year}` : 'None yet') : '') +
     (stats ? tile('Days off', `${stats.total_days_off} / ${stats.allowance_days}`, stats.excess_days > 0 ? `${stats.excess_days} over allowance` : `${stats.remaining_allowance} left`) : '') +
     (stats && isAdmin ? tile('Day-off deductions', stats.excess_deduction > 0 ? fmtMoney(stats.excess_deduction, emp.currency) : 'None', '') : '');
+  const offEl = document.getElementById('epDaysOff');
+  if (offEl) {
+    const off = records.filter(r => r.is_day_off > 0);
+    offEl.innerHTML = off.length
+      ? off.map(r => `<div class="ep-row"><span>${fmtDateShort(r.record_date)}${r.notes ? `<small>${esc(r.notes)}</small>` : ''}</span><strong>${r.is_day_off === 1 ? 'Full day' : 'Half day'}${r.no_deduction ? ' <span class="ep-chip">Not deducted</span>' : ''}</strong></div>`).join('')
+      : '<div class="ep-empty">No days off recorded this year.</div>';
+  }
   const payEl = document.getElementById('epPayments');
   if (payEl) payEl.innerHTML = pays.length
-    ? pays.slice(0, 6).map(p => `<div class="ep-row"><span>${MONTHS[Number(p.payment_month)]} ${p.payment_year}${p.notes ? `<small>${esc(p.notes)}</small>` : ''}</span><strong>${fmtMoney(p.amount, p.currency || emp.currency)}</strong></div>`).join('')
+    ? pays.slice(0, asPage ? 24 : 6).map(p => `<div class="ep-row"><span>${MONTHS[Number(p.payment_month)]} ${p.payment_year}${p.notes ? `<small>${esc(p.notes)}</small>` : ''}</span><strong>${fmtMoney(p.amount, p.currency || emp.currency)}</strong></div>`).join('')
     : '<div class="ep-empty">No payments recorded.</div>';
   if (isAdmin) { loadEmpWarnings(empId); loadEmpContract(empId); loadEmpDocs(empId); loadEmpOnboarding(empId); if (emp.employment_type === 'payroll') loadEmpPayslips(empId); }
   if (canManage) {
@@ -1480,7 +1550,7 @@ async function epProbationDone(empId) {
   if (!res || !res.ok) { showToast('Could not save', 'error'); return; }
   showToast('Probation review marked done', 'success');
   await loadEmpTable();
-  openEmployeeProfile(empId);
+  if (_profileMode !== 'page') openEmployeeProfile(empId);
 }
 
 const ID_TYPE_LABEL = { passport: 'Passport', driving_licence: 'Driving licence', other: 'ID document' };
@@ -1502,7 +1572,7 @@ async function loadEmpOnboarding(empId) {
     const detail = (label, value, wide) => `<div class="ep-detail"${wide ? ' style="grid-column:1/-1"' : ''}><span>${label}</span><strong style="white-space:pre-line">${value || '<em>—</em>'}</strong></div>`;
     // Collapsed by default: what they entered at onboarding, plus their ID. Signed documents
     // are listed once, under Documents on file.
-    box.innerHTML = `<details class="ep-pd">
+    box.innerHTML = `<details class="ep-pd"${_profileMode === 'page' ? ' open' : ''}>
       <summary><h3>Personal details</h3>${status}</summary>
       ${o.started ? `<div class="ep-details" style="margin:12px 0">
         ${detail('Date of birth', o.date_of_birth ? fmtDateShort(o.date_of_birth) : '')}
