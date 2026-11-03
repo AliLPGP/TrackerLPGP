@@ -3132,6 +3132,7 @@ async function loadSalaryPage() {
             <div class="sc-emp-badges">
               <span class="badge ${typeBadge}" style="font-size:0.67rem">${typeLabel}</span>
               ${emp.start_date ? `<span class="sc-emp-since">${isTerminated ? 'Started' : 'Since'} ${emp.start_date}</span>` : ''}
+              <button type="button" class="sc-profile" onclick="event.stopPropagation();openEmployeeProfile(${Number(emp.employee_id)})">View profile →</button>
             </div>
           </div>
           <div class="sc-annual">
@@ -5873,38 +5874,30 @@ function renderPortfolioGrid() {
     ...PORT_SERIES.filter(s => bySeries.has(s.id)).map(s => ({ ...bySeries.get(s.id), short: s.short, name: s.name, color: `var(--chart-${s.chart})` })),
     ...(bySeries.has('unassigned') ? [{ ...bySeries.get('unassigned'), short: 'Unassigned', name: 'No series yet', color: 'var(--dim)' }] : []),
   ];
-  const seriesScale = Math.max(1, ...seriesRows.map(r => r.allocated));
   const seriesHtml =
     `<section class="pf-panel">
       <div class="pf-panel-hd">
         <div>
-          <h2 class="pf-panel-title">Revenue by portfolio</h2>
-          <p class="pf-panel-desc">Allocated per programme series. The tick on each bar is how much of it has been paid.</p>
+          <h2 class="pf-panel-title">Revenue by series</h2>
+          <p class="pf-panel-desc">What each programme series has brought in: sponsor money allocated to its events, how much of it is paid, and what is still owed.</p>
         </div>
         <p class="pf-panel-aside">Amounts in GBP</p>
       </div>
-      <div class="pf-series">${seriesRows.map(r => {
-        const w = r.allocated / seriesScale * 100;
-        const pw = Math.min(100, r.paid / seriesScale * 100);
-        return `<div class="pf-series-row" tabindex="0">
-          <div class="pf-series-top">
-            <span class="pf-series-name"><span class="pf-chip" style="background:${r.color}"></span><span class="pf-series-short">${esc(r.short)}</span><span class="pf-series-n">${r.events} event${r.events === 1 ? '' : 's'}</span></span>
-            <span class="pf-series-val">${fmtGBP(r.allocated)} <small>· ${fmtGBP(r.paid)} paid</small></span>
-          </div>
-          <div class="pf-track">
-            <div class="pf-bar pf-anim" data-pct="${w}" style="background:${r.color}"></div>
-            ${r.paid > 0 && r.paid < r.allocated ? `<span class="pf-mark" style="left:calc(${pw}% - 1px)" title="Paid ${fmtGBP(r.paid)}"></span>` : ''}
-          </div>
-          <div class="pf-tip">
-            <div class="pf-tip-title">${esc(r.name)}</div>
-            <div class="pf-tip-row"><span>Allocated</span><span>${fmtGBP(r.allocated)}</span></div>
-            <div class="pf-tip-row"><span>Paid</span><span>${fmtGBP(r.paid)}</span></div>
-            <div class="pf-tip-row"><span>Outstanding</span><span>${fmtGBP(Math.max(0, r.allocated - r.paid))}</span></div>
-            <div class="pf-tip-row"><span>Events</span><span>${r.events}</span></div>
-            <div class="pf-tip-row"><span>Deals</span><span>${r.deals}</span></div>
-          </div>
-        </div>`;
-      }).join('') || '<div class="pf-empty">No events allocated yet.</div>'}</div>
+      ${seriesRows.length ? `<div class="pf-st">
+        <div class="pf-st-row pf-st-head"><span>Series</span><span>Events</span><span>Allocated</span><span>Paid</span><span>Owed</span><span>Collected</span></div>
+        ${seriesRows.map(r => {
+          const owed = Math.max(0, r.allocated - r.paid);
+          const pct = r.allocated > 0 ? Math.min(100, Math.round(r.paid / r.allocated * 100)) : 0;
+          return `<div class="pf-st-row">
+            <span class="pf-st-name"><span class="pf-chip" style="background:${r.color}"></span><span><b>${esc(r.short)}</b>${r.name && r.name !== r.short ? `<small>${esc(r.name)}</small>` : ''}</span></span>
+            <span class="pf-st-num" data-l="Events">${r.events}<small>${r.deals} deal${r.deals === 1 ? '' : 's'}</small></span>
+            <span class="pf-st-num pf-st-big${r.allocated > 0 ? '' : ' pf-st-zero'}" data-l="Allocated">${fmtGBP(r.allocated)}</span>
+            <span class="pf-st-num ${r.paid > 0 ? 'pf-st-paid' : 'pf-st-zero'}" data-l="Paid">${fmtGBP(r.paid)}</span>
+            <span class="pf-st-num${owed > 0 ? ' pf-st-owed' : ''}" data-l="Owed">${owed > 0 ? fmtGBP(owed) : '—'}</span>
+            <span class="pf-st-prog" data-l="Collected">${r.allocated > 0 ? `<span class="pf-paidbar"><span class="pf-anim" data-pct="${pct}"></span></span><b>${pct}%</b>` : '<small>nothing allocated</small>'}</span>
+          </div>`;
+        }).join('')}
+      </div>` : '<div class="pf-empty">No events allocated yet.</div>'}
     </section>`;
 
   // ── Event list by producer team ──
@@ -5934,7 +5927,6 @@ function renderPortfolioGrid() {
     if (!bd) return -1;
     return ad.localeCompare(bd) || String(a.name).localeCompare(String(b.name));
   };
-  const rowScale = Math.max(1, ...filtered.map(e => num(e.total_pipeline)));
   const listHtml =
     `<section class="pf-list">
       <div class="pf-list-hd">
@@ -5949,10 +5941,10 @@ function renderPortfolioGrid() {
           <div class="pf-group-hd">
             <span class="pf-group-name">${p ? esc(p) : 'Other events'}</span>
             <span class="pf-group-n">${evs.length} event${evs.length === 1 ? '' : 's'}</span>
-            <span class="pf-group-total">${fmtGBP(pAlloc)} <small>· ${fmtGBP(pPaid)} paid</small></span>
+            <span class="pf-group-total"><small>Allocated</small> ${fmtGBP(pAlloc)} <small>· Paid</small> ${fmtGBP(pPaid)} <small>· Owed</small> ${fmtGBP(Math.max(0, pAlloc - pPaid))}</span>
           </div>
           ${p ? renderGroupTeam(p) : ''}
-          ${evs.map(e => renderPortfolioEventCard(e, rowScale)).join('')}
+          ${evs.map(e => renderPortfolioEventCard(e)).join('')}
         </div>`;
       }).join('')}
       ${newTeams.map(t => `<div class="pf-group" data-producer="${esc(t.name.toLowerCase())}">
@@ -6364,12 +6356,12 @@ function renderSeriesChip(seriesId) {
  * bar lengths are comparable; the bar is one hue because the series chip
  * already carries identity.
  */
-function renderPortfolioEventCard(ev, scale) {
+function renderPortfolioEventCard(ev) {
   const won         = parseFloat(ev.total_won) || 0;
   const pipeline    = parseFloat(ev.total_pipeline) || 0;
   const outstanding = Math.max(0, pipeline - won);
   const dealCount   = parseInt(ev.deal_count) || 0;
-  const pct         = pipeline / Math.max(1, scale || pipeline) * 100;
+  const paidPct     = pipeline > 0 ? Math.min(100, Math.round(won / pipeline * 100)) : 0;
   const series      = portSeriesFor(ev);
   const when        = fmtEventDate(ev, { long: true });
   const isTbc       = !!ev.date_tbc || !ev.event_date;
@@ -6394,13 +6386,13 @@ function renderPortfolioEventCard(ev, scale) {
         </button>
       </div>
       <div class="pf-row-figs-wrap">
-        <div class="pf-row-figs">
-          <span class="pf-row-alloc">${fmtGBP(pipeline)}</span>
-          <span class="pf-row-paid">${pipeline > 0
-            ? (outstanding > 0 ? `${fmtGBP(won)} paid · ${fmtGBP(outstanding)} owed` : 'fully paid')
-            : 'nothing allocated'}</span>
+        ${pipeline > 0 ? `<div class="pf-money">
+          <span><small>Allocated</small><b>${fmtGBP(pipeline)}</b></span>
+          <span class="${won > 0 ? 'pf-st-paid' : 'pf-st-zero'}"><small>Paid</small><b>${fmtGBP(won)}</b></span>
+          <span class="${outstanding > 0 ? 'pf-st-owed' : ''}"><small>Owed</small><b>${outstanding > 0 ? fmtGBP(outstanding) : '—'}</b></span>
         </div>
-        <div class="pf-track"><div class="pf-bar pf-anim" data-pct="${pct}"></div></div>
+        <div class="pf-paidline"><span class="pf-paidbar"><span class="pf-anim" data-pct="${paidPct}"></span></span><em>${outstanding > 0 ? `${paidPct}% paid` : 'Fully paid'}</em></div>`
+        : '<div class="pf-money-none">No sponsor money allocated yet</div>'}
       </div>
       <div class="pf-row-actions sub-actions">
         <button class="sub-action-btn" onclick="openPortfolioModal(${ev.id})">Edit</button>
