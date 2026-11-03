@@ -368,21 +368,41 @@ function empProbationInit(emp) {
   document.getElementById('empProbationEndWrap').style.display = sel ? '' : 'none';
 }
 
+// Department: pick one already in use, or add a new one (the text box then appears)
+function empDeptFill(current) {
+  const depts = [...new Set([...(employees || []), ...(allEmployeesData || [])].map(e => String(e.department || '').trim()).concat(current ? [current] : []).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+  const sel = document.getElementById('empDeptSelect');
+  sel.innerHTML = '<option value="">Choose a department\u2026</option>' +
+    depts.map(d => `<option value="${esc(d)}"${d === current ? ' selected' : ''}>${esc(d)}</option>`).join('') +
+    '<option value="__new__">+ Add new department\u2026</option>';
+  const input = document.getElementById('empDepartment');
+  input.value = current;
+  input.classList.add('hidden');
+}
+
+function empDeptChange() {
+  const sel = document.getElementById('empDeptSelect'), input = document.getElementById('empDepartment');
+  if (sel.value === '__new__') { input.value = ''; input.classList.remove('hidden'); input.focus(); }
+  else { input.value = sel.value; input.classList.add('hidden'); }
+}
+
 function openEmpModal(emp = null) {
   document.getElementById('empId').value = emp ? emp.id : '';
   document.getElementById('empName').value = emp ? emp.name : '';
   // The API sends DATE columns as full timestamps; a date input only accepts YYYY-MM-DD
   document.getElementById('empStartDate').value = emp ? String(emp.start_date || '').slice(0, 10) : today();
-  document.getElementById('empType').value = emp ? (emp.employment_type || 'payroll') : 'payroll';
+  // Self-employed staff are UK or Philippines-based; the PHP ones are paid in pesos
+  document.getElementById('empType').value = !emp || emp.employment_type !== 'self_employed' ? 'payroll'
+    : emp.currency === 'PHP' ? 'self_employed_php' : 'self_employed_uk';
   document.getElementById('empHours').value = emp && emp.working_pattern === 'part-time' ? 'part-time' : 'full-time';
   document.getElementById('empArrangement').value = emp && ['office', 'hybrid'].includes(emp.work_arrangement) ? emp.work_arrangement : 'remote';
   document.getElementById('empCountry').value = emp ? (emp.country || '') : '';
-  document.getElementById('empSchedule').value = emp && ['10-6', '12-8', '9-5'].includes(emp.work_schedule) ? emp.work_schedule : '';
   document.getElementById('empCurrency').value = emp ? (emp.currency || 'GBP') : 'GBP';
   document.getElementById('empAnnualSalary').value = emp ? emp.annual_salary : 0;
   document.getElementById('empPensionRate').value = emp && emp.pension_rate != null ? emp.pension_rate : '';
   document.getElementById('empJobTitle').value = emp ? (emp.job_title || '') : '';
-  document.getElementById('empDepartment').value = emp ? (emp.department || '') : '';
+  empDeptFill(emp ? (emp.department || '') : '');
   document.getElementById('empPhone').value = emp ? (emp.phone || '') : '';
   document.getElementById('empEmail').value = emp ? (emp.email || '') : '';
   document.getElementById('empContractEnd').value = emp ? String(emp.contract_end_date || '').slice(0, 10) : '';
@@ -391,7 +411,6 @@ function openEmpModal(emp = null) {
   // Don't prefill a legacy bcrypt-hashed PIN (starts with $2) — would mangle on save
   document.getElementById('empPin').value = (emp && emp.portal_pin && !String(emp.portal_pin).startsWith('$2')) ? emp.portal_pin : '';
   document.getElementById('salaryChangeFields').classList.add('hidden');
-  empModalDocsInit(emp);
   empProbationInit(emp);
   document.getElementById('empModalTitle').textContent = emp ? 'Edit Employee' : 'Add Employee';
   const prWrap = document.getElementById('empPortfolioWrap');
@@ -405,7 +424,13 @@ function openEmpModal(emp = null) {
     const isPayroll = document.getElementById('empType').value === 'payroll';
     document.getElementById('pensionRateField').style.display = isPayroll ? '' : 'none';
   };
-  document.getElementById('empType').onchange = togglePensionField;
+  // PHP staff are paid in pesos; switching someone away from PHP puts them back on pounds
+  document.getElementById('empType').onchange = () => {
+    const t = document.getElementById('empType').value, cur = document.getElementById('empCurrency');
+    if (t === 'self_employed_php') cur.value = 'PHP';
+    else if (cur.value === 'PHP') cur.value = 'GBP';
+    togglePensionField();
+  };
   togglePensionField();
 
   // Show raise fields when salary value changes
@@ -422,8 +447,11 @@ async function saveEmployee() {
   const id = document.getElementById('empId').value;
   const name = document.getElementById('empName').value.trim();
   const start_date = document.getElementById('empStartDate').value || null;
-  const employment_type = document.getElementById('empType').value;
-  const currency = document.getElementById('empCurrency').value;
+  const typeChoice = document.getElementById('empType').value;
+  const employment_type = typeChoice === 'payroll' ? 'payroll' : 'self_employed';
+  // The type decides the currency for PHP staff; UK staff are never paid in pesos
+  const pickedCurrency = document.getElementById('empCurrency').value;
+  const currency = typeChoice === 'self_employed_php' ? 'PHP' : (pickedCurrency === 'PHP' ? 'GBP' : pickedCurrency);
   const annual_salary = parseFloat(document.getElementById('empAnnualSalary').value) || 0;
   const salary_reason = document.getElementById('empSalaryReason').value.trim();
   const salary_effective = document.getElementById('empSalaryEffective').value;
@@ -444,10 +472,9 @@ async function saveEmployee() {
   const working_pattern = document.getElementById('empHours').value;
   const work_arrangement = document.getElementById('empArrangement').value;
   const country = document.getElementById('empCountry').value.trim();
-  const work_schedule = document.getElementById('empSchedule').value;
   const payload = { name, employment_type, annual_salary, currency, start_date, pension_rate,
                     job_title, department, phone, email, contract_end_date, probation_end_date, portal_pin, working_pattern,
-                    work_arrangement, country, work_schedule };
+                    work_arrangement, country };
   if (id) {
     await fetch(`/api/employees/${id}`, {
       method: 'PUT',
@@ -455,19 +482,12 @@ async function saveEmployee() {
       body: JSON.stringify({ ...payload, active: 1, salary_reason, salary_effective })
     });
   } else {
-    const created = await fetch('/api/employees', {
+    // Their documents come from onboarding, and extra ones are added on their profile
+    await fetch('/api/employees', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
-    }).then(r => r.ok ? r.json() : null).catch(() => null);
-    if (created && created.id && _empPendingDocs.length) {
-      let failed = 0;
-      for (const d of _empPendingDocs) {
-        if (!await postEmpDoc(created.id, { file_name: d.file_name, file_data: d.file_data }, d.doc_type)) failed++;
-      }
-      if (failed) showToast(`${failed} document${failed > 1 ? 's' : ''} didn't upload — add them from the employee's profile`, 'error');
-    }
-    _empPendingDocs = [];
+    }).catch(() => null);
   }
   closeModal('empModal');
   await loadEmployees();
@@ -1315,48 +1335,7 @@ async function epDeleteDoc(empId, docId, boxId = 'epDocs') {
   const res = await fetch(`/api/employee-documents/${docId}`, { method: 'DELETE' }).catch(() => null);
   if (!res || !res.ok) { showToast('Could not delete document', 'error'); return; }
   showToast('Document deleted', 'success');
-  loadEmpDocs(empId, boxId, () => boxId === 'epDocs' ? _profileEmpId === empId : Number(document.getElementById('empId').value) === empId);
-}
-
-// ── Documents inside the Add/Edit Employee modal ──
-// Editing: uploads save immediately. Adding: files wait here until the employee exists.
-let _empPendingDocs = [];
-
-function empModalRenderPending() {
-  const box = document.getElementById('empDocs');
-  box.innerHTML = _empPendingDocs.length ? _empPendingDocs.map((d, i) => `<div class="ep-row">
-      <span>${esc(d.file_name)}<small>${esc(EMP_DOC_TYPES[d.doc_type] || 'Other')} · uploads when you save</small></span>
-      <button class="btn btn-ghost btn-sm ep-danger" onclick="_empPendingDocs.splice(${i},1);empModalRenderPending()">Remove</button>
-    </div>`).join('') : '<div class="ep-empty">Nothing added yet. Files upload when you save the employee.</div>';
-}
-
-function empModalDocsInit(emp) {
-  const wrap = document.getElementById('empDocsWrap');
-  _empPendingDocs = [];
-  const isAdmin = currentUser && currentUser.role === 'admin';
-  wrap.classList.toggle('hidden', !isAdmin);
-  if (!isAdmin) return;
-  document.getElementById('empDocType').innerHTML = docTypeOptions();
-  if (emp) loadEmpDocs(emp.id, 'empDocs', () => Number(document.getElementById('empId').value) === emp.id);
-  else empModalRenderPending();
-}
-
-async function empModalUploadDoc(input) {
-  const file = input.files[0];
-  input.value = '';
-  const doc = await readPdfFile(file);
-  if (!doc) return;
-  const doc_type = document.getElementById('empDocType').value || 'other';
-  const id = Number(document.getElementById('empId').value);
-  if (id) {
-    if (await postEmpDoc(id, doc, doc_type)) {
-      showToast('Document uploaded', 'success');
-      loadEmpDocs(id, 'empDocs', () => Number(document.getElementById('empId').value) === id);
-    }
-  } else {
-    _empPendingDocs.push({ ...doc, doc_type });
-    empModalRenderPending();
-  }
+  loadEmpDocs(empId, boxId, () => _profileEmpId === empId);
 }
 
 // ── Contract (admin) ──
@@ -2270,7 +2249,7 @@ async function savePayment() {
     headers: { 'Content-Type': 'application/json' },
     // In the employee's own currency (it was left out, so it was stored as GBP)
     body: JSON.stringify({ employee_id, payment_year, payment_month, amount, notes,
-      currency: ((allEmployeesData || []).find(e => String(e.id) === String(employee_id)) || {}).currency || 'GBP' })
+      currency: ([...(employees || []), ...(allEmployeesData || [])].find(e => String(e.id) === String(employee_id)) || {}).currency || 'GBP' })
   });
   if (!res.ok) { const e = await res.json(); return showToast(e.error, 'error'); }
   closeModal('paymentModal');
