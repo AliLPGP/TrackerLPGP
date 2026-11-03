@@ -5866,9 +5866,10 @@ function renderPortfolioGrid() {
   const bySeries = new Map();
   filtered.forEach(e => {
     const id = portSeriesFor(e) || 'unassigned';
-    if (!bySeries.has(id)) bySeries.set(id, { id, allocated: 0, paid: 0, events: 0, deals: 0 });
+    if (!bySeries.has(id)) bySeries.set(id, { id, allocated: 0, paid: 0, events: 0, deals: 0, list: [] });
     const b = bySeries.get(id);
     b.allocated += num(e.total_pipeline); b.paid += num(e.total_won); b.events += 1; b.deals += parseInt(e.deal_count) || 0;
+    b.list.push(e);
   });
   const seriesRows = [
     ...PORT_SERIES.filter(s => bySeries.has(s.id)).map(s => ({ ...bySeries.get(s.id), short: s.short, name: s.name, color: `var(--chart-${s.chart})` })),
@@ -5879,22 +5880,27 @@ function renderPortfolioGrid() {
       <div class="pf-panel-hd">
         <div>
           <h2 class="pf-panel-title">Revenue by series</h2>
-          <p class="pf-panel-desc">What each programme series has brought in: the sponsor deals won for its events, how much of it is paid, and what is still owed.</p>
+          <p class="pf-panel-desc">What each programme series has brought in: the sponsor deals won for its events, how much of it is paid, and what is still owed. Click a series to see each event.</p>
         </div>
         <p class="pf-panel-aside">Amounts in GBP</p>
       </div>
       ${seriesRows.length ? `<div class="pf-st">
         <div class="pf-st-row pf-st-head"><span>Series</span><span>Events</span><span>Deals won</span><span>Paid</span><span>Owed</span><span>Collected</span></div>
         ${seriesRows.map(r => {
-          const owed = Math.max(0, r.allocated - r.paid);
-          const pct = r.allocated > 0 ? Math.min(100, Math.round(r.paid / r.allocated * 100)) : 0;
-          return `<div class="pf-st-row">
-            <span class="pf-st-name"><span class="pf-chip" style="background:${r.color}"></span><span><b>${esc(r.short)}</b>${r.name && r.name !== r.short ? `<small>${esc(r.name)}</small>` : ''}</span></span>
-            <span class="pf-st-num" data-l="Events">${r.events}<small>${r.deals} deal${r.deals === 1 ? '' : 's'}</small></span>
-            <span class="pf-st-num pf-st-big${r.allocated > 0 ? '' : ' pf-st-zero'}" data-l="Deals won">${fmtGBP(r.allocated)}</span>
-            <span class="pf-st-num ${r.paid > 0 ? 'pf-st-paid' : 'pf-st-zero'}" data-l="Paid">${fmtGBP(r.paid)}</span>
-            <span class="pf-st-num${owed > 0 ? ' pf-st-owed' : ''}" data-l="Owed">${owed > 0 ? fmtGBP(owed) : '—'}</span>
-            <span class="pf-st-prog" data-l="Collected">${r.allocated > 0 ? `<span class="pf-paidbar"><span class="pf-anim" data-pct="${pct}"></span></span><b>${pct}%</b>` : '<small>no deals won</small>'}</span>
+          // Its events, biggest first, each with the same figures; the row opens to show them
+          const evs = [...r.list].sort((a, b) => num(b.total_pipeline) - num(a.total_pipeline) || String(a.name).localeCompare(String(b.name)));
+          const open = _pfOpenSeries.has(r.id);
+          return `<div class="pf-st-group${open ? ' open' : ''}" data-series="${esc(r.id)}">
+            <button type="button" class="pf-st-row pf-st-toggle" onclick="pfToggleSeries(this)" aria-expanded="${open}">
+              <span class="pf-st-name"><span class="pf-st-chev">${PF_ICON_CHEV}</span><span class="pf-chip" style="background:${r.color}"></span><span><b>${esc(r.short)}</b>${r.name && r.name !== r.short ? `<small>${esc(r.name)}</small>` : ''}</span></span>
+              <span class="pf-st-num" data-l="Events">${r.events}<small>${r.deals} deal${r.deals === 1 ? '' : 's'}</small></span>
+              ${pfMoneyCells(r.allocated, r.paid, true)}
+            </button>
+            <div class="pf-st-sub">${evs.map(e => `<div class="pf-st-row pf-st-ev">
+                <span class="pf-st-name"><span><b>${esc(e.name)}</b><small>${esc([fmtEventDate(e, { long: true }), e.location].filter(Boolean).join(' · '))}</small></span></span>
+                <span class="pf-st-num" data-l="Deals">${parseInt(e.deal_count) || 0}<small>deal${(parseInt(e.deal_count) || 0) === 1 ? '' : 's'}</small></span>
+                ${pfMoneyCells(num(e.total_pipeline), num(e.total_won), false)}
+              </div>`).join('')}</div>
           </div>`;
         }).join('')}
       </div>` : '<div class="pf-empty">No deals won yet.</div>'}
@@ -6356,6 +6362,26 @@ function renderSeriesChip(seriesId) {
  * bar lengths are comparable; the bar is one hue because the series chip
  * already carries identity.
  */
+// Series rows opened on the Portfolio page (kept open when the page redraws)
+const _pfOpenSeries = new Set();
+function pfToggleSeries(btn) {
+  const g = btn.closest('.pf-st-group');
+  const open = g.classList.toggle('open');
+  btn.setAttribute('aria-expanded', String(open));
+  if (open) _pfOpenSeries.add(g.dataset.series); else _pfOpenSeries.delete(g.dataset.series);
+  g.querySelectorAll('.pf-st-sub .pf-anim').forEach(b => { b.style.width = (Number(b.dataset.pct) || 0) + '%'; });
+}
+
+// Deals won, Paid, Owed and Collected cells for a row of the Revenue by series table
+function pfMoneyCells(won, paid, big) {
+  const owed = Math.max(0, won - paid);
+  const pct = won > 0 ? Math.min(100, Math.round(paid / won * 100)) : 0;
+  return `<span class="pf-st-num${big ? ' pf-st-big' : ''}${won > 0 ? '' : ' pf-st-zero'}" data-l="Deals won">${fmtGBP(won)}</span>
+    <span class="pf-st-num ${paid > 0 ? 'pf-st-paid' : 'pf-st-zero'}" data-l="Paid">${fmtGBP(paid)}</span>
+    <span class="pf-st-num${owed > 0 ? ' pf-st-owed' : ''}" data-l="Owed">${owed > 0 ? fmtGBP(owed) : '—'}</span>
+    <span class="pf-st-prog" data-l="Collected">${won > 0 ? `<span class="pf-paidbar"><span class="pf-anim" data-pct="${pct}"></span></span><b>${pct}%</b>` : '<small>no deals won</small>'}</span>`;
+}
+
 function renderPortfolioEventCard(ev) {
   const won         = parseFloat(ev.total_won) || 0;
   const pipeline    = parseFloat(ev.total_pipeline) || 0;
