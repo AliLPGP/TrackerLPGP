@@ -464,6 +464,9 @@ async function saveEmployee() {
   const contract_end_date = document.getElementById('empContractEnd').value || null;
   const portal_pin = document.getElementById('empPin').value.replace(/\D/g,'').slice(0,6) || null;
   if (!name) return showToast('Name is required', 'error');
+  // Their employment contract is made from these three; without them onboarding has no contract step
+  const contractGaps = [!job_title && 'job title', !start_date && 'start date', !(annual_salary > 0) && 'annual salary'].filter(Boolean);
+  if (contractGaps.length && !await showConfirm(`No ${contractGaps.length > 1 ? contractGaps.slice(0, -1).join(', ') + ' or ' + contractGaps[contractGaps.length - 1] : contractGaps[0]} yet, so their contract cannot be made and will not be in their onboarding until you add ${contractGaps.length === 1 ? 'it' : 'them'}. Save anyway?`)) return;
   // Always sent (null clears it), so an edit never leaves a stale probation behind
   const probationOn = !!document.getElementById('empProbation').value;
   const probation_end_date = probationOn ? (document.getElementById('empProbationEnd').value || null) : null;
