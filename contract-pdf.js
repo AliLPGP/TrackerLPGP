@@ -35,7 +35,10 @@ function sections(c) {
   };
   out.push(['Location of Employment', [where[c.work_arrangement] || where.remote]]);
   out.push(['Hours of Operation', [
-    `The Employee is expected to work the following schedule: ${c.schedule.join(', ')}. The Employee is responsible for managing any applicable time zone differences.`,
+    `The Employee is expected to work the following schedule: ${c.schedule.join(', ')}. ` +
+    (c.flexible_hours
+      ? 'The Company will confirm which of these hours apply, and may change them during the year according to business needs.'
+      : 'The Employee is responsible for managing any applicable time zone differences.'),
   ]]);
   out.push(['Compensation', [
     `The Employee will be paid ${c.monthly_salary} per month. LPGP Connect issues salary payments during the last week of each month unless a major holiday affects the scheduled payout period, in which case payment may be processed on the next business day. Payments will be made via bank transfer or other approved payment methods.`,

@@ -28,6 +28,10 @@ const textOf = c => sections(c).map(s => s[1].join(' ')).join(' ');
   const payroll = textOf({ ...base, employment_type: 'payroll', holiday_days: 20 });
   assert.ok(payroll.includes('through PAYE') && payroll.includes('twenty (20) days of paid holiday'));
 
+  // Hours: PHP staff work fixed UK office hours; UK staff one of two shifts the Company sets
+  assert.ok(textOf({ ...base, flexible_hours: false }).includes('time zone differences'));
+  assert.ok(textOf({ ...base, flexible_hours: true }).includes('may change them during the year'));
+
   // Where they work
   assert.ok(textOf(base).includes('fully remote position'));
   assert.ok(textOf({ ...base, work_arrangement: 'office' }).includes('normal place of work is the Company’s office'));

@@ -760,16 +760,15 @@ app.get('/api/employees/all', requireAuth, async (req, res) => {
 });
 
 // The contract's cover-page terms, as stored on the employee
-const contractTerms = ({ work_arrangement, country, work_schedule }) => [
+const contractTerms = ({ work_arrangement, country }) => [
   ['remote', 'office', 'hybrid'].includes(work_arrangement) ? work_arrangement : 'remote',
   String(country || '').trim().slice(0, 80),
-  ['10-6', '12-8', '9-5'].includes(work_schedule) ? work_schedule : '',
 ];
 
 app.post('/api/employees', requireAuth, async (req, res) => {
   const { name, employment_type, annual_salary, currency, start_date, pension_rate,
           job_title, department, phone, email, contract_end_date, probation_end_date, working_pattern, portal_pin,
-          work_arrangement, country, work_schedule } = req.body;
+          work_arrangement, country } = req.body;
   if (!name) return res.status(400).json({ error: 'Name required' });
   // A PIN set while adding them is their portal login; it used to be dropped here
   const pinVal = portal_pin ? String(portal_pin).replace(/\D/g, '').slice(0, 6) || null : null;
@@ -781,12 +780,12 @@ app.post('/api/employees', requireAuth, async (req, res) => {
     `INSERT INTO employees
        (name, daily_rate, employment_type, annual_salary, currency, start_date, pension_rate,
         job_title, department, phone, email, contract_end_date, probation_end_date, working_pattern, portal_pin,
-        work_arrangement, country, work_schedule, starter_form_required)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        work_arrangement, country, starter_form_required)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     [name, daily_rate, employment_type || 'payroll', annualSal, cur, start_date ? String(start_date).slice(0, 10) : null, pensionRate,
      job_title || '', department || '', phone || '', email || '', contract_end_date ? String(contract_end_date).slice(0, 10) : null,
      probation_end_date ? String(probation_end_date).slice(0, 10) : null, working_pattern === 'part-time' ? 'part-time' : 'full-time', pinVal,
-     ...contractTerms({ work_arrangement, country, work_schedule }),
+     ...contractTerms({ work_arrangement, country }),
      (employment_type || 'payroll') === 'payroll']
   );
   if (pinVal) await requireOnboardingForNewLogin(rows[0].id, false);
@@ -806,7 +805,7 @@ async function requireOnboardingForNewLogin(empId, hadPin) {
 app.put('/api/employees/:id', requireAuth, async (req, res) => {
   const { name, active, employment_type, annual_salary, currency, salary_reason, salary_effective,
           start_date, pension_rate, job_title, department, phone, email, contract_end_date,
-          probation_end_date, portal_pin, working_pattern, work_arrangement, country, work_schedule } = req.body;
+          probation_end_date, portal_pin, working_pattern, work_arrangement, country } = req.body;
   const annualSal = parseFloat(annual_salary) || 0;
   const daily_rate = parseFloat((annualSal / 260).toFixed(4));
   const cur = ['GBP','AED','PHP'].includes(currency) ? currency : 'GBP';
@@ -843,7 +842,7 @@ app.put('/api/employees/:id', requireAuth, async (req, res) => {
      probation_review_done_at=CASE WHEN ?::boolean AND probation_end_date IS DISTINCT FROM ?::date THEN NULL ELSE probation_review_done_at END,
      probation_end_date=CASE WHEN ?::boolean THEN ?::date ELSE probation_end_date END,
      working_pattern=COALESCE(?, working_pattern),
-     work_arrangement=COALESCE(?, work_arrangement), country=COALESCE(?, country), work_schedule=COALESCE(?, work_schedule)
+     work_arrangement=COALESCE(?, work_arrangement), country=COALESCE(?, country)
      WHERE id=?`,
     [name, daily_rate, active !== undefined ? active : 1, employment_type || 'payroll',
      annualSal, cur, start_date !== undefined, start_date ? String(start_date).slice(0, 10) : null, pensionRate,
@@ -852,7 +851,7 @@ app.put('/api/employees/:id', requireAuth, async (req, res) => {
      probation_end_date !== undefined, probation_end_date ? String(probation_end_date).slice(0, 10) : null,
      probation_end_date !== undefined, probation_end_date ? String(probation_end_date).slice(0, 10) : null,
      working_pattern === 'part-time' || working_pattern === 'full-time' ? working_pattern : null,
-     ...(work_arrangement === undefined && country === undefined && work_schedule === undefined ? [null, null, null] : contractTerms({ work_arrangement, country, work_schedule })),
+     ...(work_arrangement === undefined && country === undefined ? [null, null] : contractTerms({ work_arrangement, country })),
      req.params.id]
   );
   if (pinVal) await requireOnboardingForNewLogin(req.params.id, !!(current[0] && current[0].portal_pin));

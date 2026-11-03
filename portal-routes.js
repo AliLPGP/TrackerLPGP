@@ -81,7 +81,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     const { rows } = await q(
       `SELECT id, name, email, phone, currency, employment_type, start_date::TEXT AS start_date,
               termination_date::TEXT AS termination_date, job_title, annual_salary, working_pattern,
-              work_arrangement, country, work_schedule, starter_form_required,
+              work_arrangement, country, starter_form_required,
               probation_end_date::TEXT AS probation_end_date, probation_review_done_at::TEXT AS probation_review_done_at
        FROM employees WHERE id = ?`, [id]);
     return rows[0] || null;
@@ -346,13 +346,15 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     : '');
   const money = n => Number(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const COUNTRY_BY_CURRENCY = { GBP: 'United Kingdom', PHP: 'Philippines', AED: 'United Arab Emirates' };
-  // Working hours, chosen on the employee form. PHP staff in the Philippines work UK office
-  // hours (9 to 5); everyone else 10 to 6 unless set to 12 to 8.
-  const WORK_HOURS = { '10-6': '10:00 AM – 6:00 PM (UK Time)', '12-8': '12:00 PM – 8:00 PM (UK Time)', '9-5': '9:00 AM – 5:00 PM (UK Time)' };
-  const scheduleFor = (emp, pattern) => {
-    const key = WORK_HOURS[emp.work_schedule] ? emp.work_schedule : (emp.currency === 'PHP' ? '9-5' : '10-6');
-    return ['Monday to Friday', WORK_HOURS[key], ...(pattern === 'part-time' ? [] : ['40 Hours per Week'])].join('\n');
-  };
+  // Working hours follow the employment type: self-employed PHP staff in the Philippines work
+  // UK office hours (9 to 5); payroll and self-employed UK staff work 10 to 6 or 12 to 8, as
+  // the Company schedules them, and that changes through the year with the work.
+  const isPhpStaff = emp => emp.employment_type === 'self_employed' && emp.currency === 'PHP';
+  const scheduleFor = (emp, pattern) => [
+    'Monday to Friday',
+    isPhpStaff(emp) ? '9:00 AM – 5:00 PM (UK Time)' : '10:00 AM – 6:00 PM or 12:00 PM – 8:00 PM (UK Time)',
+    ...(pattern === 'part-time' ? [] : ['40 Hours per Week']),
+  ].join('\n');
   // The position as the contract states it: co-production staff are contracted as producers
   const contractPosition = title => (/\bco[\s-]*produc/i.test(String(title || '')) ? 'Producer' : String(title || '').trim());
 
@@ -373,6 +375,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       work_arrangement: ['remote', 'office', 'hybrid'].includes(emp.work_arrangement) ? emp.work_arrangement : 'remote',
       country: String(emp.country || '').trim() || COUNTRY_BY_CURRENCY[currency] || 'United Kingdom',
       schedule: scheduleFor(emp, pattern),
+      flexible_hours: !isPhpStaff(emp),
       employment_type: emp.employment_type === 'self_employed' ? 'self_employed' : 'payroll',
       start_date: start || '',
       annual_salary: Number(emp.annual_salary) || 0,
@@ -415,6 +418,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       employment_label: `${fd.working_pattern === 'part-time' ? 'Part-Time' : 'Full-Time'} ${arrangement}`,
       work_arrangement: fd.work_arrangement,
       schedule: String(fd.schedule).split(/\r?\n/).map(s => s.trim()).filter(Boolean),
+      flexible_hours: fd.flexible_hours !== false,
       monthly_salary: `${fd.currency} ${money(fd.annual_salary / 12)}`,
       start_date: longDate(fd.start_date),
       employment_type: fd.employment_type,
