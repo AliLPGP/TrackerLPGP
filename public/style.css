@@ -7928,3 +7928,39 @@ select option { background: var(--glass-strong); color: var(--text); }
 :root .modal .form-group:has(> input[type="checkbox"]) { display: flex; flex-direction: row !important; align-items: center; justify-content: flex-start; gap: 10px; text-align: left; }
 :root .modal .form-group > input[type="checkbox"] { width: 16px; height: 16px; flex: none; margin: 0; }
 :root .modal .form-group:has(> input[type="checkbox"]) > label { margin: 0 !important; }
+
+/* ── Dialogs: solid panels ──
+   A see-through form over the dimmed page let grey through the body and the fields
+   (strongly in some browsers). Forms are solid in both themes; light mode is white
+   with crisp light borders over a softer, lighter scrim. */
+:root {
+  --dlg-bg: #ffffff; --dlg-foot: #fafbfc; --dlg-field: #ffffff; --dlg-field-line: #dde2ea;
+  --dlg-field-hover: #c8cfda; --dlg-rule: #eef0f4; --dlg-soft: #f6f7f9;
+}
+[data-theme="dark"] {
+  --dlg-bg: #13161d; --dlg-foot: #171a22; --dlg-field: #1a1e27; --dlg-field-line: rgba(255, 255, 255, 0.10);
+  --dlg-field-hover: rgba(255, 255, 255, 0.18); --dlg-rule: rgba(255, 255, 255, 0.07); --dlg-soft: #191c25;
+}
+:root .modal { -webkit-backdrop-filter: none !important; backdrop-filter: none !important; background: var(--dlg-bg) !important; }
+:root:not([data-theme="dark"]) .modal-overlay { background: rgba(15, 23, 42, 0.32); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
+:root:not([data-theme="dark"]) .modal { box-shadow: 0 24px 60px -18px rgba(15, 23, 42, 0.35), 0 0 0 1px rgba(15, 23, 42, 0.06) !important; }
+/* Everything inside sits on the panel itself: no tinted bands */
+:root .modal > .modal-header, :root .modal .dm-body, :root .modal .dm-sec, :root .modal .hm-section, :root .modal .hm-body,
+:root .modal .pt-body, :root .modal .dm-head { background: var(--dlg-bg) !important; }
+:root .modal > div:has(> .btn-primary):not(.modal-header):not(.hm-section),
+:root .modal > .modal-footer, :root .modal > .hm-footer, :root .modal .pt-foot, :root .modal .dm-foot { background: var(--dlg-foot) !important; border-top-color: var(--dlg-rule) !important; }
+:root .modal > .modal-header { border-bottom-color: var(--dlg-rule); }
+:root .modal .dm-sec + .dm-sec, :root .modal > .hm-section { border-color: var(--dlg-rule) !important; }
+/* Fields: solid, with a clear edge */
+:root .modal input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]), :root .modal select, :root .modal textarea {
+  background-color: var(--dlg-field) !important; border: 1px solid var(--dlg-field-line) !important; color: var(--text);
+}
+:root .modal input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):hover, :root .modal select:hover, :root .modal textarea:hover { border-color: var(--dlg-field-hover) !important; }
+:root .modal input:focus, :root .modal select:focus, :root .modal textarea:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 3px var(--accent-soft) !important; }
+:root .modal input:disabled, :root .modal input[readonly] { background-color: var(--dlg-soft) !important; color: var(--muted); }
+:root .modal input[type="file"] { background: var(--dlg-soft) !important; }
+/* Lists inside a form (the deal's events): white rows, soft month headings */
+:root .modal .deal-event-picker, :root .modal .deal-event-checkboxes { background: var(--dlg-field) !important; border-color: var(--dlg-field-line) !important; }
+:root .modal .deal-event-group-hd { background: var(--dlg-soft) !important; }
+:root .modal .deal-event-group + .deal-event-group { border-top-color: var(--dlg-rule); }
+:root .modal .deal-package-row, :root .modal .ig-event-card { background: var(--dlg-soft) !important; border-color: var(--dlg-field-line) !important; }
