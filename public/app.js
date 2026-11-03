@@ -368,6 +368,25 @@ function empProbationInit(emp) {
   document.getElementById('empProbationEndWrap').style.display = sel ? '' : 'none';
 }
 
+// Department: pick one already in use, or add a new one (the text box then appears)
+function empDeptFill(current) {
+  const depts = [...new Set([...(employees || []), ...(allEmployeesData || [])].map(e => String(e.department || '').trim()).concat(current ? [current] : []).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+  const sel = document.getElementById('empDeptSelect');
+  sel.innerHTML = '<option value="">Choose a department\u2026</option>' +
+    depts.map(d => `<option value="${esc(d)}"${d === current ? ' selected' : ''}>${esc(d)}</option>`).join('') +
+    '<option value="__new__">+ Add new department\u2026</option>';
+  const input = document.getElementById('empDepartment');
+  input.value = current;
+  input.classList.add('hidden');
+}
+
+function empDeptChange() {
+  const sel = document.getElementById('empDeptSelect'), input = document.getElementById('empDepartment');
+  if (sel.value === '__new__') { input.value = ''; input.classList.remove('hidden'); input.focus(); }
+  else { input.value = sel.value; input.classList.add('hidden'); }
+}
+
 function openEmpModal(emp = null) {
   document.getElementById('empId').value = emp ? emp.id : '';
   document.getElementById('empName').value = emp ? emp.name : '';
@@ -382,7 +401,7 @@ function openEmpModal(emp = null) {
   document.getElementById('empAnnualSalary').value = emp ? emp.annual_salary : 0;
   document.getElementById('empPensionRate').value = emp && emp.pension_rate != null ? emp.pension_rate : '';
   document.getElementById('empJobTitle').value = emp ? (emp.job_title || '') : '';
-  document.getElementById('empDepartment').value = emp ? (emp.department || '') : '';
+  empDeptFill(emp ? (emp.department || '') : '');
   document.getElementById('empPhone').value = emp ? (emp.phone || '') : '';
   document.getElementById('empEmail').value = emp ? (emp.email || '') : '';
   document.getElementById('empContractEnd').value = emp ? String(emp.contract_end_date || '').slice(0, 10) : '';
@@ -2270,7 +2289,7 @@ async function savePayment() {
     headers: { 'Content-Type': 'application/json' },
     // In the employee's own currency (it was left out, so it was stored as GBP)
     body: JSON.stringify({ employee_id, payment_year, payment_month, amount, notes,
-      currency: ((allEmployeesData || []).find(e => String(e.id) === String(employee_id)) || {}).currency || 'GBP' })
+      currency: ([...(employees || []), ...(allEmployeesData || [])].find(e => String(e.id) === String(employee_id)) || {}).currency || 'GBP' })
   });
   if (!res.ok) { const e = await res.json(); return showToast(e.error, 'error'); }
   closeModal('paymentModal');

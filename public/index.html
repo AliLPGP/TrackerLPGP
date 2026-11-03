@@ -877,7 +877,8 @@
       </div>
       <div class="form-group">
         <label>Department</label>
-        <input type="text" id="empDepartment" placeholder="e.g. Engineering">
+        <select id="empDeptSelect" onchange="empDeptChange()"></select>
+        <input type="text" id="empDepartment" class="hidden" maxlength="80" placeholder="Name of the new department" style="margin-top:8px">
       </div>
     </div>
     <div class="form-row">
