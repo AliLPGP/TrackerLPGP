@@ -209,7 +209,55 @@ function closeMobileNav() {
 }
 
 // ─── SIDEBAR COLLAPSE ─────────────────────────────────────────────────────────
+// ── Sliding pill in the top menu (computer layout) ──
+// One highlight that moves between the pages: it first stretches from the old pill
+// to the new one, then settles on the new one with a slight spring, like a bubble.
+function initNavPill() {
+  const nav = document.querySelector('.sidebar .sidebar-nav');
+  if (!nav || nav.querySelector('.nav-pill')) return;
+  const pill = document.createElement('span');
+  pill.className = 'nav-pill';
+  nav.prepend(pill);
+  let last = null, timer = null;
+  const desktop = () => window.matchMedia('(min-width: 769px)').matches;
+  const box = el => ({ x: el.offsetLeft, w: el.offsetWidth, y: el.offsetTop, h: el.offsetHeight });
+  const place = (b, instant) => {
+    pill.classList.toggle('no-anim', !!instant);
+    pill.style.width = b.w + 'px'; pill.style.height = b.h + 'px';
+    pill.style.transform = `translate(${b.x}px, ${b.y}px)`;
+  };
+  const move = instant => {
+    const active = nav.querySelector('.nav-item.active');
+    if (!active || !desktop() || active.offsetParent === null) { pill.style.opacity = '0'; last = null; return; }
+    const to = box(active);
+    pill.style.opacity = '1';
+    clearTimeout(timer);
+    if (instant || !last || last === active || last.offsetParent === null) { place(to, instant); last = active; return; }
+    // Stretch over both pills, then settle on the new one
+    const from = box(last), x = Math.min(from.x, to.x);
+    place({ x, w: Math.max(from.x + from.w, to.x + to.w) - x, y: to.y, h: to.h });
+    pill.classList.add('is-stretching');
+    timer = setTimeout(() => { pill.classList.remove('is-stretching'); place(to); }, 170);
+    last = active;
+    // Keep the new page's pill in view when the row scrolls
+    active.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' });
+  };
+  // Only a page becoming active moves it; the pill's own class changes are ignored
+  new MutationObserver(list => { if (list.some(m => m.target !== pill)) move(false); })
+    .observe(nav, { subtree: true, attributes: true, attributeFilter: ['class'] });
+  // Re-measure once the menu has been laid out again (window resized, fonts loaded)
+  if (window.ResizeObserver) {
+    const ro = new ResizeObserver(() => move(true));
+    ro.observe(nav);
+    nav.querySelectorAll('.nav-item').forEach(el => ro.observe(el));
+  }
+  window.addEventListener('resize', () => requestAnimationFrame(() => move(true)));
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => move(true));
+  requestAnimationFrame(() => move(true));
+}
+
 function initSidebarCollapse() {
+  initNavPill();
   const sidebar = document.querySelector('.sidebar');
   const btn = document.getElementById('sidebarCollapseBtn');
   if (!sidebar || !btn) return;

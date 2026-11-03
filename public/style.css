@@ -7699,20 +7699,15 @@ textarea.form-control { resize: vertical; }
   --bg-2:         transparent;
 }
 
-/* The glows: large soft circles of colour behind everything */
+/* Behind the glass: a faint, even wash of colour (no shapes), so the frosted
+   panels have something soft to sit on */
 body:not(.login-body) { background: var(--bg); }
 body:not(.login-body)::before {
-  content: ''; position: fixed; inset: -10vmax; z-index: -1; pointer-events: none;
-  /* Spheres lit from the top-left, like the reference: amber, teal, green, blue, grey */
+  content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
   background:
-    radial-gradient(circle 15vmax at 80% 14%, #f4b25e 0%, #d9822b 45%, rgba(170, 90, 20, 0.85) 68%, transparent 71%),
-    radial-gradient(circle 19vmax at 95% 92%, #6ff0ea 0%, #1bb5b8 45%, rgba(10, 110, 120, 0.85) 68%, transparent 71%),
-    radial-gradient(circle 7vmax at 46% 86%, #6ee08f 0%, #2fae5c 50%, rgba(20, 110, 55, 0.9) 68%, transparent 71%),
-    radial-gradient(circle 22vmax at 2% 72%, #4f8dff 0%, #2357d9 45%, rgba(15, 50, 160, 0.85) 68%, transparent 71%),
-    radial-gradient(circle 5vmax at 62% 42%, #c9cdd8 0%, #8a90a0 50%, rgba(70, 75, 90, 0.9) 68%, transparent 71%);
-  filter: blur(2px);
+    radial-gradient(120vmax 80vmax at 0% 0%, rgb(var(--accent-rgb) / 0.10), transparent 60%),
+    radial-gradient(110vmax 80vmax at 100% 100%, rgba(40, 160, 170, 0.07), transparent 60%);
 }
-:root:not([data-theme="dark"]) body:not(.login-body)::before { opacity: 0.5; }
 
 /* Frosted panels */
 .card, .stat-card, .modal, .pf-panel, .notif-panel, .ep-drawer, .ob-card, .wm-panel,
@@ -7770,7 +7765,7 @@ select option { background: var(--glass-strong); color: var(--text); }
   }
   .sidebar .sidebar-nav::-webkit-scrollbar { display: none; }
   .sidebar .nav-section-label { font-size: 0 !important; width: 1px; height: 18px; padding: 0 !important; margin: 0 8px !important; background: var(--glass-line); flex: none; }
-  .sidebar .sidebar-nav > .nav-section-label:first-child { display: none; }
+  .sidebar .sidebar-nav > .nav-section-label:first-child, .sidebar .sidebar-nav > .nav-pill + .nav-section-label { display: none; }
   .sidebar .nav-item {
     flex: none; width: auto; margin: 0 !important; padding: 6px 11px !important; gap: 6px !important;
     border-radius: 999px !important; border: 1px solid transparent !important; white-space: nowrap; font-size: 13px;
@@ -7779,10 +7774,18 @@ select option { background: var(--glass-strong); color: var(--text); }
   .sidebar .nav-item .icon { display: none !important; }
   .sidebar .nav-item .nav-label { display: inline !important; }
   .sidebar .nav-item:hover { background: var(--surface-3) !important; }
-  .sidebar .nav-item.active {
-    background: rgb(var(--accent-rgb) / 0.16) !important; border-color: rgb(var(--accent-rgb) / 0.35) !important; color: var(--text) !important;
-    box-shadow: none !important;
+  /* The highlight is one sliding bubble (initNavPill), not a background on each pill */
+  .sidebar .sidebar-nav { position: relative; }
+  .sidebar .nav-item { position: relative; z-index: 1; }
+  .sidebar .nav-item.active { background: transparent !important; border-color: transparent !important; color: var(--text) !important; box-shadow: none !important; }
+  .sidebar .nav-pill {
+    position: absolute; left: 0; top: 0; z-index: 0; pointer-events: none; border-radius: 999px; opacity: 0;
+    background: rgb(var(--accent-rgb) / 0.18); border: 1px solid rgb(var(--accent-rgb) / 0.38);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 4px 14px -6px rgb(var(--accent-rgb) / 0.55);
+    transition: transform .42s cubic-bezier(.34, 1.45, .5, 1), width .42s cubic-bezier(.34, 1.45, .5, 1), opacity .2s;
   }
+  .sidebar .nav-pill.is-stretching { transition: transform .17s ease-out, width .17s ease-out, opacity .2s; }
+  .sidebar .nav-pill.no-anim { transition: none; }
   .sidebar .nav-item.active::before, .sidebar .nav-item.active::after { display: none !important; }
   /* Theme, install and sign out: small round buttons on the right */
   .sidebar .sidebar-footer {
@@ -7818,3 +7821,7 @@ select option { background: var(--glass-strong); color: var(--text); }
   .topbar .hamburger { display: none; }
   .content { padding-top: 14px; }
 }
+
+/* The sliding menu highlight is for the computer layout only */
+@media (max-width: 768px) { .nav-pill { display: none; } }
+@media (prefers-reduced-motion: reduce) { .sidebar .nav-pill { transition: none !important; } }
