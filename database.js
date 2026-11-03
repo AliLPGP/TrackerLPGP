@@ -465,6 +465,15 @@ async function runMigrations() {
   await sql(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS probation_review_done_at DATE`);
   // Full-time or part-time: stated in their employment contract
   await sql(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS working_pattern TEXT NOT NULL DEFAULT 'full-time'`);
+  // Also on the contract's cover page: where they work, the country, and their schedule
+  await sql(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS work_arrangement TEXT NOT NULL DEFAULT 'remote'`);
+  await sql(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS country TEXT NOT NULL DEFAULT ''`);
+  await sql(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS work_schedule TEXT NOT NULL DEFAULT ''`);
+  // Payroll staff added from now on complete the new starter form at onboarding; the
+  // payroll staff already on the system have handed one in, so they are not asked
+  await sql(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS starter_form_required BOOLEAN NOT NULL DEFAULT false`);
+  // Their answers, encrypted like ID documents (NI number and bank details)
+  await sql(`ALTER TABLE employee_onboarding ADD COLUMN IF NOT EXISTS starter_answers TEXT`);
 
   // First-login onboarding: personal details, an ID document and a signed NDA.
   // Kept apart from `employees` because that table is sent to every logged-in user.

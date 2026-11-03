@@ -4,8 +4,10 @@ const crypto = require('crypto');
 const express = require('express');
 const { PDFDocument } = require('pdf-lib');
 const { builtInHolidays, regionFor, splitWorkingDays, addDays } = require('./holidays');
-const { readFormFields, fillForm, imageToPdf, appendSignaturePage } = require('./pdf-sign');
-const contractGen = require('./contract-gen');
+const { appendSignaturePage } = require('./pdf-sign');
+const { renderContractPdf } = require('./contract-pdf');
+const { STARTER_FORM, checkAnswers, starterDefaults } = require('./starter-form');
+const { renderStarterPdf } = require('./starter-pdf');
 const idCrypto = require('./id-crypto');
 
 /**
@@ -32,7 +34,6 @@ try { builtinAgreementBytes = fs.readFileSync(path.join(__dirname, 'assets', 'te
 catch (e) { console.warn('Built-in team member agreement missing:', e.message); }
 
 const MAX_FILE_BYTES = 3 * 1024 * 1024; // Vercel caps a request body at 4.5 MB and base64 adds a third
-const MAX_COMPLETED_BYTES = 2.5 * 1024 * 1024; // a completed form travels with a signature in one request
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const REGIONS = ['ALL', 'GB', 'AE', 'PH'];
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -80,6 +81,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     const { rows } = await q(
       `SELECT id, name, email, phone, currency, employment_type, start_date::TEXT AS start_date,
               termination_date::TEXT AS termination_date, job_title, annual_salary, working_pattern,
+              work_arrangement, country, work_schedule, starter_form_required,
               probation_end_date::TEXT AS probation_end_date, probation_review_done_at::TEXT AS probation_review_done_at
        FROM employees WHERE id = ?`, [id]);
     return rows[0] || null;
@@ -323,43 +325,37 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
   const onboardingRow = async id => (await q('SELECT *, date_of_birth::TEXT AS dob_text FROM employee_onboarding WHERE employee_id = ?', [id])).rows[0] || null;
 
   // The company files staff are asked to read and sign (see onboarding_templates)
-  // `contract` is the Word template employment contracts are made from (the others are PDFs)
-  const TEMPLATE_KEYS = ['nda', 'starter', 'contract'];
+  // The starter form is built in (starter-form.js), so only the agreement is a file
+  const TEMPLATE_KEYS = ['nda'];
   async function templateMeta() {
     const { rows } = await q('SELECT key, file_name, file_size, uploaded_by, updated_at FROM onboarding_templates');
-    const out = { nda: null, starter: null, contract: null };
+    const out = { nda: null, starter: null };
     rows.forEach(r => { out[r.key] = { file_name: r.file_name, file_size: r.file_size, uploaded_by: r.uploaded_by, updated_at: r.updated_at }; });
     if (!out.nda && builtinAgreementBytes) out.nda = { file_name: BUILTIN_AGREEMENT.file_name, file_size: builtinAgreementBytes.length, builtin: true };
-    if (!out.contract) out.contract = { file_name: contractGen.BUILTIN_TEMPLATE_NAME, file_size: contractGen.builtinTemplate().length, builtin: true };
     return out;
   }
   async function templateBytes(key) {
     const { rows } = await q('SELECT file_data FROM onboarding_templates WHERE key = ?', [key]);
     if (rows[0]) return Buffer.from(rows[0].file_data, 'base64');
-    if (key === 'contract') return contractGen.builtinTemplate();
     return key === 'nda' ? builtinAgreementBytes : null;
   }
 
-  // ── Contracts made from the Word template ──
+  // ── Employment contracts, in the LPGP contract design (contract-pdf.js) ──
   const longDate = iso => (iso && ISO_DATE.test(String(iso).slice(0, 10))
     ? new Date(String(iso).slice(0, 10) + 'T12:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
     : '');
   const money = n => Number(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const COUNTRY_BY_CURRENCY = { GBP: 'United Kingdom', PHP: 'Philippines', AED: 'United Arab Emirates' };
+  // Working hours, chosen on the employee form. PHP staff in the Philippines work UK office
+  // hours (9 to 5); everyone else 10 to 6 unless set to 12 to 8.
+  const WORK_HOURS = { '10-6': '10:00 AM – 6:00 PM (UK Time)', '12-8': '12:00 PM – 8:00 PM (UK Time)', '9-5': '9:00 AM – 5:00 PM (UK Time)' };
+  const scheduleFor = (emp, pattern) => {
+    const key = WORK_HOURS[emp.work_schedule] ? emp.work_schedule : (emp.currency === 'PHP' ? '9-5' : '10-6');
+    return ['Monday to Friday', WORK_HOURS[key], ...(pattern === 'part-time' ? [] : ['40 Hours per Week'])].join('\n');
+  };
+  // The position as the contract states it: co-production staff are contracted as producers
+  const contractPosition = title => (/\bco[\s-]*produc/i.test(String(title || '')) ? 'Producer' : String(title || '').trim());
 
-  // The holiday clause. Both follow the tracker's own rule: a yearly number of free days
-  // (pro-rated in the year they join), and days beyond it deducted at that month's daily rate.
-  function holidayTerms(type, days) {
-    const n = Number(days), d = `${n % 1 ? n.toFixed(1) : n} day${n === 1 ? '' : 's'}`;
-    const rest = 'In the year you join, this is pro-rated to the part of the year you work for us. ' +
-      'Any days off beyond this are unpaid and are deducted from your pay at your daily rate for the month they fall in ' +
-      '(your monthly pay divided by the number of working days in that month).';
-    return type === 'self_employed'
-      ? `As a self-employed team member you are not entitled to paid holiday; instead you are covered by our holiday scheme. ` +
-        `Under the scheme you may take up to ${d} off in each holiday year (1 January to 31 December), excluding UK bank holidays, ` +
-        `without any reduction in your pay. Days off must be agreed with us in advance. ${rest}`
-      : `You are entitled to ${d} of paid holiday in each holiday year (1 January to 31 December), excluding UK bank holidays. ` +
-        `Holiday dates must be agreed with us in advance. ${rest}`;
-  }
   // A contract is made for them automatically from their employee record, so it
   // needs these set there first
   const CONTRACT_NEEDS = { job_title: 'job title', start_date: 'start date', annual_salary: 'annual salary' };
@@ -370,14 +366,17 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     const start = isoDay(emp.start_date);
     const year = start && start > today() ? Number(start.slice(0, 4)) : new Date().getFullYear();
     const pattern = emp.working_pattern === 'part-time' ? 'part-time' : 'full-time';
+    const currency = emp.currency || 'GBP';
     return {
-      job_title: emp.job_title || '',
+      job_title: contractPosition(emp.job_title),
       working_pattern: pattern,
-      employment_basis: `permanent, ${pattern}`,
+      work_arrangement: ['remote', 'office', 'hybrid'].includes(emp.work_arrangement) ? emp.work_arrangement : 'remote',
+      country: String(emp.country || '').trim() || COUNTRY_BY_CURRENCY[currency] || 'United Kingdom',
+      schedule: scheduleFor(emp, pattern),
       employment_type: emp.employment_type === 'self_employed' ? 'self_employed' : 'payroll',
       start_date: start || '',
       annual_salary: Number(emp.annual_salary) || 0,
-      salary_effective_date: start || '',
+      currency,
       // A full year's allowance, not the part-year figure for the year they join
       holiday_days: allowanceFor ? allowanceFor({ ...emp, start_date: null, termination_date: null }, year) : 20,
       // On probation, passed it (review marked done), or never on probation
@@ -386,55 +385,50 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     };
   }
 
-  // The probation section of the contract: a probation clause while they are on it, the
-  // confirmation once they have passed, and nothing at all for anyone never on probation
-  function probationClause(f) {
-    if (f.probation === 'passed') return {
-      probation_section: true, probation_heading: 'Confirmation of Employment',
-      probation_text: 'You successfully completed your Probationary Period to our satisfaction, and we confirm your continued employment with us on a permanent basis.',
-    };
-    if (f.probation !== 'on' || !f.probation_end_date) return { probation_section: false, probation_heading: '', probation_text: '' };
-    // "3 months" when the end date is a whole number of months after the start
-    let period = 'probationary period';
-    if (f.start_date) {
-      const s = new Date(f.start_date + 'T12:00:00Z'), e = new Date(f.probation_end_date + 'T12:00:00Z');
-      const months = Math.round((e - s) / (30.44 * 86400000));
-      const back = new Date(e); back.setUTCMonth(back.getUTCMonth() - months);
-      if (months > 0 && Math.abs(back - s) <= 3 * 86400000) period = `${months}-month probationary period`;
-    }
-    return {
-      probation_section: true, probation_heading: 'Probationary Period',
-      probation_text: `Your employment begins with a ${period}, ending on ${longDate(f.probation_end_date)}. During this time we will review your performance ` +
-        'and suitability for the role, and we may extend the period if we reasonably need more time to assess you. When you complete it ' +
-        'to our satisfaction, we will confirm your continued employment with us on a permanent basis.',
-    };
+  // Whole months of probation, when the end date is a whole number of months after the start
+  function probationMonths(start, end) {
+    if (!start || !end) return null;
+    const s = new Date(start + 'T12:00:00Z'), e = new Date(end + 'T12:00:00Z');
+    const months = Math.round((e - s) / (30.44 * 86400000));
+    const back = new Date(e); back.setUTCMonth(back.getUTCMonth() - months);
+    return months > 0 && Math.abs(back - s) <= 3 * 86400000 ? months : null;
   }
-  // Everything the template can show. Name and address are read when it is shown,
-  // so the contract carries what the person entered at onboarding.
-  function contractData(emp, row, f, signedAt) {
+
+  // The person who signs contracts for the company (Onboarding files), and their signature
+  async function contractSignatory() {
+    const { rows } = await q(`SELECT key, value FROM app_settings WHERE key IN ('contract_signatory_name', 'contract_signatory_signature')`);
+    const v = Object.fromEntries(rows.map(r => [r.key, r.value]));
+    return { name: v.contract_signatory_name || '', signature: v.contract_signatory_signature || '' };
+  }
+
+  // What the contract shows. Name and address are read when it is shown, so it carries
+  // what the person entered at onboarding; the company's signature is dated when it was issued.
+  async function contractData(emp, row, f, { signedAt, issuedAt } = {}) {
+    const sig = await contractSignatory();
+    const fd = { ...defaultContractFields(emp), ...f };
+    const arrangement = { remote: 'Remote', office: 'Office-based', hybrid: 'Hybrid' }[fd.work_arrangement] || 'Remote';
     return {
       employee_name: emp.name,
       employee_address: String((row && row.address) || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean).join(', '),
-      date_of_birth: longDate(row && row.dob_text),
-      job_title: f.job_title,
-      employment_basis: f.employment_basis,
-      working_pattern: f.working_pattern || (/part-time/.test(f.employment_basis || '') ? 'part-time' : 'full-time'),
-      start_date: longDate(f.start_date),
-      annual_salary: money(f.annual_salary),
-      salary_effective_date: longDate(f.salary_effective_date),
-      holiday_days: String(f.holiday_days),
-      holiday_terms: holidayTerms(f.employment_type || emp.employment_type, f.holiday_days),
-      ...probationClause(f.probation ? f : { ...f, ...defaultContractFields(emp) }),
-      probation_end_date: longDate(f.probation_end_date),
-      today: longDate(today()),
+      position: contractPosition(fd.job_title),
+      country: fd.country,
+      employment_label: `${fd.working_pattern === 'part-time' ? 'Part-Time' : 'Full-Time'} ${arrangement}`,
+      work_arrangement: fd.work_arrangement,
+      schedule: String(fd.schedule).split(/\r?\n/).map(s => s.trim()).filter(Boolean),
+      monthly_salary: `${fd.currency} ${money(fd.annual_salary / 12)}`,
+      start_date: longDate(fd.start_date),
+      employment_type: fd.employment_type,
+      holiday_days: fd.holiday_days,
+      probation: { state: fd.probation, months: probationMonths(fd.start_date, fd.probation_end_date), end: longDate(fd.probation_end_date) },
+      company: { name: sig.name, signaturePng: sig.signature, date: longDate(isoDay(issuedAt || new Date())) },
       signed_date: signedAt ? longDate(isoDay(signedAt)) : '',
     };
   }
   // `fields` is null until they sign: the contract then reads from their record as it is now
-  async function renderTemplateContract(empId, fields, { signaturePng, signedAt } = {}) {
+  async function renderTemplateContract(empId, fields, { signaturePng, signedAt, issuedAt } = {}) {
     const emp = await getEmployee(empId);
     const row = await onboardingRow(empId);
-    return contractGen.renderContract(await templateBytes('contract'), contractData(emp, row, fields || defaultContractFields(emp), signedAt), { signaturePng });
+    return renderContractPdf(await contractData(emp, row, fields || defaultContractFields(emp), { signedAt, issuedAt }), { signaturePng });
   }
 
   // Someone still onboarding gets their employment contract as a step, made from the
@@ -453,7 +447,8 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     res.send(Buffer.from(bytes));
   };
 
-  // steps.starter is null when it does not apply (self-employed staff, or no starter sheet uploaded)
+  // steps.starter is null when it does not apply: self-employed staff, and payroll staff
+  // who were on the system before the form (they handed in a starter sheet already)
   // The newest contract sent to this person to sign (without the file itself)
   async function latestContract(empId) {
     const { rows } = await q(
@@ -464,7 +459,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
 
   // steps.contract is null when no contract has been sent to them
   function onboardingState(row, emp, tpl = { nda: null, starter: null }, contract = null) {
-    const needsStarter = emp.employment_type === 'payroll' && !!tpl.starter;
+    const needsStarter = emp.employment_type === 'payroll' && (!!emp.starter_form_required || !!(row && row.starter_done_at));
     const steps = {
       contract: contract ? !!contract.signed_at : null,
       details: !!(row && row.dob_text && String(row.address || '').trim() && String(emp.phone || '').trim()),
@@ -492,9 +487,22 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     return true;
   }
 
-  // A PDF stored on the employee's file; returns its id
-  async function storeEmployeeDoc(empId, docType, fileName, bytes, uploadedBy) {
+  // Saved starter answers (encrypted), to fill the form again if they reopen it
+  function starterAnswers(row) {
+    if (!row || !row.starter_answers) return {};
+    try { return JSON.parse(idCrypto.open(row.starter_answers).toString('utf8')); } catch { return {}; }
+  }
+
+  // A PDF stored on the employee's file; returns its id. `sealed` encrypts it (starter forms).
+  async function storeEmployeeDoc(empId, docType, fileName, bytes, uploadedBy, sealed) {
     const buf = Buffer.from(bytes);
+    if (sealed) {
+      const { rows } = await q(
+        `INSERT INTO employee_documents (employee_id, doc_type, file_name, file_data, file_size, uploaded_by)
+         VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+        [empId, docType, safeName(fileName, 'document.pdf'), idCrypto.seal(buf.toString('base64')), buf.length, uploadedBy]);
+      return rows[0].id;
+    }
     const { rows } = await q(
       `INSERT INTO employee_documents (employee_id, doc_type, file_name, file_data, file_size, uploaded_by)
        VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
@@ -550,7 +558,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
         id_doc: row && row.id_doc_name ? { type: row.id_doc_type, name: row.id_doc_name } : null,
         documents: {
           nda: tpl.nda ? { mode: 'pdf', file_name: tpl.nda.file_name } : { mode: 'text' },
-          starter: st.needs_starter ? { file_name: tpl.starter.file_name } : null,
+          starter: st.needs_starter ? { form: STARTER_FORM, answers: { ...starterDefaults(emp, row), ...starterAnswers(row) } } : null,
           contract: contract ? { id: contract.id, file_name: contract.file_name, sent_at: contract.created_at, signed_at: contract.signed_at, generated: contract.source === 'template' } : null,
         },
         signed: { nda: !!(row && row.nda_doc_id), starter: !!(row && row.starter_doc_id), contract: !!(contract && contract.signed_doc_id) },
@@ -653,17 +661,8 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
     } catch (e) { fail(res, e); }
   });
 
-  // The starter sheet: where its fillable fields are, so the browser can lay inputs over each page
-  router.get('/employee/onboarding/starter/fields', requireAuth, staffOnly, async (req, res) => {
-    try {
-      const bytes = await templateBytes('starter');
-      if (!bytes) return res.status(404).json({ error: 'No starter sheet has been set up' });
-      res.json(await readFormFields(bytes));
-    } catch (e) { fail(res, e); }
-  });
-
-  // Complete the starter sheet: either answers for its fillable fields, or their own completed copy
-  // (a PDF or a photo). Either way it is signed and filed on their record.
+  // The new starter form: answers checked against starter-form.js, made into a PDF for the
+  // accountant, signed, and filed (encrypted) on their record
   router.post('/employee/onboarding/starter', requireAuth, staffOnly, async (req, res) => {
     try {
       const b = req.body || {};
@@ -672,29 +671,18 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       const empId = req.user.employee_id;
       if (!await agreementSigned(empId)) return res.status(409).json({ error: 'Please sign the team member agreement first' });
       const emp = await getEmployee(empId);
-      const tpl = await templateMeta();
-      if (emp.employment_type !== 'payroll' || !tpl.starter) return res.status(400).json({ error: 'There is no starter sheet for you to complete' });
-
-      let base;
-      if (b.file_data) {
-        const kind = sniff(b.file_data);
-        if (!kind) return res.status(400).json({ error: 'Upload a PDF, JPG or PNG' });
-        if (byteLength(b.file_data) > MAX_COMPLETED_BYTES) return res.status(413).json({ error: 'The file must be under 2.5 MB' });
-        const raw = Buffer.from(b.file_data, 'base64');
-        base = kind.ext === 'pdf' ? raw : await imageToPdf(raw, kind.ext);
-      } else {
-        const template = await templateBytes('starter');
-        const info = await readFormFields(template);
-        if (!info.fillable) return res.status(400).json({ error: 'This starter sheet cannot be filled in on screen. Upload your completed copy instead.' });
-        base = await fillForm(template, b.values && typeof b.values === 'object' ? b.values : {});
-      }
+      const row = await onboardingRow(empId);
+      if (!onboardingState(row, emp).needs_starter) return res.status(400).json({ error: 'There is no starter form for you to complete' });
+      const v = checkAnswers(b.answers);
+      if (v.errors) return res.status(400).json({ error: 'Some answers need checking', fields: v.errors });
       const signedAt = new Date();
-      const signed = await appendSignaturePage(base, { title: 'Starter sheet', signerName: sig.name, signaturePng: sig.signature, signedAt });
-      const docId = await storeEmployeeDoc(empId, 'starter_form', `Starter sheet - ${emp.name}.pdf`, signed, `${emp.name} (portal)`);
+      const pdf = await renderStarterPdf(v.answers, { employeeName: emp.name, signedName: sig.name, signedAt, signaturePng: sig.signature });
+      const docId = await storeEmployeeDoc(empId, 'starter_form', `New starter form - ${emp.name}.pdf`, pdf, `${emp.name} (portal)`, true);
       await q(
-        `INSERT INTO employee_onboarding (employee_id, starter_done_at, starter_doc_id) VALUES (?, ?, ?)
-         ON CONFLICT (employee_id) DO UPDATE SET starter_done_at = EXCLUDED.starter_done_at, starter_doc_id = EXCLUDED.starter_doc_id, updated_at = NOW()`,
-        [empId, signedAt.toISOString(), docId]);
+        `INSERT INTO employee_onboarding (employee_id, starter_done_at, starter_doc_id, starter_answers) VALUES (?, ?, ?, ?)
+         ON CONFLICT (employee_id) DO UPDATE SET starter_done_at = EXCLUDED.starter_done_at, starter_doc_id = EXCLUDED.starter_doc_id,
+           starter_answers = EXCLUDED.starter_answers, updated_at = NOW()`,
+        [empId, signedAt.toISOString(), docId, idCrypto.seal(Buffer.from(JSON.stringify(v.answers)).toString('base64'))]);
       const completed = await finishIfDone(empId);
       res.json({ ok: true, completed });
     } catch (e) { fail(res, e); }
@@ -711,6 +699,7 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       if (!docId) return res.status(404).json({ error: 'Not signed yet' });
       const { rows } = await q('SELECT file_name, file_data FROM employee_documents WHERE id = ? AND employee_id = ?', [docId, req.user.employee_id]);
       if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+      rows[0].file_data = idCrypto.open(rows[0].file_data).toString('base64');
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `${req.query.download ? 'attachment' : 'inline'}; filename="${safeName(rows[0].file_name, 'signed.pdf')}"`);
       res.setHeader('Cache-Control', 'private, no-store');
@@ -722,12 +711,12 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
   // The original as uploaded (admin, or the person it was sent to)
   router.get('/contracts/:id/file', requireAuth, async (req, res) => {
     try {
-      const { rows } = await q('SELECT employee_id, file_name, file_data, source, fields FROM employee_contracts WHERE id = ?', [req.params.id]);
+      const { rows } = await q('SELECT employee_id, file_name, file_data, source, fields, created_at FROM employee_contracts WHERE id = ?', [req.params.id]);
       const r = rows[0];
       const allowed = r && (req.user.role === 'admin' || (req.user.role === 'employee' && Number(req.user.employee_id) === Number(r.employee_id)));
       if (!allowed) return res.status(404).json({ error: 'Contract not found' });
       // Made from the template and not signed yet: drawn now, with their latest details
-      if (!r.file_data && r.source === 'template') return sendPdf(res, await renderTemplateContract(r.employee_id, r.fields), r.file_name, req.query.download);
+      if (!r.file_data && r.source === 'template') return sendPdf(res, await renderTemplateContract(r.employee_id, r.fields, { issuedAt: r.created_at }), r.file_name, req.query.download);
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `${req.query.download ? 'attachment' : 'inline'}; filename="${safeName(r.file_name, 'contract.pdf')}"`);
       res.setHeader('Cache-Control', 'private, no-store');
@@ -847,10 +836,10 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
         // The copy they read, kept as the original; the signed one carries their signature and the date
         // The terms are fixed at the moment they sign
         const fields = c.fields || defaultContractFields(emp);
-        const unsigned = await renderTemplateContract(empId, fields);
+        const unsigned = await renderTemplateContract(empId, fields, { issuedAt: c.created_at });
         await q('UPDATE employee_contracts SET file_data = ?, file_size = ?, fields = ? WHERE id = ?',
           [Buffer.from(unsigned).toString('base64'), unsigned.length, JSON.stringify(fields), c.id]);
-        original = await renderTemplateContract(empId, fields, { signaturePng: sig.signature, signedAt });
+        original = await renderTemplateContract(empId, fields, { signaturePng: sig.signature, signedAt, issuedAt: c.created_at });
       } else {
         const { rows } = await q('SELECT file_data FROM employee_contracts WHERE id = ?', [c.id]);
         original = Buffer.from(rows[0].file_data, 'base64');
@@ -876,7 +865,6 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       if (!TEMPLATE_KEYS.includes(key)) return res.status(404).json({ error: 'Unknown file' });
       const { file_name, file_data } = req.body || {};
       if (!file_data) return res.status(400).json({ error: 'file_data required' });
-      if (key === 'contract') return saveContractTemplate(req, res, file_name, file_data);
       const kind = sniff(file_data);
       if (!kind || kind.ext !== 'pdf') return res.status(400).json({ error: 'Only PDF files can be uploaded' });
       const size = byteLength(file_data);
@@ -885,39 +873,34 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
       let pages;
       try { pages = (await PDFDocument.load(bytes)).getPageCount(); }
       catch { return res.status(400).json({ error: 'That PDF could not be read. If it is password protected, remove the password and try again.' }); }
-      const info = key === 'starter' ? await readFormFields(bytes).catch(() => ({ fillable: false, fields: [] })) : null;
       await q(
         `INSERT INTO onboarding_templates (key, file_name, file_data, file_size, uploaded_by, updated_at)
          VALUES (?, ?, ?, ?, ?, NOW())
          ON CONFLICT (key) DO UPDATE SET file_name = EXCLUDED.file_name, file_data = EXCLUDED.file_data,
            file_size = EXCLUDED.file_size, uploaded_by = EXCLUDED.uploaded_by, updated_at = NOW()`,
         [key, safeName(file_name, `${key}.pdf`), file_data, size, req.admin.username || null]);
-      res.json({ ok: true, pages, fillable: info ? !!info.fillable : undefined, fields: info ? info.fields.length : undefined });
+      res.json({ ok: true, pages });
     } catch (e) { fail(res, e); }
   });
 
-  // A new Word template: it must open, use only fields we can fill, and lay out
-  async function saveContractTemplate(req, res, fileName, fileData) {
-    const size = byteLength(fileData);
-    if (size > MAX_FILE_BYTES) return res.status(413).json({ error: 'The Word file must be under 3 MB' });
-    const bytes = Buffer.from(fileData, 'base64');
-    let info;
-    try { info = contractGen.templateTags(bytes); }
-    catch { return res.status(400).json({ error: 'Upload the contract as a Word document (.docx)' }); }
-    if (info.unknown.length) return res.status(400).json({ error: `These fields are not ones we can fill: ${info.unknown.map(t => `{{${t}}}`).join(', ')}` });
+  // ── Who signs contracts for the company ──
+  router.get('/contract-signatory', requireAuth, requireAdmin, async (req, res) => {
+    try { res.json(await contractSignatory()); } catch (e) { fail(res, e); }
+  });
+  router.put('/contract-signatory', requireAuth, requireAdmin, async (req, res) => {
     try {
-      await contractGen.renderContract(bytes, { employee_name: 'Test', job_title: 'Test', annual_salary: '1.00' });
-    } catch (e) {
-      return res.status(400).json({ error: 'That Word file could not be used: ' + String(e.message || e).slice(0, 200) + '. Check every field is written as {{field_name}}.' });
-    }
-    await q(
-      `INSERT INTO onboarding_templates (key, file_name, file_data, file_size, uploaded_by, updated_at)
-       VALUES ('contract', ?, ?, ?, ?, NOW())
-       ON CONFLICT (key) DO UPDATE SET file_name = EXCLUDED.file_name, file_data = EXCLUDED.file_data,
-         file_size = EXCLUDED.file_size, uploaded_by = EXCLUDED.uploaded_by, updated_at = NOW()`,
-      [safeName(fileName, 'contract-template.docx'), fileData, size, req.admin.username || null]);
-    res.json({ ok: true, fields: info.tags });
-  }
+      const name = String((req.body || {}).name || '').trim().slice(0, 120);
+      const sig = req.body.signature == null ? null : String(req.body.signature);
+      // A PNG or JPEG image of their signature, small enough to sit on every contract
+      if (sig && (!/^data:image\/(png|jpe?g);base64,[A-Za-z0-9+/=]+$/.test(sig) || sig.length > 700000)) {
+        return res.status(400).json({ error: 'Upload the signature as a PNG or JPG under 500 KB' });
+      }
+      const put = (k, v) => q(`INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`, [k, v]);
+      await put('contract_signatory_name', name);
+      if (sig !== null) await put('contract_signatory_signature', sig);
+      res.json({ ok: true });
+    } catch (e) { fail(res, e); }
+  });
 
   router.delete('/onboarding/templates/:key', requireAuth, requireAdmin, async (req, res) => {
     try {
@@ -931,15 +914,6 @@ function createPortalRouter({ q, requireAuth, requireAdmin, requireAdminOrManage
   router.get('/onboarding/templates/:key/file', requireAuth, async (req, res) => {
     try {
       if (!TEMPLATE_KEYS.includes(req.params.key)) return res.status(404).json({ error: 'Unknown file' });
-      // The contract template is for admins only, and is a Word file
-      if (req.params.key === 'contract') {
-        if (req.user.role !== 'admin') return res.status(404).json({ error: 'Not found' });
-        const meta = (await templateMeta()).contract;
-        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-        res.setHeader('Content-Disposition', `attachment; filename="${safeName(meta.file_name, 'contract-template.docx')}"`);
-        res.setHeader('Cache-Control', 'private, no-store');
-        return res.send(await templateBytes('contract'));
-      }
       const { rows } = await q('SELECT file_name, file_data FROM onboarding_templates WHERE key = ?', [req.params.key]);
       const builtin = !rows[0] && req.params.key === 'nda' && builtinAgreementBytes;
       if (!rows[0] && !builtin) return res.status(404).json({ error: 'Not set up' });
