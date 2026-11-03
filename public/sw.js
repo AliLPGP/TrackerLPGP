@@ -1,4 +1,4 @@
-const CACHE = 'lpgp-v116';
+const CACHE = 'lpgp-v119';
 const STATIC = [
   '/',
   '/style.css',
