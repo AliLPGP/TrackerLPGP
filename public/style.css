@@ -7659,3 +7659,162 @@ textarea.form-control { resize: vertical; }
 .sf-choice span { display: block; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; font-size: 0.83rem; line-height: 1.5; color: var(--muted); background: var(--surface); }
 .sf-choice span b { display: block; color: var(--text); margin-bottom: 2px; }
 .sf-choice input:checked + span { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary) inset; color: var(--text); }
+
+/* ══════════════════════════════════════════════════════════════════════
+   GLASS DESIGN
+   Frosted, see-through panels over soft colour glows, in both themes.
+   Surfaces are translucent and blur what is behind them; the glows sit on
+   a fixed layer behind the app. On a computer the menu runs along the top
+   (below); phones keep the slide-out menu and bottom bar.
+══════════════════════════════════════════════════════════════════════ */
+:root {
+  --glass-blur: 22px;
+  --glass:        rgba(255, 255, 255, 0.58);
+  --glass-strong: rgba(255, 255, 255, 0.78);
+  --glass-line:   rgba(15, 23, 42, 0.08);
+  --glass-shine:  rgba(255, 255, 255, 0.7);
+  --bg:           #eef1f7;
+  /* Nearly solid, so dropdowns, menus and inputs stay crisp; the see-through
+     glass is applied to the main panels below */
+  --surface:      rgba(255, 255, 255, 0.9);
+  --surface-2:    rgba(255, 255, 255, 0.6);
+  --surface-3:    rgba(255, 255, 255, 0.45);
+  --card:         rgba(255, 255, 255, 0.9);
+  --border:       rgba(15, 23, 42, 0.09);
+  --border-bright: rgba(15, 23, 42, 0.16);
+  --bg-2:         transparent;
+}
+[data-theme="dark"] {
+  --glass:        rgba(16, 19, 27, 0.48);
+  --glass-strong: rgba(18, 21, 29, 0.82);
+  --glass-line:   rgba(255, 255, 255, 0.08);
+  --glass-shine:  rgba(255, 255, 255, 0.06);
+  --bg:           #06080c;
+  --surface:      rgba(20, 23, 31, 0.92);
+  --surface-2:    rgba(30, 35, 46, 0.55);
+  --surface-3:    rgba(40, 46, 60, 0.5);
+  --card:         rgba(20, 23, 31, 0.92);
+  --border:       rgba(255, 255, 255, 0.08);
+  --border-bright: rgba(255, 255, 255, 0.15);
+  --bg-2:         transparent;
+}
+
+/* The glows: large soft circles of colour behind everything */
+body:not(.login-body) { background: var(--bg); }
+body:not(.login-body)::before {
+  content: ''; position: fixed; inset: -10vmax; z-index: -1; pointer-events: none;
+  /* Spheres lit from the top-left, like the reference: amber, teal, green, blue, grey */
+  background:
+    radial-gradient(circle 15vmax at 80% 14%, #f4b25e 0%, #d9822b 45%, rgba(170, 90, 20, 0.85) 68%, transparent 71%),
+    radial-gradient(circle 19vmax at 95% 92%, #6ff0ea 0%, #1bb5b8 45%, rgba(10, 110, 120, 0.85) 68%, transparent 71%),
+    radial-gradient(circle 7vmax at 46% 86%, #6ee08f 0%, #2fae5c 50%, rgba(20, 110, 55, 0.9) 68%, transparent 71%),
+    radial-gradient(circle 22vmax at 2% 72%, #4f8dff 0%, #2357d9 45%, rgba(15, 50, 160, 0.85) 68%, transparent 71%),
+    radial-gradient(circle 5vmax at 62% 42%, #c9cdd8 0%, #8a90a0 50%, rgba(70, 75, 90, 0.9) 68%, transparent 71%);
+  filter: blur(2px);
+}
+:root:not([data-theme="dark"]) body:not(.login-body)::before { opacity: 0.5; }
+
+/* Frosted panels */
+.card, .stat-card, .modal, .pf-panel, .notif-panel, .ep-drawer, .ob-card, .wm-panel,
+.dash-mini-card, .dss-card, .filter-bar, .table-wrap, .topbar, .sidebar, .bottom-nav, .toast {
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+}
+.card, .stat-card, .pf-panel, .dash-mini-card, .dss-card {
+  background: var(--glass) !important;
+  border: 1px solid var(--glass-line) !important;
+  box-shadow: inset 0 1px 0 var(--glass-shine), 0 10px 30px -18px rgba(0, 0, 0, 0.5) !important;
+}
+.modal, .notif-panel, .ep-drawer, .wm-panel { background: var(--glass-strong) !important; border: 1px solid var(--glass-line) !important; }
+.modal-overlay { background: rgba(4, 6, 10, 0.45); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+.table-wrap { background: transparent; }
+/* Inputs: lightly frosted so text stays easy to read */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea {
+  background-color: var(--surface-2);
+}
+select option { background: var(--glass-strong); color: var(--text); }
+[data-theme="dark"] select option { background: #141821; }
+/* Text that used the page surface as its colour (e.g. on a selected chip) stays solid */
+.deal-q-btn.active { color: #fff !important; }
+[data-theme="dark"] .deal-q-btn.active { color: #0b0d12 !important; }
+
+/* The page header (title and date): no bar, it sits on the glass */
+.topbar { background: transparent !important; border-bottom: none !important; box-shadow: none !important; -webkit-backdrop-filter: none; backdrop-filter: none; }
+#pageTitle { font-size: 20px; font-weight: 700; letter-spacing: -0.4px; }
+
+/* ── Menu along the top on a computer ── */
+@media (min-width: 769px) {
+  .app { flex-direction: column; }
+  :root .sidebar, body.sidebar-collapsed .sidebar, .sidebar.collapsed {
+    position: relative; inset: auto; transform: none; z-index: 60;
+    width: auto !important; height: auto; flex: none;
+    margin: 12px 14px 0; padding: 8px 10px 8px 16px; border-radius: 18px;
+    display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+    background: var(--glass) !important; border: 1px solid var(--glass-line) !important;
+    box-shadow: inset 0 1px 0 var(--glass-shine), 0 16px 40px -24px rgba(0, 0, 0, 0.6);
+    overflow: visible;
+  }
+  :root .sidebar::before, :root .sidebar::after { display: none; }
+  .sidebar .sidebar-logo { display: contents; }
+  .sidebar .sidebar-logo-row { order: 1; display: flex; align-items: center; gap: 10px; padding: 0; margin: 0; }
+  .sidebar .sidebar-logo-icon { width: 30px; height: 30px; }
+  .sidebar .sidebar-logo h2, .sidebar .sidebar-logo-text { display: block !important; font-size: 15px; white-space: nowrap; }
+  .sidebar .sidebar-logo-sub, .sidebar .sidebar-collapse-btn { display: none !important; }
+  .sidebar #userLabel { order: 3; }
+  .sidebar #userLabel .sidebar-user-pill { margin: 0; }
+  /* Pages: one row of pills, grouped as in the old menu (a thin line between groups) */
+  .sidebar .sidebar-nav {
+    order: 10; flex: 1 1 100%; min-width: 0;
+    display: flex; flex-direction: row; align-items: center; justify-content: safe center; gap: 2px;
+    padding: 6px 0 2px; margin: 0; overflow-x: auto; scrollbar-width: none; border-top: 1px solid var(--glass-line);
+  }
+  .sidebar .sidebar-nav::-webkit-scrollbar { display: none; }
+  .sidebar .nav-section-label { font-size: 0 !important; width: 1px; height: 18px; padding: 0 !important; margin: 0 8px !important; background: var(--glass-line); flex: none; }
+  .sidebar .sidebar-nav > .nav-section-label:first-child { display: none; }
+  .sidebar .nav-item {
+    flex: none; width: auto; margin: 0 !important; padding: 6px 11px !important; gap: 6px !important;
+    border-radius: 999px !important; border: 1px solid transparent !important; white-space: nowrap; font-size: 13px;
+  }
+  /* Text-only pills, so every page fits on one line */
+  .sidebar .nav-item .icon { display: none !important; }
+  .sidebar .nav-item .nav-label { display: inline !important; }
+  .sidebar .nav-item:hover { background: var(--surface-3) !important; }
+  .sidebar .nav-item.active {
+    background: rgb(var(--accent-rgb) / 0.16) !important; border-color: rgb(var(--accent-rgb) / 0.35) !important; color: var(--text) !important;
+    box-shadow: none !important;
+  }
+  .sidebar .nav-item.active::before, .sidebar .nav-item.active::after { display: none !important; }
+  /* Theme, install and sign out: small round buttons on the right */
+  .sidebar .sidebar-footer {
+    order: 4; margin-left: auto; display: flex; flex-direction: row; align-items: center; gap: 6px;
+    padding: 0 !important; border: none !important; background: none !important; width: auto;
+  }
+  .sidebar .sidebar-footer > * { width: auto !important; margin: 0 !important; }
+  .sidebar .sidebar-footer .theme-toggle-btn, .sidebar #logoutBtn {
+    height: 34px; padding: 0 12px !important; border-radius: 999px !important; gap: 6px;
+    background: var(--surface-2) !important; border: 1px solid var(--glass-line) !important;
+  }
+  .sidebar #themeToggleLabel, .sidebar #installAppBtn span:last-child { display: none; }
+  .sidebar #empNotifBadge { height: 34px; border-radius: 999px; }
+  /* Smaller laptops: tighter pills so every page still fits on one line */
+  @media (max-width: 1400px) {
+    .sidebar .nav-item { padding: 6px 8px !important; font-size: 12.5px; }
+    .sidebar .nav-section-label { margin: 0 4px !important; }
+  }
+  /* The menu stays dark in both themes, as the sidebar was: dark frosted glass over a light page */
+  :root:not([data-theme="dark"]) .sidebar {
+    background: rgba(12, 14, 19, 0.8) !important; border-color: rgba(255, 255, 255, 0.06) !important;
+    --glass-line: rgba(255, 255, 255, 0.09); --glass-shine: rgba(255, 255, 255, 0.05);
+    --surface-2: rgba(255, 255, 255, 0.07); --surface-3: rgba(255, 255, 255, 0.09); --text: #f3f5f8;
+  }
+  /* On wide screens the pages fit beside the logo, on one line */
+  @media (min-width: 1860px) {
+    .sidebar .sidebar-nav { order: 2; flex: 1 1 auto; border-top: none; padding: 0; }
+  }
+  /* No bottom bar on a computer, so no room is kept for one */
+  .main { margin-left: 0 !important; flex: 1; min-height: 0; padding-bottom: 0 !important; }
+  body.sidebar-collapsed .main, .sidebar.collapsed ~ .main { margin-left: 0 !important; }
+  .topbar { height: auto; padding: 18px 28px 4px; }
+  .topbar .hamburger { display: none; }
+  .content { padding-top: 14px; }
+}
