@@ -7635,12 +7635,6 @@ textarea.form-control { resize: vertical; }
 .bp-foot > div { display: flex; gap: 8px; }
 @media (max-width: 560px) { .bp-when { grid-template-columns: 1fr 1fr; } .bp-when .bp-notes { grid-column: 1 / -1; } .bp-amt input { width: 96px; } }
 
-/* Company signature on contracts (Onboarding files) */
-.sg-row { display: flex; gap: 14px; align-items: flex-end; margin-bottom: 10px; flex-wrap: wrap; }
-.sg-row input { width: 100%; }
-.sg-img { width: 180px; height: 64px; border: 1px dashed var(--border); border-radius: 8px; background: #fff; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-.sg-img img { max-width: 100%; max-height: 100%; }
-.sg-img span { color: #888; font-size: 0.75rem; }
 
 /* New starter form (onboarding) */
 .sf-sec { margin: 0 0 18px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; }

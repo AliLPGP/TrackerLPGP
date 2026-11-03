@@ -8,7 +8,7 @@ const base = {
   employee_name: 'Jane Example', employee_address: '1 Sample Street, London', position: 'Producer', country: 'Philippines',
   employment_label: 'Full-Time Remote', schedule: ['Monday to Friday', '9:00 AM - 5:00 PM (UK Time)'], monthly_salary: 'PHP 30,000.00',
   start_date: '2 November 2026', employment_type: 'self_employed', work_arrangement: 'remote', holiday_days: 5,
-  probation: { state: 'none' }, company: { name: '', signaturePng: '', date: '3 November 2026' }, signed_date: '',
+  probation: { state: 'none' }, signed_date: '',
 };
 const titles = c => sections(c).map(s => s[0]);
 const textOf = c => sections(c).map(s => s[1].join(' ')).join(' ');

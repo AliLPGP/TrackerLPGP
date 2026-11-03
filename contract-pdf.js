@@ -1,6 +1,6 @@
 'use strict';
 // The LPGP employment contract, in the company's contract design: a cover page with the
-// key terms, numbered sections, and signature blocks for the company and the employee.
+// key terms, numbered sections, and the employee's signature block (only they sign).
 // Sections follow the employee's record: probation (on it, passed, or none), where they
 // work, their hours, and holiday and tax terms for payroll or self-employed staff.
 
@@ -65,7 +65,7 @@ function sections(c) {
  * The contract as a PDF.
  * `c`: employee_name, employee_address, position, country, employment_label, schedule (lines),
  * monthly_salary, start_date, employment_type, work_arrangement, holiday_days,
- * probation {state, months, end}, company {name, signaturePng, date}, signed_date.
+ * probation {state, months, end}, signed_date.
  */
 async function renderContractPdf(c, { signaturePng } = {}) {
   const d = await createBrandDoc({ footerNote: FOOTER });
@@ -97,28 +97,22 @@ async function renderContractPdf(c, { signaturePng } = {}) {
   });
   f.para('By signing below, the Employee acknowledges and agrees to the terms and conditions stated in this Employment Contract.', { gap: 30 });
 
-  // ── Signatures: the company's (set in Onboarding files) and the employee's ──
+  // ── The employee's signature (the company does not sign) ──
   f.need(120);
-  const top = f.y, page = f.page;
-  const sigBlock = (x, rows, png) => {
-    rows.forEach(([label, value], k) => {
-      text(page, label, x, top + k * 12, { font: fonts.sans, size: 8 });
-      if (value) text(page, value, x + fonts.sans.widthOfTextAtSize(label, 8) + 3, top + k * 12, { font: fonts.sansSemi, size: 8 });
-    });
-    if (png) {
-      const h = 44, w = Math.min(130, png.width * (h / png.height));
-      page.drawImage(png, { x: x + 34, y: d.H - (top + 24 + h), width: w, height: h });
-    }
-  };
-  const embed = async dataUrl => {
-    if (!dataUrl) return null;
-    const m = String(dataUrl).match(/^data:image\/(png|jpe?g);base64,(.+)$/);
-    if (!m) return null;
-    try { return m[1] === 'png' ? await d.pdf.embedPng(Buffer.from(m[2], 'base64')) : await d.pdf.embedJpg(Buffer.from(m[2], 'base64')); } catch { return null; }
-  };
-  sigBlock(60, [['Name:', c.company.name], ['Date:', c.company.date], ['Signature:', '']], await embed(c.company.signaturePng));
-  sigBlock(297, [['Employee Name:', c.employee_name], ['Date:', c.signed_date || ''], ['Signature:', '']], await embed(signaturePng));
-  if (!signaturePng) page.drawLine({ start: { x: 297 + 40, y: d.H - (top + 60) }, end: { x: 297 + 190, y: d.H - (top + 60) }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+  const top = f.y, page = f.page, x = 60;
+  [['Employee Name:', c.employee_name], ['Date:', c.signed_date || ''], ['Signature:', '']].forEach(([label, value], k) => {
+    text(page, label, x, top + k * 12, { font: fonts.sans, size: 8 });
+    if (value) text(page, value, x + fonts.sans.widthOfTextAtSize(label, 8) + 3, top + k * 12, { font: fonts.sansSemi, size: 8 });
+  });
+  const m = String(signaturePng || '').match(/^data:image\/png;base64,(.+)$/);
+  let png = null;
+  if (m) { try { png = await d.pdf.embedPng(Buffer.from(m[1], 'base64')); } catch { png = null; } }
+  if (png) {
+    const h = 44, w = Math.min(130, png.width * (h / png.height));
+    page.drawImage(png, { x: x + 34, y: d.H - (top + 24 + h), width: w, height: h });
+  } else {
+    page.drawLine({ start: { x: x + 40, y: d.H - (top + 60) }, end: { x: x + 190, y: d.H - (top + 60) }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+  }
 
   return d.pdf.save();
 }
