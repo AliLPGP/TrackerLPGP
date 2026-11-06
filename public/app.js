@@ -45,6 +45,7 @@ function fmtEventDate(ev, opts = {}) {
 // below it, so the two can never quote different rates for the same money.
 const SAL_FX = { GBP: 1, AED: 1 / 4.67, PHP: 0.0138 };
 const salFxToGBP = (v, c) => v * (SAL_FX[c] || 1);
+const poundsWhole = v => '£' + Math.round(v || 0).toLocaleString('en-GB');
 
 function fmtMoney(amount, currency) { return currencySymbol(currency) + Number(amount || 0).toLocaleString('en-GB', {minimumFractionDigits:2}); }
 function fmt(n) { return Number(n||0).toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2}); }
@@ -156,7 +157,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Deep-link / PWA shortcut support: /?page=salary opens that page directly
   try {
     const startPage = new URLSearchParams(window.location.search).get('page');
-    const validPages = ['dashboard','tracking','salary','employees','reports','calendar','admins','hotels','expenses','subscriptions','portfolio','deals','eventkit'];
+    const validPages = ['dashboard','tracking','salary','employees','reports','calendar','admins','hotels','expenses','subscriptions','portfolio','deals','eventkit','spending'];
     if (startPage && validPages.includes(startPage)) {
       navigate(startPage);
       // tidy the URL so a manual refresh doesn't re-trigger
@@ -258,7 +259,7 @@ const ACCOUNTS_PAGES = ['dashboard', 'calendar', 'deals', 'portfolio', 'expenses
 
 function navigate(page) {
   // Salary and Employees sections are admin-only
-  if ((page === 'salary' || page === 'employees') && currentUser?.role !== 'admin') return;
+  if (['salary', 'employees', 'spending'].includes(page) && currentUser?.role !== 'admin') return;
   if (currentUser?.role === 'accounts' && !ACCOUNTS_PAGES.includes(page)) return;
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -269,11 +270,99 @@ function navigate(page) {
   if (page !== 'employee' && _profileMode === 'page') { _profileEmpId = null; const pb = document.getElementById('empPageBody'); if (pb) pb.innerHTML = ''; }
   document.querySelector(`.nav-item[data-page="${navPage}"]`)?.classList.add('active');
   document.querySelector(`.bottom-nav-item[data-page="${navPage}"]`)?.classList.add('active');
-  const titles = { dashboard:'Dashboard', tracking:'Daily Tracking', salary:'Salary Tracker', employees:'Employees', reports:'Reports', calendar:'Calendar', admins:'Admin Users', hotels:'Hotel Expenses', expenses:'Expenses', subscriptions:'Subscriptions', portfolio:'Portfolio', deals:'Deal Tracker', eventkit:'Event Kit', employee:'Employee' };
+  const titles = { dashboard:'Dashboard', tracking:'Daily Tracking', salary:'Salary Tracker', employees:'Employees', reports:'Reports', calendar:'Calendar', admins:'Admin Users', hotels:'Hotel Expenses', expenses:'Expenses', subscriptions:'Subscriptions', portfolio:'Portfolio', deals:'Deal Tracker', eventkit:'Event Kit', employee:'Employee', spending:'Spending' };
   document.getElementById('pageTitle').textContent = titles[page] || page;
   // Opening a page always fetches it fresh, so what colleagues changed shows up
   if (page !== 'employee' && PAGE_LOADERS[page]) PAGE_LOADERS[page]();
   _lastPageRefresh = Date.now();
+}
+
+// ─── SPENDING (admin) ────────────────────────────────────────────────────────
+// The year's costs in one place. Staff salaries (every active person's salary, in GBP)
+// and hotels (paid for that year's events) come from the tracker; everything else is
+// typed in here (rent, cars, taxes, office, loans...).
+let _spendYear = new Date().getFullYear();
+let _spendEditId = null;
+async function loadSpendingPage() {
+  const box = document.getElementById('spendingBody');
+  if (!box) return;
+  if (!box.innerHTML) box.innerHTML = '<div class="skeleton" style="height:320px;border-radius:16px"></div>';
+  const [itemsRes, empRes, hotelRes] = await Promise.all([fetch('/api/spending-items'), fetch('/api/employees/all'), fetch('/api/hotel-expenses')].map(p => p.catch(() => null)));
+  const items = itemsRes && itemsRes.ok ? await itemsRes.json() : [];
+  const emps = empRes && empRes.ok ? await empRes.json() : [];
+  const hotels = hotelRes && hotelRes.ok ? await hotelRes.json() : [];
+  const active = emps.filter(e => e.active);
+  const salaries = active.reduce((a, e) => a + gbpSalary(e), 0);
+  const years = [...new Set([new Date().getFullYear(), ...hotels.map(h => parseInt(h.event_year)).filter(Boolean)])].sort((a, b) => b - a);
+  if (!years.includes(_spendYear)) _spendYear = years[0];
+  const hotelsPaid = hotelPaidGBP(hotels, _spendYear);
+
+  const rows = [
+    { auto: true, name: 'Staff salaries', amount: salaries, note: `${active.length} active staff, all salaries added together (in GBP)`, page: 'salary' },
+    { auto: true, name: 'Hotels', amount: hotelsPaid, note: `Paid for ${_spendYear} events so far`, page: 'hotels' },
+    ...items.map(i => ({ id: i.id, name: i.name, amount: i.annual_amount, note: i.notes })),
+  ].sort((a, b) => b.amount - a.amount);
+  const total = rows.reduce((a, r) => a + r.amount, 0);
+  const max = Math.max(1, ...rows.map(r => r.amount));
+
+  const row = r => (r.id && r.id === _spendEditId) ? `
+    <div class="sp-row sp-row--edit">
+      <input class="form-control" id="spEditName" value="${esc(r.name)}" maxlength="120" aria-label="Cost name">
+      <input class="form-control" id="spEditAmount" type="number" min="0" step="0.01" value="${r.amount}" aria-label="Amount a year (£)">
+      <input class="form-control" id="spEditNotes" value="${esc(r.note || '')}" maxlength="300" placeholder="Note (optional)" aria-label="Note">
+      <span class="sp-row-btns"><button class="btn btn-ghost btn-sm" onclick="spEdit(null)">Cancel</button><button class="btn btn-primary btn-sm" onclick="spSave(${r.id})">Save</button></span>
+    </div>` : `
+    <div class="sp-row">
+      <div class="sp-row-top">
+        <span class="sp-name">${esc(r.name)}${r.auto ? '<span class="sp-auto">from the tracker</span>' : ''}${r.note ? `<small>${esc(r.note)}</small>` : ''}</span>
+        <span class="sp-amt">${poundsWhole(r.amount)}</span>
+        <span class="sp-row-btns">${r.auto
+          ? `<button class="btn btn-ghost btn-sm" onclick="navigate('${r.page}')">View</button>`
+          : `<button class="btn btn-ghost btn-sm" onclick="spEdit(${r.id})">Edit</button><button class="btn btn-ghost btn-sm ep-danger" onclick="spDelete(${r.id}, ${esc(JSON.stringify(r.name))})" aria-label="Remove ${esc(r.name)}">×</button>`}</span>
+      </div>
+      <div class="sp-bar"><span style="width:${(r.amount / max * 100).toFixed(1)}%"></span></div>
+    </div>`;
+
+  box.innerHTML = `
+    <section class="card sp-card">
+      <header class="sp-head">
+        <div>
+          <div class="sp-eyebrow">Total annual expenditure</div>
+          <div class="sp-total">${poundsWhole(total)}</div>
+          <div class="sp-sub">About ${poundsWhole(total / 12)} a month</div>
+        </div>
+        <label class="sp-year">Hotels for
+          <select onchange="_spendYear = parseInt(this.value, 10); loadSpendingPage()">${years.map(y => `<option${y === _spendYear ? ' selected' : ''}>${y}</option>`).join('')}</select>
+        </label>
+      </header>
+      <h3 class="sp-title">Expenditure breakdown</h3>
+      <div class="sp-list">${rows.map(row).join('')}</div>
+      <div class="sp-add">
+        <input class="form-control" id="spNewName" maxlength="120" placeholder="Cost, e.g. Office rent">
+        <input class="form-control" id="spNewAmount" type="number" min="0" step="0.01" placeholder="£ a year">
+        <input class="form-control" id="spNewNotes" maxlength="300" placeholder="Note (optional)">
+        <button class="btn btn-primary" onclick="spAdd()">Add cost</button>
+      </div>
+      <p class="sp-foot">Salaries and hotels update by themselves. Everything else is what you enter here, as a yearly amount in pounds.</p>
+    </section>`;
+}
+async function spSend(method, url, body) {
+  const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }).catch(() => null);
+  if (!res || !res.ok) { const e = res ? await res.json().catch(() => ({})) : {}; showToast(e.error || 'Could not save', 'error'); return false; }
+  return true;
+}
+async function spAdd() {
+  const name = document.getElementById('spNewName').value.trim();
+  if (!name) { showToast('Give the cost a name', 'error'); return; }
+  if (await spSend('POST', '/api/spending-items', { name, annual_amount: document.getElementById('spNewAmount').value, notes: document.getElementById('spNewNotes').value })) loadSpendingPage();
+}
+function spEdit(id) { _spendEditId = id; loadSpendingPage(); }
+async function spSave(id) {
+  if (await spSend('PUT', `/api/spending-items/${id}`, { name: document.getElementById('spEditName').value, annual_amount: document.getElementById('spEditAmount').value, notes: document.getElementById('spEditNotes').value })) { _spendEditId = null; loadSpendingPage(); }
+}
+async function spDelete(id, name) {
+  if (!await showConfirm(`Remove ${name} from your spending?`)) return;
+  if (await spSend('DELETE', `/api/spending-items/${id}`)) loadSpendingPage();
 }
 
 // What each page fetches to show itself. Used when it is opened and to keep it up to date.
@@ -290,6 +379,7 @@ const PAGE_LOADERS = {
   portfolio: () => loadPortfolio(),
   deals: () => loadDeals(),
   eventkit: () => loadEventKitPage(),
+  spending: () => loadSpendingPage(),
   employee: () => { if (_profileEmpId) openEmployeeProfile(_profileEmpId); },
 };
 
@@ -341,7 +431,7 @@ async function loadEmployees() {
 }
 
 // Employees page filters: department chip, type and status switches, search.
-const _empFilter = { dept: '', type: '', status: 'active' };
+const _empFilter = { dept: '', type: '', status: 'active', view: 'dept' };
 
 async function loadEmpTable() {
   const res = await fetch('/api/employees/all');
@@ -354,6 +444,35 @@ async function loadEmpTable() {
   renderEmpTable();
   // Someone's own page is open: show their saved changes there too
   if (_profileMode === 'page' && _profileEmpId && document.getElementById('page-employee')?.classList.contains('active')) openEmployeeProfile(_profileEmpId);
+}
+
+// Everyone in one list, highest salary first (compared in GBP, so ₱ and AED rank fairly)
+const gbpSalary = e => salFxToGBP(parseFloat(e.annual_salary) || 0, e.currency || 'GBP');
+const EMP_TABLE_HEAD = '<tr><th>Name</th><th>Department</th><th>Type</th><th class="dt-r">Salary</th><th>Started</th><th>Status</th><th></th></tr>';
+function restoreEmpTableHead() {
+  const head = document.querySelector('#page-employees .emp-table thead');
+  if (head && head.dataset.view !== 'dept') { head.innerHTML = EMP_TABLE_HEAD; head.dataset.view = 'dept'; }
+}
+function renderEmpSalaryList(base) {
+  const list = base.filter(e => !_empFilter.dept || (e.department || 'No department') === _empFilter.dept)
+    .sort((a, b) => gbpSalary(b) - gbpSalary(a) || a.name.localeCompare(b.name));
+  const head = document.querySelector('#page-employees .emp-table thead');
+  if (head) { head.innerHTML = '<tr><th class="dt-c">#</th><th>Name</th><th>Department</th><th>Type</th><th class="dt-r">Salary</th><th class="dt-r">In GBP</th><th class="dt-r">Monthly (GBP)</th></tr>'; head.dataset.view = 'salary'; }
+  const tbody = document.getElementById('empTable');
+  if (!list.length) { tbody.innerHTML = '<tr><td colspan="7"><div class="emp-empty">Nobody matches these filters.</div></td></tr>'; return; }
+  const total = list.reduce((a, e) => a + gbpSalary(e), 0);
+  tbody.innerHTML = `<tr class="emp-group emp-sal-total"><td colspan="5">${list.length} ${list.length === 1 ? 'person' : 'people'}, all salaries together</td>
+      <td class="dt-r">${poundsWhole(total)}</td><td class="dt-r">${poundsWhole(total / 12)}</td></tr>` +
+    list.map((emp, i) => `<tr class="emp-row${emp.active ? '' : ' is-left'}" onclick="openEmployeeProfile(${emp.id})">
+      <td class="dt-c emp-rank">${i + 1}</td>
+      <td><div class="emp-name-cell"><span class="emp-avatar">${esc(empInitials(emp.name))}</span>
+        <span><span class="emp-name">${esc(emp.name)}</span><small>${esc(emp.job_title || '')}</small></span></div></td>
+      <td>${esc(emp.department || '—')}</td>
+      <td>${emp.employment_type === 'self_employed' ? 'Self-employed' : 'Payroll'}${emp.currency && emp.currency !== 'GBP' ? ` <span class="es-cur">${esc(emp.currency)}</span>` : ''}</td>
+      <td class="dt-r emp-sal">${emp.annual_salary > 0 ? fmtMoney(emp.annual_salary, emp.currency).replace(/\.00$/, '') : '—'}</td>
+      <td class="dt-r">${emp.annual_salary > 0 ? poundsWhole(gbpSalary(emp)) : '—'}</td>
+      <td class="dt-r emp-muted">${emp.annual_salary > 0 ? poundsWhole(gbpSalary(emp) / 12) : '—'}</td>
+    </tr>`).join('');
 }
 
 function setEmpFilter(key, value) {
@@ -381,6 +500,9 @@ function renderEmpTable() {
     .map(([v, label, n]) => `<button type="button" class="emp-chip${_empFilter.dept === v ? ' active' : ''}" data-dept="${esc(v)}" onclick="setEmpFilter('dept', this.dataset.dept)">${esc(label)}<span>${n}</span></button>`).join('');
   document.querySelectorAll('#empTypeSeg button').forEach(b => b.classList.toggle('active', b.dataset.v === _empFilter.type));
   document.querySelectorAll('#empStatusSeg button').forEach(b => b.classList.toggle('active', b.dataset.v === _empFilter.status));
+  document.querySelectorAll('#empViewSeg button').forEach(b => b.classList.toggle('active', b.dataset.v === _empFilter.view));
+  if (_empFilter.view === 'salary') return renderEmpSalaryList(base);
+  restoreEmpTableHead();
 
   const list = base.filter(e => !_empFilter.dept || (e.department || 'No department') === _empFilter.dept)
     // Within each department, highest salary first, compared in GBP so ₱ and
@@ -4607,6 +4729,12 @@ function fmtHotelAmount(v) {
   return v.toFixed(0);
 }
 
+// GBP conversion rates for hotel bills (approximate)
+const HOTEL_TO_GBP = { GBP: 1, USD: 0.787, EUR: 0.855, CHF: 0.885, AED: 0.2141, PHP: 0.0138 };
+// What was paid to hotels for a year's events, in GBP
+const hotelPaidGBP = (rows, year) => rows.filter(r => parseInt(r.event_year) === parseInt(year))
+  .reduce((a, r) => a + (parseFloat(r.paid_amount) || 0) * (HOTEL_TO_GBP[r.paid_currency || 'USD'] || HOTEL_TO_GBP.USD), 0);
+
 function renderHotelSummary() {
   const yearData = hotelYearFiltered();
 
@@ -4627,11 +4755,9 @@ function renderHotelSummary() {
   const unpaid = yearData.filter(r => r.status !== 'paid').length;
   const fmtN = n => n.toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2});
 
-  // GBP conversion rates (approximate)
-  const TO_GBP = { GBP:1, USD:0.787, EUR:0.855, CHF:0.885, AED:0.2141, PHP:0.0138 };
   let gbpPaid = 0, gbpAv = 0;
   Object.entries(byCur).forEach(([cur, sums]) => {
-    const rate = TO_GBP[cur] || 0.787;
+    const rate = HOTEL_TO_GBP[cur] || HOTEL_TO_GBP.USD;
     gbpPaid += sums.paid * rate;
     gbpAv   += sums.av   * rate;
   });

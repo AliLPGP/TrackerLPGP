@@ -60,6 +60,8 @@ async function runLateMigrations() {
     `CREATE TABLE IF NOT EXISTS employee_portfolio_events (id SERIAL PRIMARY KEY, employee_id INTEGER NOT NULL, event_name TEXT NOT NULL, event_date DATE, notes TEXT NOT NULL DEFAULT '', added_by TEXT NOT NULL DEFAULT 'employee', allocated_by INT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     `CREATE TABLE IF NOT EXISTS employee_reminders (id SERIAL PRIMARY KEY, employee_id INTEGER NOT NULL, title TEXT NOT NULL, reminder_date DATE, is_done BOOLEAN DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT NOW())`,
     `ALTER TABLE day_off_requests ADD COLUMN IF NOT EXISTS reason TEXT`,
+    // Yearly costs the admin enters for the spending summary (rent, cars, taxes...)
+    `CREATE TABLE IF NOT EXISTS spending_items (id SERIAL PRIMARY KEY, name TEXT NOT NULL, annual_amount NUMERIC(14,2) NOT NULL DEFAULT 0, notes TEXT NOT NULL DEFAULT '', sort_order INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     // Failed sign-ins, so repeated guessing of a password or PIN is locked out for a while
     `CREATE TABLE IF NOT EXISTS login_failures (id SERIAL PRIMARY KEY, account TEXT NOT NULL, ip TEXT, at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     `CREATE INDEX IF NOT EXISTS login_failures_account_at ON login_failures (account, at)`,
@@ -2233,6 +2235,36 @@ function requireFinance(req, res, next) {
 }
 
 // ─── SUBSCRIPTIONS ────────────────────────────────────────────────────────────
+// ─── SPENDING SUMMARY (admin) ─────────────────────────────────────────────────
+// The yearly costs the admin types in. Salaries and hotels are added on the page
+// from what the tracker already holds, so only admins see the whole picture.
+const spendingInput = b => ({
+  name: String(b.name || '').trim().slice(0, 120),
+  amount: Math.max(0, Math.round((parseFloat(String(b.annual_amount ?? '').replace(/[£,\s]/g, '')) || 0) * 100) / 100),
+  notes: String(b.notes || '').trim().slice(0, 300),
+});
+app.get('/api/spending-items', requireAuth, requireAdmin, async (req, res) => {
+  const { rows } = await q('SELECT id, name, annual_amount, notes FROM spending_items ORDER BY annual_amount DESC, name');
+  res.json(rows.map(r => ({ ...r, annual_amount: parseFloat(r.annual_amount) || 0 })));
+});
+app.post('/api/spending-items', requireAuth, requireAdmin, async (req, res) => {
+  const v = spendingInput(req.body);
+  if (!v.name) return res.status(400).json({ error: 'Give the cost a name' });
+  const { rows } = await q('INSERT INTO spending_items (name, annual_amount, notes) VALUES (?, ?, ?) RETURNING id', [v.name, v.amount, v.notes]);
+  res.json({ id: rows[0].id });
+});
+app.put('/api/spending-items/:id', requireAuth, requireAdmin, async (req, res) => {
+  const v = spendingInput(req.body);
+  if (!v.name) return res.status(400).json({ error: 'Give the cost a name' });
+  const { rows } = await q('UPDATE spending_items SET name = ?, annual_amount = ?, notes = ? WHERE id = ? RETURNING id', [v.name, v.amount, v.notes, req.params.id]);
+  if (!rows.length) return res.status(404).json({ error: 'Not found' });
+  res.json({ ok: true });
+});
+app.delete('/api/spending-items/:id', requireAuth, requireAdmin, async (req, res) => {
+  await q('DELETE FROM spending_items WHERE id = ?', [req.params.id]);
+  res.json({ ok: true });
+});
+
 app.get('/api/subscriptions', requireAuth, requireFinance, async (req, res) => {
   try {
     const { rows } = await q('SELECT * FROM subscriptions ORDER BY created_at DESC');
