@@ -1714,6 +1714,15 @@ app.delete('/api/salary-history/:id', requireAuth, requireAdmin, async (req, res
   res.json({ success: true });
 });
 
+// Correction: their current salary was always right, so the history of earlier figures goes
+// and every month is worked out at the current salary (used when an old figure was wrong).
+app.post('/api/employees/:id/salary-correction', requireAuth, requireAdmin, async (req, res) => {
+  const { rows } = await q('SELECT id FROM employees WHERE id = ?', [req.params.id]);
+  if (!rows.length) return res.status(404).json({ error: 'Employee not found' });
+  await q('DELETE FROM salary_history WHERE employee_id = ?', [req.params.id]);
+  res.json({ success: true });
+});
+
 // ─── CALENDAR REMINDERS ──────────────────────────────────────────────────────
 
 function expandReminders(rows, year, month) {
