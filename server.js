@@ -297,6 +297,10 @@ app.use('/api', async (req, res, next) => {
   }
 });
 
+// Live data: never let a browser or proxy reuse an old answer (a colleague's change
+// must show on the next fetch). File downloads that want caching set their own header.
+app.use('/api', (req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+
 // Staff portal logins may only use the routes the portal needs. Many office routes
 // check only that someone is logged in, so without this a staff member could read or
 // change other people's records. Each allowed route still checks the person itself.
@@ -856,15 +860,24 @@ async function requireOnboardingForNewLogin(empId, hadPin) {
 app.put('/api/employees/:id', requireAuth, requireAdmin, async (req, res) => {
   const { name, active, employment_type, annual_salary, currency, salary_reason, salary_effective,
           start_date, pension_rate, job_title, department, phone, email, contract_end_date,
-          probation_end_date, portal_pin, working_pattern, work_arrangement, country } = req.body;
+          probation_end_date, portal_pin, working_pattern, work_arrangement, country, salary_correction } = req.body;
   const annualSal = parseFloat(annual_salary) || 0;
   const daily_rate = parseFloat((annualSal / 260).toFixed(4));
   const cur = ['GBP','AED','PHP'].includes(currency) ? currency : 'GBP';
   const pensionRate = (employment_type === 'payroll' && pension_rate != null && pension_rate !== '') ? parseFloat(pension_rate) : 0;
 
-  // If salary changed, log old salary to history before updating
   const { rows: current } = await q('SELECT annual_salary, currency, start_date, portal_pin, active FROM employees WHERE id = ?', [req.params.id]);
-  if (current[0] && parseFloat(current[0].annual_salary) !== annualSal) {
+  const salaryChanged = current[0] && parseFloat(current[0].annual_salary) !== annualSal;
+  // A correction: the old figure was wrong, so nothing is logged as a change. The salary
+  // in force now is corrected in the history too, so past months use the right figure.
+  if (salaryChanged && salary_correction) {
+    const { rows: inForce } = await q(
+      `SELECT id FROM salary_history WHERE employee_id = ? AND effective_from <= CURRENT_DATE
+       ORDER BY effective_from DESC, created_at DESC LIMIT 1`, [req.params.id]);
+    if (inForce[0]) await q('UPDATE salary_history SET annual_salary = ?, currency = ? WHERE id = ?', [annualSal, cur, inForce[0].id]);
+  }
+  // A pay change: log the old salary to history before updating
+  if (salaryChanged && !salary_correction) {
     // First recorded change: log the salary they had until now, so the year's pay
     // can be worked out month by month instead of repricing the whole year.
     const { rows: hist } = await q('SELECT id FROM salary_history WHERE employee_id = ? LIMIT 1', [req.params.id]);
