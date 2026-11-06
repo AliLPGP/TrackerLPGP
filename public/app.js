@@ -3355,6 +3355,24 @@ async function loadSalaryPage() {
             </div>
           </div>`; })() : ''}
 
+          <!-- Payroll: each month of the year, what it is due and whether it is paid -->
+          ${Array.isArray(emp.pay_months) && emp.pay_months.length ? (() => {
+            const toPay = emp.pay_months.filter(m => !m.paid);
+            return `<div class="sc-section">
+            <button class="sc-sec-toggle" onclick="toggleSection(this)">
+              <span class="sc-sec-title">Month by month — ${emp.pay_months.length - toPay.length} paid, ${toPay.length} to pay</span>
+              <span class="sc-chevron">›</span>
+            </button>
+            <div class="sc-sec-body">
+              ${emp.pay_months.map(m => `<div class="sc-month${m.paid ? ' is-paid' : ''}">
+                <span>${MONTHS[m.month]} ${year}</span>
+                <span>${sym}${m.due.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</span>
+                <span class="db-tag ${m.paid ? '' : 'is-warn'}">${m.paid ? 'Paid' : 'To pay'}</span>
+              </div>`).join('')}
+              <div class="sc-hist-hint">Take-home for each month at the salary in force that month. What is left is the months still to pay${(parseFloat(emp.excess_deduction) || 0) + (parseFloat(emp.total_office_deductions) || 0) > 0 ? ', less deductions' : ''}.</div>
+            </div>
+          </div>`; })() : ''}
+
           <!-- Salary history / raises -->
           ${salaryHistory.length ? `
           <div class="sc-section">
