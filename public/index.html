@@ -967,10 +967,13 @@
       </div>
     </div>
     <div id="salaryChangeFields" class="hidden">
-      <div style="font-size:0.8rem;font-weight:600;color:var(--primary);margin-bottom:8px;padding:8px 12px;background:var(--primary-light);border-radius:6px;">
-        Salary change detected — log raise / promotion details:
+      <div class="sal-kind" role="radiogroup" aria-label="What is this new salary?">
+        <label class="sal-kind-opt"><input type="radio" name="empSalaryKind" value="change" checked onchange="empSalaryKindChanged()">
+          <span><b>Pay change</b><small>A raise, promotion or cut from a date. Pay before that date stays at the old salary.</small></span></label>
+        <label class="sal-kind-opt"><input type="radio" name="empSalaryKind" value="correction" onchange="empSalaryKindChanged()">
+          <span><b>Correction</b><small>The old figure was wrong. Use this salary for the whole time, as if it had always been this.</small></span></label>
       </div>
-      <div class="form-row">
+      <div class="form-row" id="salaryChangeWhen">
         <div class="form-group">
           <label>Effective From</label>
           <input type="date" id="empSalaryEffective">

@@ -271,17 +271,56 @@ function navigate(page) {
   document.querySelector(`.bottom-nav-item[data-page="${navPage}"]`)?.classList.add('active');
   const titles = { dashboard:'Dashboard', tracking:'Daily Tracking', salary:'Salary Tracker', employees:'Employees', reports:'Reports', calendar:'Calendar', admins:'Admin Users', hotels:'Hotel Expenses', expenses:'Expenses', subscriptions:'Subscriptions', portfolio:'Portfolio', deals:'Deal Tracker', eventkit:'Event Kit', employee:'Employee' };
   document.getElementById('pageTitle').textContent = titles[page] || page;
-  if (page === 'employees') loadEmpTable();
-  if (page === 'admins') loadAdmins();
-  if (page === 'calendar') loadCalendar();
-  if (page === 'salary') { loadSalaryPage(); }
-  if (page === 'hotels') loadHotelExpenses();
-  if (page === 'expenses') loadExpenses();
-  if (page === 'subscriptions') loadSubscriptions();
-  if (page === 'portfolio') { loadPortfolio(); }
-  if (page === 'deals') { loadDeals(); }
-  if (page === 'eventkit') loadEventKitPage();
+  // Opening a page always fetches it fresh, so what colleagues changed shows up
+  if (page !== 'employee' && PAGE_LOADERS[page]) PAGE_LOADERS[page]();
+  _lastPageRefresh = Date.now();
 }
+
+// What each page fetches to show itself. Used when it is opened and to keep it up to date.
+const PAGE_LOADERS = {
+  dashboard: () => loadDashboard(),
+  tracking: () => { if (document.getElementById('trackEmp')?.value) loadEmployeeRecords(); },
+  employees: () => loadEmpTable(),
+  admins: () => loadAdmins(),
+  calendar: () => loadCalendar(),
+  salary: () => loadSalaryPage(),
+  hotels: () => loadHotelExpenses(),
+  expenses: () => loadExpenses(),
+  subscriptions: () => loadSubscriptions(),
+  portfolio: () => loadPortfolio(),
+  deals: () => loadDeals(),
+  eventkit: () => loadEventKitPage(),
+  employee: () => { if (_profileEmpId) openEmployeeProfile(_profileEmpId); },
+};
+
+// ── Staying up to date while colleagues work ──
+// Several people use the tracker at once. The open page fetches itself again when you
+// come back to the tab, and every couple of minutes while you are not using it, so a
+// colleague's changes appear without reloading. It never refreshes under you: not while
+// a dialog is open, you are typing or editing a cell, or you used the page in the last minute.
+let _lastPageRefresh = Date.now(), _lastUserActivity = Date.now();
+['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(ev => document.addEventListener(ev, () => { _lastUserActivity = Date.now(); }, { passive: true }));
+function pageRefreshIsSafe() {
+  if (document.hidden || !currentUser || currentUser.role === 'employee') return false;
+  if (document.querySelector('.modal-overlay.open, #empDrawer.open')) return false;
+  const a = document.activeElement;
+  if (a && (a.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName))) return false;
+  if (document.querySelector('.page.active td input, .page.active td select, .page.active td textarea')) return false; // an inline edit
+  return true;
+}
+function refreshActivePage() {
+  const page = document.querySelector('.page.active')?.id.replace('page-', '');
+  if (!page || !PAGE_LOADERS[page] || !pageRefreshIsSafe()) return;
+  _lastPageRefresh = Date.now();
+  PAGE_LOADERS[page]();
+  if (typeof refreshNotifBadge === 'function' && document.getElementById('notifBellWrap')?.style.display === 'block') refreshNotifBadge();
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && Date.now() - _lastPageRefresh > 15000) refreshActivePage();
+});
+setInterval(() => {
+  if (Date.now() - _lastUserActivity > 60000 && Date.now() - _lastPageRefresh > 120000) refreshActivePage();
+}, 20000);
 
 // ─── EMPLOYEES ───────────────────────────────────────────────────────────────
 async function loadEmployees() {
@@ -450,6 +489,8 @@ function openEmpModal(emp = null) {
   // Don't prefill a legacy bcrypt-hashed PIN (starts with $2) — would mangle on save
   document.getElementById('empPin').value = (emp && emp.portal_pin && !String(emp.portal_pin).startsWith('$2')) ? emp.portal_pin : '';
   document.getElementById('salaryChangeFields').classList.add('hidden');
+  const kindChange = document.querySelector('input[name="empSalaryKind"][value="change"]');
+  if (kindChange) { kindChange.checked = true; empSalaryKindChanged(); }
   empProbationInit(emp);
   document.getElementById('empModalTitle').textContent = emp ? 'Edit Employee' : 'Add Employee';
   const prWrap = document.getElementById('empPortfolioWrap');
@@ -482,6 +523,12 @@ function openEmpModal(emp = null) {
   openModal('empModal');
 }
 
+// A new salary is either a pay change from a date, or a correction of a figure that was wrong
+function empSalaryKindChanged() {
+  const corr = document.querySelector('input[name="empSalaryKind"]:checked')?.value === 'correction';
+  document.getElementById('salaryChangeWhen')?.classList.toggle('hidden', corr);
+}
+
 async function saveEmployee() {
   const id = document.getElementById('empId').value;
   const name = document.getElementById('empName').value.trim();
@@ -494,6 +541,8 @@ async function saveEmployee() {
   const annual_salary = parseFloat(document.getElementById('empAnnualSalary').value) || 0;
   const salary_reason = document.getElementById('empSalaryReason').value.trim();
   const salary_effective = document.getElementById('empSalaryEffective').value;
+  const salary_correction = !document.getElementById('salaryChangeFields').classList.contains('hidden') &&
+    document.querySelector('input[name="empSalaryKind"]:checked')?.value === 'correction';
   const pensionRateVal = document.getElementById('empPensionRate').value;
   const pension_rate = employment_type === 'payroll' && pensionRateVal !== '' ? parseFloat(pensionRateVal) : 0;
   const job_title = document.getElementById('empJobTitle').value.trim();
@@ -520,7 +569,7 @@ async function saveEmployee() {
     await fetch(`/api/employees/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...payload, salary_reason, salary_effective })
+      body: JSON.stringify({ ...payload, salary_reason, salary_effective, salary_correction })
     });
   } else {
     // Their documents come from onboarding, and extra ones are added on their profile
