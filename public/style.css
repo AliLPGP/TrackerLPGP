@@ -8166,3 +8166,4 @@ body[data-role="accounts"] #page-portfolio .pf-row-actions { display: none !impo
 .sal-kind-opt b { display: block; font: 600 13px/1.3 var(--font-sans); color: var(--text); }
 .sal-kind-opt small { display: block; margin-top: 2px; font: 400 12px/1.4 var(--font-sans); color: var(--muted); }
 @media (max-width: 600px) { .sal-kind { grid-template-columns: 1fr; } }
+.sc-hist-fix { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 4px 0 10px; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); font: 400 12.5px/1.4 var(--font-sans); color: var(--muted); }

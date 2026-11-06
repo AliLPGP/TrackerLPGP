@@ -3370,6 +3370,10 @@ async function loadSalaryPage() {
                 <div class="sc-breakdown-row total"><span>Target for the year</span><span>${sym}${(parseFloat(emp.salary_target) || 0).toLocaleString('en-GB',{minimumFractionDigits:2})}</span></div>
                 <div class="sc-hist-hint">Each row below is a salary and the day it started. If one was added by mistake, delete it with ×.</div>
               </div>` : ''}
+              <div class="sc-hist-fix">
+                <span>Was an earlier salary wrong? Use ${sym}${annualSalary.toLocaleString('en-GB', { maximumFractionDigits: 0 })} for the whole time instead.</span>
+                <button class="btn btn-ghost btn-sm" onclick="correctSalaryHistory(${emp.employee_id}, ${esc(JSON.stringify(emp.name || ''))}, ${esc(JSON.stringify(sym + annualSalary.toLocaleString('en-GB', { maximumFractionDigits: 0 })))})">Use current salary for all</button>
+              </div>
               ${salaryHistory.map(h => `
                 <div class="sc-hist-item">
                   <span class="sc-item-date">${h.effective_from||''}</span>
@@ -3785,6 +3789,15 @@ async function saveBonusRecord() {
 async function deleteBonus(id) {
   if (!await showConfirm('Remove this bonus record?')) return;
   await fetch(`/api/bonuses/${id}`, { method: 'DELETE' });
+  loadSalaryPage();
+}
+
+// Clears the salary history so the current salary counts for every month (a correction)
+async function correctSalaryHistory(empId, name, amount) {
+  if (!await showConfirm(`Use ${amount} a year for ${name} for the whole time? Their earlier salaries are removed from the history, and this year's target and what is left to pay are worked out at ${amount}. Only do this if an earlier figure was wrong, not for a real raise or cut.`)) return;
+  const res = await fetch(`/api/employees/${empId}/salary-correction`, { method: 'POST' }).catch(() => null);
+  if (!res || !res.ok) { showToast('Could not correct the salary', 'error'); return; }
+  showToast(`${name} is now on ${amount} for the whole time`, 'success');
   loadSalaryPage();
 }
 
