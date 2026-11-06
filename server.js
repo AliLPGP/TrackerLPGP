@@ -388,7 +388,7 @@ const ALLOWED_BREAK_MINUTES = 40;
 const DAY_OFF_ALLOWANCE = { payroll: 20, self_employed: 5 };
 
 const { allowanceFor: allowanceForYear } = require('./allowance');
-const { selfEmployedYearTarget, salaryOnDate, payBands, periodsFrom } = require('./salary-periods');
+const { selfEmployedYearTarget, salaryOnDate, payBands, periodsFrom, payrollMonths } = require('./salary-periods');
 const allowanceFor = (emp, year) => allowanceForYear(emp, year, DAY_OFF_ALLOWANCE);
 
 // Count Mon–Fri days in a given month (no bank holidays — add if needed)
@@ -487,6 +487,30 @@ const PAY_FIELDS = ['annual_salary', 'daily_rate', 'pension_rate', 'salary_remai
   'excess_day_deduction', 'excess_deduction', 'waived_deduction', 'total_deduction', 'office_deductions', 'breakdown'];
 const withoutPay = row => Object.fromEntries(Object.entries(row).filter(([k]) => !PAY_FIELDS.includes(k)));
 const payFor = (req, row) => (req.admin && req.admin.role === 'admin' ? row : withoutPay(row));
+
+// What someone is owed for a year, and how much of it is left.
+// Payroll: a fixed take-home every month, so what is left is the months not paid yet
+// (each at the salary in force that month), less deductions. A month with any payment
+// recorded counts as paid, so an extra or larger payment never hides a month still to pay.
+// Self-employed: the year's target (see yearPayFigures) less deductions, less what was paid.
+function yearOwed({ emp, year, history, annualSal, salaryTarget, startDateStr, terminationDateStr, payments, deductions }) {
+  const totalPaid = payments.reduce((a, b) => a + (parseFloat(b.amount) || 0), 0);
+  if (emp.employment_type === 'payroll' && annualSal > 0) {
+    const pension = parseFloat(emp.pension_rate) || 0;
+    const paidMonths = new Set(payments.map(p => Number(p.payment_month)));
+    const months = payrollMonths({ history, year, startDate: startDateStr, endDate: terminationDateStr, annual: annualSal,
+      netMonthly: a => calcUKNetPay(a, pension).net_monthly }).map(m => ({ ...m, paid: paidMonths.has(m.month) }));
+    const target = months.reduce((a, m) => a + m.due, 0);
+    const remaining = months.filter(m => !m.paid).reduce((a, m) => a + m.due, 0) - deductions;
+    const owed = Math.max(0, remaining);
+    return { target: round2(target), remaining: round2(remaining), totalPaid: round2(totalPaid), months,
+      pct: totalPaid + owed > 0 ? Math.min(100, Math.round(totalPaid / (totalPaid + owed) * 100)) : 100 };
+  }
+  const effective = salaryTarget - deductions;
+  return { target: round2(salaryTarget), remaining: round2(effective - totalPaid), totalPaid: round2(totalPaid), months: null,
+    pct: effective > 0 ? Math.min(100, Math.round(totalPaid / effective * 100)) : (totalPaid > 0 ? 100 : 0) };
+}
+const round2 = v => Math.round(v * 100) / 100;
 
 // Office deductions and bonuses belong to the year they are dated in
 const sumForYear = (rows, dateKey, year) =>
@@ -1180,18 +1204,12 @@ app.get('/api/employee/salary', requireAuth, async (req, res) => {
     const ukPay = emp.employment_type === 'payroll' && annualSal > 0
       ? calcUKNetPay(annualSal, parseFloat(emp.pension_rate) || 0)
       : null;
-    const netFactor       = ukPay ? ukPay.net_annual / annualSal : 1;
-    const netSalaryTarget = parseFloat((salaryTarget * netFactor).toFixed(2));
-    const totalPaid       = payments.reduce((a, b) => a + parseFloat(b.amount), 0);
     const totalOffice     = officeRows.reduce((a, b) => a + parseFloat(b.amount), 0);
-    // % paid is measured against the target net of ALL deductions (day-off excess
-    // + office deductions) — must mirror the admin salary-overview formula exactly
-    // so the employee sees the same remaining figure the admin sees.
-    const effectiveTarget = parseFloat((netSalaryTarget - dayCalc.excess_deduction - totalOffice).toFixed(2));
-    const netRemaining    = parseFloat((effectiveTarget - totalPaid).toFixed(2));
-    const pctPaid         = effectiveTarget > 0
-      ? Math.min(100, Math.round((totalPaid / effectiveTarget) * 100))
-      : (totalPaid > 0 ? 100 : 0);
+    // The same figures the admin salary page shows (yearOwed)
+    const owedYear = yearOwed({ emp, year, history, annualSal, salaryTarget, startDateStr, payments,
+      terminationDateStr: emp.termination_date ? emp.termination_date.toISOString().slice(0, 10) : null,
+      deductions: dayCalc.excess_deduction + totalOffice });
+    const netSalaryTarget = owedYear.target, netRemaining = owedYear.remaining, pctPaid = owedYear.pct, totalPaid = owedYear.totalPaid;
 
     res.json({
       name:             emp.name,
@@ -1469,19 +1487,12 @@ app.get('/api/salary-overview', requireAuth, requireAdmin, async (req, res) => {
       const ukPay = emp.employment_type === 'payroll' && annualSal > 0
         ? calcUKNetPay(annualSal, parseFloat(emp.pension_rate) || 0)
         : null;
-      const netFactor       = ukPay ? ukPay.net_annual / annualSal : 1;
-      const netSalaryTarget = parseFloat((salaryTarget * netFactor).toFixed(2));
       const netMonthly      = ukPay ? ukPay.net_monthly : null;
 
       const totalOffice   = sumForYear(officeRows, 'deduction_date', year);
-      const totalPaid     = payments.reduce((a, b) => a + parseFloat(b.amount), 0);
-      // Effective amount actually owed = salary target minus all deductions (day-off + office).
-      // % paid is measured against this so it stays consistent with the "amount left" figure.
-      const effectiveTarget = parseFloat((netSalaryTarget - dayCalc.excess_deduction - totalOffice).toFixed(2));
-      const netRemaining  = parseFloat((effectiveTarget - totalPaid).toFixed(2));
-      const pctPaid       = effectiveTarget > 0
-        ? Math.min(100, Math.round((totalPaid / effectiveTarget) * 100))
-        : (totalPaid > 0 ? 100 : 0);
+      const owedYear = yearOwed({ emp, year, history: salaryHistory, annualSal, salaryTarget, startDateStr, terminationDateStr,
+        payments, deductions: dayCalc.excess_deduction + totalOffice });
+      const netSalaryTarget = owedYear.target, netRemaining = owedYear.remaining, pctPaid = owedYear.pct, totalPaid = owedYear.totalPaid;
 
       return {
         employee_id:         emp.id,
@@ -1524,6 +1535,7 @@ app.get('/api/salary-overview', requireAuth, requireAdmin, async (req, res) => {
         breakdown:           dayCalc.breakdown,
         net_remaining:       netRemaining,
         pct_paid:            pctPaid,
+        pay_months:          owedYear.months,
         has_pin:             !!emp.portal_pin
       };
     }));
@@ -3738,13 +3750,10 @@ async function wmFetchSalaryOverview(year) {
     const { salaryTarget } = yearPayFigures({
       emp, year, history: salaryHistory, annualSal, startDateStr, terminationDateStr, isTerminated });
     const ukPay          = emp.employment_type === 'payroll' && annualSal > 0 ? calcUKNetPay(annualSal, parseFloat(emp.pension_rate) || 0) : null;
-    const netFactor      = ukPay ? ukPay.net_annual / annualSal : 1;
-    const netSalaryTarget = parseFloat((salaryTarget * netFactor).toFixed(2));
     const totalOffice    = sumForYear(officeRows, 'deduction_date', year);
-    const totalPaid      = payments.reduce((a, b) => a + parseFloat(b.amount), 0);
-    const effectiveTarget = parseFloat((netSalaryTarget - dayCalc.excess_deduction - totalOffice).toFixed(2));
-    const netRemaining   = parseFloat((effectiveTarget - totalPaid).toFixed(2));
-    const pctPaid        = effectiveTarget > 0 ? Math.min(100, Math.round((totalPaid / effectiveTarget) * 100)) : (totalPaid > 0 ? 100 : 0);
+    const owedYear = yearOwed({ emp, year, history: salaryHistory, annualSal, salaryTarget, startDateStr, terminationDateStr,
+      payments, deductions: dayCalc.excess_deduction + totalOffice });
+    const netSalaryTarget = owedYear.target, netRemaining = owedYear.remaining, pctPaid = owedYear.pct, totalPaid = owedYear.totalPaid;
     return {
       employee_id: emp.id, name: emp.name, job_title: emp.job_title || '', department: emp.department || '',
       employment_type: emp.employment_type, currency: emp.currency || 'GBP',

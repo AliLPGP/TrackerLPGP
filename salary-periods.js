@@ -98,4 +98,37 @@ function selfEmployedYearTarget({ history, year, startDate, endDate }) {
   return parseFloat(total.toFixed(2));
 }
 
-module.exports = { selfEmployedYearTarget, periodsFrom, workdaysBetween, salaryOnDate, payBands };
+// Payroll staff are paid a fixed amount every month, so their year is a list of months,
+// each owed in full at the salary in force that month (take-home, from netMonthly).
+// A month they only partly worked (they started or left in it, or their salary changed
+// in it) is split by working days. Returns [{ month, due }] for the months they were
+// employed in `year`.
+function payrollMonths({ history, year, startDate, endDate, annual, netMonthly }) {
+  const y = String(year), yStart = `${y}-01-01`, yEnd = `${y}-12-31`;
+  const start = iso(startDate), end = iso(endDate);
+  const from = start && start > yStart ? start : yStart;
+  const to = end && end < yEnd ? end : yEnd;
+  if (from > to) return [];
+  const periods = periodsFrom(history);
+  const salaryOn = day => (periods.length < 2 ? annual : salaryOnDate(history, day, annual));
+  const changes = periods.length < 2 ? [] : periods.map(p => p.from);
+  const out = [];
+  for (let m = 1; m <= 12; m++) {
+    const mm = String(m).padStart(2, '0');
+    const mStart = `${y}-${mm}-01`, mEnd = `${y}-${mm}-${String(new Date(Date.UTC(+y, m, 0)).getUTCDate()).padStart(2, '0')}`;
+    const s = from > mStart ? from : mStart, e = to < mEnd ? to : mEnd;
+    if (s > e) continue;
+    const full = workdaysBetween(mStart, mEnd) || 1;
+    // Split the employed days of the month wherever the salary changed
+    const cuts = [s, ...changes.filter(d => d > s && d <= e), addDay(e, 1)];
+    let due = 0;
+    for (let i = 0; i < cuts.length - 1; i++) {
+      const segEnd = addDay(cuts[i + 1], -1);
+      due += netMonthly(salaryOn(cuts[i])) * workdaysBetween(cuts[i], segEnd) / full;
+    }
+    out.push({ month: m, due: Math.round(due * 100) / 100 });
+  }
+  return out;
+}
+
+module.exports = { selfEmployedYearTarget, periodsFrom, workdaysBetween, salaryOnDate, payBands, payrollMonths };
