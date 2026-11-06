@@ -491,19 +491,27 @@ const withoutPay = row => Object.fromEntries(Object.entries(row).filter(([k]) =>
 const payFor = (req, row) => (req.admin && req.admin.role === 'admin' ? row : withoutPay(row));
 
 // What someone is owed for a year, and how much of it is left.
-// Payroll: a fixed take-home every month, so what is left is the months not paid yet
-// (each at the salary in force that month), less deductions. A month with any payment
-// recorded counts as paid, so an extra or larger payment never hides a month still to pay.
+// Payroll: a fixed take-home every month, so what is left is what each month is still
+// owed (each at the salary in force that month), less deductions. A month is paid once its
+// full take-home is logged; an extra or larger payment never hides a month still to pay.
 // Self-employed: the year's target (see yearPayFigures) less deductions, less what was paid.
 function yearOwed({ emp, year, history, annualSal, salaryTarget, startDateStr, terminationDateStr, payments, deductions }) {
   const totalPaid = payments.reduce((a, b) => a + (parseFloat(b.amount) || 0), 0);
   if (emp.employment_type === 'payroll' && annualSal > 0) {
     const pension = parseFloat(emp.pension_rate) || 0;
-    const paidMonths = new Set(payments.map(p => Number(p.payment_month)));
+    // What was logged for each month. A month is paid once its full take-home is logged
+    // (within 3%, as the take-home is an estimate of the payslip); less is part paid,
+    // and the rest of it is still to pay. Paying more in one month does not cover another.
+    const logged = {};
+    payments.forEach(p => { const m = Number(p.payment_month); logged[m] = (logged[m] || 0) + (parseFloat(p.amount) || 0); });
     const months = payrollMonths({ history, year, startDate: startDateStr, endDate: terminationDateStr, annual: annualSal,
-      netMonthly: a => calcUKNetPay(a, pension).net_monthly }).map(m => ({ ...m, paid: paidMonths.has(m.month) }));
+      netMonthly: a => calcUKNetPay(a, pension).net_monthly }).map(m => {
+        const got = round2(logged[m.month] || 0);
+        const paid = got >= m.due * 0.97;
+        return { ...m, logged: got, paid, status: paid ? 'paid' : got > 0 ? 'part' : 'due', left: paid ? 0 : round2(m.due - got) };
+      });
     const target = months.reduce((a, m) => a + m.due, 0);
-    const remaining = months.filter(m => !m.paid).reduce((a, m) => a + m.due, 0) - deductions;
+    const remaining = months.reduce((a, m) => a + m.left, 0) - deductions;
     const owed = Math.max(0, remaining);
     return { target: round2(target), remaining: round2(remaining), totalPaid: round2(totalPaid), months,
       pct: totalPaid + owed > 0 ? Math.min(100, Math.round(totalPaid / (totalPaid + owed) * 100)) : 100 };

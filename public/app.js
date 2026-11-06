@@ -3484,16 +3484,18 @@ async function loadSalaryPage() {
             const toPay = emp.pay_months.filter(m => !m.paid);
             return `<div class="sc-section">
             <button class="sc-sec-toggle" onclick="toggleSection(this)">
-              <span class="sc-sec-title">Month by month — ${emp.pay_months.length - toPay.length} paid, ${toPay.length} to pay</span>
+              <span class="sc-sec-title">Month by month — ${emp.pay_months.length - toPay.length} paid${toPay.some(m => m.status === 'part') ? `, ${toPay.filter(m => m.status === 'part').length} part paid` : ''}, ${toPay.filter(m => m.status !== 'part').length} to pay</span>
               <span class="sc-chevron">›</span>
             </button>
             <div class="sc-sec-body">
-              ${emp.pay_months.map(m => `<div class="sc-month${m.paid ? ' is-paid' : ''}">
-                <span>${MONTHS[m.month]} ${year}</span>
-                <span>${sym}${m.due.toLocaleString('en-GB', { minimumFractionDigits: 2 })}</span>
-                <span class="db-tag ${m.paid ? '' : 'is-warn'}">${m.paid ? 'Paid' : 'To pay'}</span>
-              </div>`).join('')}
-              <div class="sc-hist-hint">Take-home for each month at the salary in force that month. What is left is the months still to pay${(parseFloat(emp.excess_deduction) || 0) + (parseFloat(emp.total_office_deductions) || 0) > 0 ? ', less deductions' : ''}.</div>
+              ${emp.pay_months.map(m => {
+                const money = v => sym + v.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                return `<div class="sc-month${m.paid ? ' is-paid' : ''}">
+                <span>${MONTHS[m.month]} ${year}${m.status === 'part' ? `<small>${money(m.logged)} logged, ${money(m.left)} still to pay</small>` : ''}</span>
+                <span>${money(m.due)}</span>
+                <span class="db-tag ${m.paid ? '' : 'is-warn'}">${m.paid ? 'Paid' : m.status === 'part' ? 'Part paid' : 'To pay'}</span>
+              </div>`; }).join('')}
+              <div class="sc-hist-hint">Take-home for each month at the salary in force that month. A month is paid once its full take-home is logged (within 3%, as the take-home is an estimate). What is left is what each month is still owed${(parseFloat(emp.excess_deduction) || 0) + (parseFloat(emp.total_office_deductions) || 0) > 0 ? ', less deductions' : ''}.</div>
             </div>
           </div>`; })() : ''}
 
