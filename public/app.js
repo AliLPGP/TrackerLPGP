@@ -278,8 +278,8 @@ function navigate(page) {
 }
 
 // ─── SPENDING (admin) ────────────────────────────────────────────────────────
-// The year's costs in one place. Staff salaries (every active person's salary, in GBP)
-// and hotels (paid for that year's events) come from the tracker; everything else is
+// The year's costs in one place. Staff salaries (every active person's salary, in GBP),
+// hotels (paid for that year's events) and active subscriptions come from the tracker; everything else is
 // typed in here (rent, cars, taxes, office, loans...).
 let _spendYear = new Date().getFullYear();
 let _spendEditId = null;
@@ -287,10 +287,11 @@ async function loadSpendingPage() {
   const box = document.getElementById('spendingBody');
   if (!box) return;
   if (!box.innerHTML) box.innerHTML = '<div class="skeleton" style="height:320px;border-radius:16px"></div>';
-  const [itemsRes, empRes, hotelRes] = await Promise.all([fetch('/api/spending-items'), fetch('/api/employees/all'), fetch('/api/hotel-expenses')].map(p => p.catch(() => null)));
+  const [itemsRes, empRes, hotelRes, subRes] = await Promise.all([fetch('/api/spending-items'), fetch('/api/employees/all'), fetch('/api/hotel-expenses'), fetch('/api/subscriptions')].map(p => p.catch(() => null)));
   const items = itemsRes && itemsRes.ok ? await itemsRes.json() : [];
   const emps = empRes && empRes.ok ? await empRes.json() : [];
   const hotels = hotelRes && hotelRes.ok ? await hotelRes.json() : [];
+  const subs = (subRes && subRes.ok ? await subRes.json() : []).filter(x => x.active);
   const active = emps.filter(e => e.active);
   const salaries = active.reduce((a, e) => a + gbpSalary(e), 0);
   const years = [...new Set([new Date().getFullYear(), ...hotels.map(h => parseInt(h.event_year)).filter(Boolean)])].sort((a, b) => b - a);
@@ -300,6 +301,7 @@ async function loadSpendingPage() {
   const rows = [
     { auto: true, name: 'Staff salaries', amount: salaries, note: `${active.length} active staff, all salaries added together (in GBP)`, page: 'salary' },
     { auto: true, name: 'Hotels', amount: hotelsPaid, note: `Paid for ${_spendYear} events so far`, page: 'hotels' },
+    { auto: true, name: 'Subscriptions', amount: subs.reduce((a, x) => a + subToGBPPerYear(x), 0), note: `${subs.length} active, a year's cost (in GBP)`, page: 'subscriptions' },
     ...items.map(i => ({ id: i.id, name: i.name, amount: i.annual_amount, note: i.notes })),
   ].sort((a, b) => b.amount - a.amount);
   const total = rows.reduce((a, r) => a + r.amount, 0);
@@ -343,7 +345,7 @@ async function loadSpendingPage() {
         <input class="form-control" id="spNewNotes" maxlength="300" placeholder="Note (optional)">
         <button class="btn btn-primary" onclick="spAdd()">Add cost</button>
       </div>
-      <p class="sp-foot">Salaries and hotels update by themselves. Everything else is what you enter here, as a yearly amount in pounds.</p>
+      <p class="sp-foot">Salaries, hotels and subscriptions update by themselves. Everything else is what you enter here, as a yearly amount in pounds.</p>
     </section>`;
 }
 async function spSend(method, url, body) {
@@ -5560,6 +5562,14 @@ function subToGBPPerMonth(s) {
   return (parseFloat(s.amount) * qty * rate) / months;
 }
 
+// A subscription's cost for a year in GBP (a one-off counts once), as Subscriptions totals it
+function subToGBPPerYear(s) {
+  const months = CYCLE_MONTHS[s.billing_cycle];
+  const qty = Math.max(1, parseInt(s.quantity) || 1);
+  const once = (parseFloat(s.amount) || 0) * qty * (SUB_FX[s.currency] || 1);
+  return months ? once * (12 / months) : once;
+}
+
 async function loadSubscriptions() {
   try {
     const res = await fetch('/api/subscriptions');
@@ -5575,12 +5585,7 @@ function renderSubTotals() {
   let filtered = _subCycleFilter === 'all' ? subsData : subsData.filter(s => s.billing_cycle === _subCycleFilter);
   const active = activeOnly ? filtered.filter(s => s.active) : filtered;
   const perMonth = active.reduce((a, s) => a + subToGBPPerMonth(s), 0);
-  const perYear = active.reduce((a, s) => {
-    const rate = SUB_FX[s.currency] || 1;
-    const months = CYCLE_MONTHS[s.billing_cycle];
-    const qty = Math.max(1, parseInt(s.quantity) || 1);
-    return a + (months ? parseFloat(s.amount) * qty * rate * (12 / months) : parseFloat(s.amount) * qty * rate);
-  }, 0);
+  const perYear = active.reduce((a, s) => a + subToGBPPerYear(s), 0);
   document.getElementById('subTotals').innerHTML = `
     <div style="display:flex;gap:14px;flex-wrap:wrap">
       <div class="dash-mini-card dash-mini--indigo" style="flex:1;min-width:160px">
