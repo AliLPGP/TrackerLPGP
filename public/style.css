@@ -8211,3 +8211,20 @@ body[data-role="accounts"] #page-portfolio .pf-row-actions { display: none !impo
 .sc-month small { display: block; margin-top: 2px; font: 400 11.5px/1.3 var(--font-sans); color: var(--warning, #d97706); }
 .sc-month { grid-template-columns: 1fr auto 78px; }
 .sc-month .db-tag { white-space: nowrap; }
+
+/* Revenue by series: progress to target */
+.pf-tg { flex-direction: column; align-items: stretch !important; gap: 5px !important; }
+.pf-tg-top { display: flex; align-items: baseline; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
+.pf-tg-top b { min-width: 0 !important; font: 700 13px/1 var(--font-sans) !important; color: var(--text); }
+.pf-tg-top small { font: 400 11.5px/1.2 var(--font-sans); color: var(--muted); }
+.pf-tg.is-hit .pf-tg-top b { color: var(--positive); }
+.pf-tg-bar > span { background: var(--accent); }
+.pf-tg.is-hit .pf-tg-bar > span { background: var(--positive); }
+.pf-tg-note { text-align: right; font: 400 11px/1.2 var(--font-sans); color: var(--dim); }
+.pf-tg-set { font-size: 12px; cursor: pointer; }
+.pf-tg > .pf-tg-set { align-self: flex-end; }
+.pf-st-status { justify-content: flex-end; }
+:root .db-tag.is-ok { background: var(--positive-soft); color: var(--positive); }
+.pf-tg .pf-tg-bar { flex: none; width: 100%; height: 8px; }
+.pf-tg { text-align: right; }
+.pf-tg > small { align-self: flex-end; }

@@ -333,7 +333,7 @@ async function loadSpendingPage() {
           <div class="sp-total">${poundsWhole(total)}</div>
           <div class="sp-sub">About ${poundsWhole(total / 12)} a month</div>
         </div>
-        <label class="sp-year">Hotels for
+        <label class="sp-year" title="Only the hotels figure changes with the year; the rest are yearly amounts">Year
           <select onchange="_spendYear = parseInt(this.value, 10); loadSpendingPage()">${years.map(y => `<option${y === _spendYear ? ' selected' : ''}>${y}</option>`).join('')}</select>
         </label>
       </header>
@@ -6023,8 +6023,10 @@ function renderPortfolioGrid() {
   const bySeries = new Map();
   filtered.forEach(e => {
     const id = portSeriesFor(e) || 'unassigned';
-    if (!bySeries.has(id)) bySeries.set(id, { id, allocated: 0, paid: 0, events: 0, deals: 0, list: [] });
+    if (!bySeries.has(id)) bySeries.set(id, { id, allocated: 0, paid: 0, events: 0, deals: 0, list: [], target: 0, withTarget: 0, wonTargeted: 0 });
     const b = bySeries.get(id);
+    // The series is measured against its events' targets, counting deals for those events only
+    if (num(e.revenue_target) > 0) { b.target += num(e.revenue_target); b.withTarget += 1; b.wonTargeted += num(e.total_pipeline); }
     b.allocated += num(e.total_pipeline); b.paid += num(e.total_won); b.events += 1; b.deals += parseInt(e.deal_count) || 0;
     b.list.push(e);
   });
@@ -6042,7 +6044,7 @@ function renderPortfolioGrid() {
         <p class="pf-panel-aside">Amounts in GBP</p>
       </div>
       ${seriesRows.length ? `<div class="pf-st">
-        <div class="pf-st-row pf-st-head"><span>Series</span><span>Events</span><span>Deals won</span><span>Paid</span><span>Owed</span><span>Collected</span></div>
+        <div class="pf-st-row pf-st-head"><span>Series</span><span>Events</span><span>Deals won</span><span>Paid</span><span>Owed</span><span>Target</span></div>
         ${seriesRows.map(r => {
           // Its events, biggest first, each with the same figures; the row opens to show them
           const evs = [...r.list].sort((a, b) => num(b.total_pipeline) - num(a.total_pipeline) || String(a.name).localeCompare(String(b.name)));
@@ -6052,12 +6054,14 @@ function renderPortfolioGrid() {
               <span class="pf-st-name"><span class="pf-st-chev">${PF_ICON_CHEV}</span><span class="pf-chip" style="background:${r.color}"></span><span><b>${esc(r.short)}</b>${r.name && r.name !== r.short ? `<small>${esc(r.name)}</small>` : ''}</span></span>
               <span class="pf-st-num" data-l="Events">${r.events}<small>${r.deals} deal${r.deals === 1 ? '' : 's'}</small></span>
               ${pfMoneyCells(r.allocated, r.paid, true)}
+              ${pfTargetCell(r.wonTargeted, r.target, { note: r.withTarget && r.withTarget < r.events ? `${r.withTarget} of ${r.events} events have a target` : '' })}
             </button>
             <div class="pf-st-sub">${evs.map(e => {
               const n = parseInt(e.deal_count) || 0;
               const cells = `<span class="pf-st-name">${n ? `<span class="pf-st-chev">${PF_ICON_CHEV}</span>` : '<span class="pf-st-chev-gap"></span>'}<span><b>${esc(e.name)}</b><small>${esc([fmtEventDate(e, { long: true }), e.location].filter(Boolean).join(' · '))}</small></span></span>
                 <span class="pf-st-num" data-l="Deals">${n}<small>deal${n === 1 ? '' : 's'}</small></span>
-                ${pfMoneyCells(num(e.total_pipeline), num(e.total_won), false)}`;
+                ${pfMoneyCells(num(e.total_pipeline), num(e.total_won), false)}
+                ${pfTargetCell(num(e.total_pipeline), num(e.revenue_target), { eventId: e.id, name: e.name })}`;
               return n
                 ? `<div class="pf-st-evgroup" data-event="${e.id}"><button type="button" class="pf-st-row pf-st-ev pf-st-toggle" onclick="pfToggleEventDeals(this, ${e.id})" aria-expanded="false">${cells}</button><div class="pf-st-deals"></div></div>`
                 : `<div class="pf-st-row pf-st-ev">${cells}</div>`;
@@ -6556,15 +6560,14 @@ async function pfToggleEventDeals(btn, eventId) {
       const paid = Math.min(amt, parseFloat(d.paid_inc_vat) || 0);
       const split = (parseInt(d.event_count) || 1) > 1;
       const owed = Math.max(0, amt - paid);
-      const pct = amt > 0 ? Math.round(paid / amt * 100) : 0;
       const money = v => sym + Math.round(v).toLocaleString('en-GB');
       return `<div class="pf-st-row pf-st-deal">
         <span class="pf-st-name"><span><b>${esc(d.company || 'Untitled deal')}</b>${d.package_label || split ? `<small>${esc([d.package_label, split ? `this event's share of a ${money(parseFloat(d.deal_amount) || 0)} deal over ${d.event_count} events` : ''].filter(Boolean).join(' · '))}</small>` : ''}</span></span>
-        <span class="pf-st-num" data-l="Status"><small>${paid >= amt && amt > 0 ? 'Paid' : paid > 0 ? 'Part paid' : 'Awaiting payment'}</small></span>
+        <span class="pf-st-num"></span>
         <span class="pf-st-num" data-l="Deal">${money(amt)}</span>
         <span class="pf-st-num ${paid > 0 ? 'pf-st-paid' : 'pf-st-zero'}" data-l="Paid">${money(paid)}</span>
         <span class="pf-st-num${owed > 0 ? ' pf-st-owed' : ''}" data-l="Owed">${owed > 0 ? money(owed) : '—'}</span>
-        <span class="pf-st-prog" data-l="Collected"><span class="pf-paidbar"><span style="width:${pct}%"></span></span><b>${pct}%</b></span>
+        <span class="pf-st-prog pf-st-status" data-l="Status"><span class="db-tag ${paid >= amt && amt > 0 ? 'is-ok' : paid > 0 ? 'is-warn' : ''}">${paid >= amt && amt > 0 ? 'Paid' : paid > 0 ? 'Part paid' : 'Awaiting payment'}</span></span>
       </div>`;
     }).join('') : '<div class="pf-st-dmsg">No deals on this event yet.</div>') +
       `<div class="pf-st-dmsg"><button type="button" class="pf-st-link" onclick="viewEventDeals(${eventId}, ${esc(JSON.stringify(ev.name || ''))})">Open in Deal Tracker →</button></div>`;
@@ -6574,11 +6577,36 @@ async function pfToggleEventDeals(btn, eventId) {
 // Deals won, Paid, Owed and Collected cells for a row of the Revenue by series table
 function pfMoneyCells(won, paid, big) {
   const owed = Math.max(0, won - paid);
-  const pct = won > 0 ? Math.min(100, Math.round(paid / won * 100)) : 0;
   return `<span class="pf-st-num${big ? ' pf-st-big' : ''}${won > 0 ? '' : ' pf-st-zero'}" data-l="Deals won">${fmtGBP(won)}</span>
     <span class="pf-st-num ${paid > 0 ? 'pf-st-paid' : 'pf-st-zero'}" data-l="Paid">${fmtGBP(paid)}</span>
-    <span class="pf-st-num${owed > 0 ? ' pf-st-owed' : ''}" data-l="Owed">${owed > 0 ? fmtGBP(owed) : '—'}</span>
-    <span class="pf-st-prog" data-l="Collected">${won > 0 ? `<span class="pf-paidbar"><span class="pf-anim" data-pct="${pct}"></span></span><b>${pct}%</b>` : '<small>no deals won</small>'}</span>`;
+    <span class="pf-st-num${owed > 0 ? ' pf-st-owed' : ''}" data-l="Owed">${owed > 0 ? fmtGBP(owed) : '—'}</span>`;
+}
+
+// How close deals won are to the target. Events get a "Set target" link (admins and
+// managers); a series' target is the total of its events' targets.
+function pfTargetCell(won, target, { eventId, name, note } = {}) {
+  const canSet = eventId && currentUser && ['admin', 'manager'].includes(currentUser.role);
+  const setLink = label => canSet ? `<span role="button" tabindex="0" class="pf-st-link pf-tg-set" onclick="event.stopPropagation(); pfSetTarget(${eventId}, ${esc(JSON.stringify(name || ''))}, ${target || 0})" onkeydown="if (event.key === 'Enter') { event.stopPropagation(); this.click(); }">${label}</span>` : '';
+  if (!(target > 0)) return `<span class="pf-st-prog pf-tg" data-l="Target">${canSet ? setLink('Set target') : '<small>no target set</small>'}</span>`;
+  const pct = Math.round(won / target * 100);
+  const hit = won >= target;
+  return `<span class="pf-st-prog pf-tg${hit ? ' is-hit' : ''}" data-l="Target">
+    <span class="pf-tg-top"><b>${hit ? 'Target hit' : pct + '%'}</b><small>of ${fmtGBP(target)}${hit && won > target ? ` · ${fmtGBP(won - target)} over` : !hit ? ` · ${fmtGBP(target - won)} to go` : ''}</small>${setLink('Edit')}</span>
+    <span class="pf-paidbar pf-tg-bar"><span class="pf-anim" data-pct="${Math.min(100, pct)}"></span></span>
+    ${note ? `<small class="pf-tg-note">${esc(note)}</small>` : ''}
+  </span>`;
+}
+
+async function pfSetTarget(eventId, name, current) {
+  const val = await showPrompt(`Target for ${name} in £ (0 removes it)`, current ? String(current) : 'e.g. 60000');
+  if (val === null) return;
+  const res = await fetch(`/api/portfolio-events/${eventId}/target`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: val }) }).catch(() => null);
+  const data = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { showToast(data.error || 'Could not save the target', 'error'); return; }
+  const ev = portfolioData.find(x => x.id === eventId);
+  if (ev) ev.revenue_target = data.target;
+  showToast(data.target ? `Target for ${name} set to £${Math.round(data.target).toLocaleString('en-GB')}` : `Target for ${name} removed`, 'success');
+  renderPortfolioGrid();
 }
 
 function renderPortfolioEventCard(ev) {
