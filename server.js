@@ -60,6 +60,8 @@ async function runLateMigrations() {
     `CREATE TABLE IF NOT EXISTS employee_portfolio_events (id SERIAL PRIMARY KEY, employee_id INTEGER NOT NULL, event_name TEXT NOT NULL, event_date DATE, notes TEXT NOT NULL DEFAULT '', added_by TEXT NOT NULL DEFAULT 'employee', allocated_by INT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     `CREATE TABLE IF NOT EXISTS employee_reminders (id SERIAL PRIMARY KEY, employee_id INTEGER NOT NULL, title TEXT NOT NULL, reminder_date DATE, is_done BOOLEAN DEFAULT FALSE, created_at TIMESTAMPTZ DEFAULT NOW())`,
     `ALTER TABLE day_off_requests ADD COLUMN IF NOT EXISTS reason TEXT`,
+    // Sponsorship target for each event, for the Portfolio's progress bars
+    `ALTER TABLE portfolio_events ADD COLUMN IF NOT EXISTS revenue_target NUMERIC(14,2)`,
     // Yearly costs the admin enters for the spending summary (rent, cars, taxes...)
     `CREATE TABLE IF NOT EXISTS spending_items (id SERIAL PRIMARY KEY, name TEXT NOT NULL, annual_amount NUMERIC(14,2) NOT NULL DEFAULT 0, notes TEXT NOT NULL DEFAULT '', sort_order INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     // Failed sign-ins, so repeated guessing of a password or PIN is locked out for a while
@@ -2405,6 +2407,17 @@ app.put('/api/portfolio-events/:id', requireAuth, requireAdminOrManager, async (
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 // Move an event to a producer team (or take it out of one). Only the team changes.
+// An event's sponsorship target in GBP (empty clears it)
+app.patch('/api/portfolio-events/:id/target', requireAuth, requireAdminOrManager, async (req, res) => {
+  const raw = String(req.body.target ?? '').replace(/[£,\s]/g, '');
+  const parsed = Math.round(parseFloat(raw) * 100) / 100;
+  const target = raw === '' || parsed === 0 ? null : parsed; // 0 or empty removes it
+  if (target !== null && !(target >= 0)) return res.status(400).json({ error: 'Enter the target as an amount in pounds' });
+  const { rows } = await q('UPDATE portfolio_events SET revenue_target = ? WHERE id = ? RETURNING id', [target, req.params.id]);
+  if (!rows.length) return res.status(404).json({ error: 'Event not found' });
+  res.json({ ok: true, target });
+});
+
 app.patch('/api/portfolio-events/:id/producer', requireAuth, requireAdminOrManager, async (req, res) => {
   try {
     const producer = String(req.body.producer || '').trim().replace(/\s+/g, ' ').slice(0, 60);
