@@ -1,6 +1,10 @@
-// ── Wasteman — general-purpose AI assistant for LPGP Tracker ─────────────────
-// Full capabilities: company DB (read-only SQL), web search, URL fetching,
-// long-term memory, and general assistant for anything else.
+// ── Wasteman — the assistant built into LPGP Tracker ─────────────────────────
+// With no AI key it answers from the tracker's own data (wasteman-local.js): no
+// service, no cost, nothing to set up. With ANTHROPIC_API_KEY set it becomes a
+// general AI assistant: company DB (read-only SQL), web search, URL fetching and
+// long-term memory. If the AI cannot be reached, the built-in answers take over.
+
+const { createLocalWasteman } = require('./wasteman-local');
 
 let Anthropic = null;
 try { Anthropic = require('@anthropic-ai/sdk'); } catch { /* dep not installed */ }
@@ -198,14 +202,20 @@ GBP = £, AED = "AED ", PHP = ₱. Always display in the employee's own currency
 - Confident and helpful — you can do a lot, so be generous with what you offer.`;
 }
 
+// The salary overview without its bulky breakdowns, so the whole team fits in one tool result
+const OVERVIEW_FIELDS = ['employee_id', 'name', 'job_title', 'department', 'employment_type', 'currency', 'annual_salary', 'net_monthly',
+  'salary_target', 'total_paid', 'net_remaining', 'pct_paid', 'active', 'is_terminated', 'start_date', 'termination_date',
+  'total_days_off', 'allowance_days', 'excess_days', 'excess_deduction', 'total_office_deductions', 'total_bonuses', 'pay_months'];
+const compactOverview = rows => rows.map(r => ({
+  ...Object.fromEntries(OVERVIEW_FIELDS.map(k => [k, r[k]])),
+  payments: (r.payments || []).map(p => ({ month: p.payment_month, amount: p.amount })),
+}));
+
 // ── Route registration ────────────────────────────────────────────────────────
 function registerWasteman(app, { requireAuth, requireAdmin, db }) {
-  app.post('/api/wasteman', requireAuth, requireAdmin, async (req, res) => {
-    if (!Anthropic)
-      return res.status(503).json({ error: 'Run "npm install" to add the @anthropic-ai/sdk package.' });
-    if (!process.env.ANTHROPIC_API_KEY)
-      return res.status(503).json({ error: 'Set the ANTHROPIC_API_KEY environment variable on the server.' });
+  const localAnswer = createLocalWasteman(db);
 
+  app.post('/api/wasteman', requireAuth, requireAdmin, async (req, res) => {
     const history  = Array.isArray(req.body?.messages) ? req.body.messages : null;
     const question = (req.body?.question || '').toString();
     if (!history && !question.trim())
@@ -216,6 +226,15 @@ function registerWasteman(app, { requireAuth, requireAdmin, db }) {
           .filter(m => m && (m.role === 'user' || m.role === 'assistant') && m.content)
           .map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) }))
       : [{ role: 'user', content: question }];
+
+    // The built-in answers: used when no AI key is set, and when the AI cannot be reached.
+    // They read the chat as it arrived (the AI loop below adds its own tool messages to `messages`).
+    const chat = messages.map(m => ({ ...m }));
+    const answerLocally = async () => {
+      try { res.json({ reply: await localAnswer(chat), mode: 'built-in' }); }
+      catch (e) { console.error('Wasteman (built-in) error:', e); res.status(500).json({ error: 'Wasteman hit a problem reading the data. Try again in a moment.' }); }
+    };
+    if (!Anthropic || !process.env.ANTHROPIC_API_KEY) return answerLocally();
 
     // Load memories into system prompt context
     let memories = [];
@@ -270,7 +289,7 @@ function registerWasteman(app, { requireAuth, requireAdmin, db }) {
               }
 
               case 'get_salary_overview':
-                result = await db.getSalaryOverview(inp.year || new Date().getFullYear());
+                result = compactOverview(await db.getSalaryOverview(inp.year || new Date().getFullYear()));
                 break;
 
               case 'remember_fact':
@@ -301,13 +320,11 @@ function registerWasteman(app, { requireAuth, requireAdmin, db }) {
       }
 
       if (!reply) reply = "I couldn't come up with an answer — try rephrasing the question.";
-      res.json({ reply });
+      res.json({ reply, mode: 'ai' });
     } catch (e) {
-      console.error('Wasteman error:', e.message);
-      const msg = /api key|authentication/i.test(e.message)
-        ? 'Wasteman could not authenticate with the AI service — check the ANTHROPIC_API_KEY.'
-        : `Wasteman error: ${e.message}`;
-      res.status(500).json({ error: msg });
+      // The AI service is down, timed out or rejected the key: answer from the data instead
+      console.error('Wasteman AI error, using the built-in answers:', e.message);
+      await answerLocally();
     }
   });
 }

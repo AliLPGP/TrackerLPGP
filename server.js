@@ -1458,101 +1458,103 @@ app.delete('/api/payments/:id', requireAuth, requireAdmin, async (req, res) => {
 
 // ─── SALARY OVERVIEW ─────────────────────────────────────────────────────────
 
+// Everyone's pay for a year: target, what is left, payments, deductions, days off.
+// The Salary page and Wasteman both read this, so they always agree.
+async function salaryOverview(year) {
+  // Include terminated employees so their final summary still shows
+  const { rows: employees } = await q('SELECT * FROM employees ORDER BY active DESC, name');
+  return Promise.all(employees.map(async emp => {
+    const { rows: payments } = await q(
+      'SELECT * FROM monthly_payments WHERE employee_id = ? AND payment_year = ? ORDER BY payment_month',
+      [emp.id, year]
+    );
+
+    const allowance  = allowanceFor(emp, year);
+    const annualSal  = parseFloat(emp.annual_salary) || 0;
+    const dayCalc    = await calcExcessDeductions(emp.id, year, annualSal, allowance);
+
+    const { rows: officeRows } = await q(
+      'SELECT *, deduction_date::TEXT AS deduction_date FROM office_deductions WHERE employee_id = ? ORDER BY office_deductions.deduction_date DESC',
+      [emp.id]
+    );
+    const { rows: bonusRows } = await q(
+      'SELECT *, bonus_date::TEXT AS bonus_date FROM bonuses WHERE employee_id = ? ORDER BY bonuses.bonus_date DESC',
+      [emp.id]
+    );
+    const { rows: salaryHistory } = await q(
+      'SELECT *, effective_from::TEXT AS effective_from FROM salary_history WHERE employee_id = ? ORDER BY salary_history.effective_from DESC, created_at DESC',
+      [emp.id]
+    );
+
+    const startDateStr       = emp.start_date        ? emp.start_date.toISOString().slice(0,10)        : null;
+    const terminationDateStr = emp.termination_date  ? emp.termination_date.toISOString().slice(0,10)  : null;
+    const isTerminated       = !emp.active && !!terminationDateStr;
+
+    // Pro-rating, first-month payment and the year's target (see yearPayFigures)
+    const { earnedPay, firstMonthFull, salaryTarget, payBands: bands } = yearPayFigures({
+      emp, year, history: salaryHistory, annualSal, startDateStr, terminationDateStr, isTerminated });
+
+    // Auto-calculate UK PAYE + NI + pension for payroll employees
+    const ukPay = emp.employment_type === 'payroll' && annualSal > 0
+      ? calcUKNetPay(annualSal, parseFloat(emp.pension_rate) || 0)
+      : null;
+    const netMonthly      = ukPay ? ukPay.net_monthly : null;
+
+    const totalOffice   = sumForYear(officeRows, 'deduction_date', year);
+    const owedYear = yearOwed({ emp, year, history: salaryHistory, annualSal, salaryTarget, startDateStr, terminationDateStr,
+      payments, deductions: dayCalc.excess_deduction + totalOffice });
+    const netSalaryTarget = owedYear.target, netRemaining = owedYear.remaining, pctPaid = owedYear.pct, totalPaid = owedYear.totalPaid;
+
+    return {
+      employee_id:         emp.id,
+      name:                emp.name,
+      job_title:           emp.job_title || '',
+      department:          emp.department || '',
+      phone:               emp.phone || '',
+      email:               emp.email || '',
+      contract_end_date:   emp.contract_end_date ? emp.contract_end_date.toISOString().slice(0,10) : null,
+      employment_type:     emp.employment_type,
+      currency:            emp.currency || 'GBP',
+      annual_salary:       annualSal,
+      pension_rate:        parseFloat(emp.pension_rate) || 0,
+      paye_breakdown:      ukPay,
+      net_monthly:         netMonthly,
+      salary_target:       netSalaryTarget,
+      active:              emp.active ? 1 : 0,
+      start_date:          startDateStr,
+      termination_date:    terminationDateStr,
+      termination_reason:  emp.termination_reason || '',
+      is_terminated:       isTerminated,
+      earned_to_date:      isTerminated ? earnedPay?.total_expected ?? annualSal : null,
+      pro_rated:           !isTerminated ? earnedPay : null,
+      first_month_full:    firstMonthFull,
+      pay_bands:           bands,
+      earned_breakdown:    isTerminated ? earnedPay : null,
+      salary_history:      salaryHistory,
+      payments,
+      bonuses:             bonusRows,
+      total_bonuses:       sumForYear(bonusRows, 'bonus_date', year),
+      office_deductions:   officeRows,
+      total_office_deductions: parseFloat(totalOffice.toFixed(2)),
+      total_paid:          parseFloat(totalPaid.toFixed(2)),
+      total_days_off:      dayCalc.total_days_off,
+      allowance_days:      allowance,
+      excess_days:         dayCalc.excess_days,
+      exempt_days:         dayCalc.exempt_days,
+      excess_deduction:    dayCalc.excess_deduction,
+      waived_deduction:    dayCalc.waived_deduction,
+      breakdown:           dayCalc.breakdown,
+      net_remaining:       netRemaining,
+      pct_paid:            pctPaid,
+      pay_months:          owedYear.months,
+      has_pin:             !!emp.portal_pin
+    };
+  }));
+}
+
 app.get('/api/salary-overview', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const year = parseInt(req.query.year) || new Date().getFullYear();
-    // Include terminated employees so their final summary still shows
-    const { rows: employees } = await q('SELECT * FROM employees ORDER BY active DESC, name');
-
-    const overview = await Promise.all(employees.map(async emp => {
-      const { rows: payments } = await q(
-        'SELECT * FROM monthly_payments WHERE employee_id = ? AND payment_year = ? ORDER BY payment_month',
-        [emp.id, year]
-      );
-
-      const allowance  = allowanceFor(emp, year);
-      const annualSal  = parseFloat(emp.annual_salary) || 0;
-      const dayCalc    = await calcExcessDeductions(emp.id, year, annualSal, allowance);
-
-      const { rows: officeRows } = await q(
-        'SELECT *, deduction_date::TEXT AS deduction_date FROM office_deductions WHERE employee_id = ? ORDER BY office_deductions.deduction_date DESC',
-        [emp.id]
-      );
-      const { rows: bonusRows } = await q(
-        'SELECT *, bonus_date::TEXT AS bonus_date FROM bonuses WHERE employee_id = ? ORDER BY bonuses.bonus_date DESC',
-        [emp.id]
-      );
-      const { rows: salaryHistory } = await q(
-        'SELECT *, effective_from::TEXT AS effective_from FROM salary_history WHERE employee_id = ? ORDER BY salary_history.effective_from DESC, created_at DESC',
-        [emp.id]
-      );
-
-      const startDateStr       = emp.start_date        ? emp.start_date.toISOString().slice(0,10)        : null;
-      const terminationDateStr = emp.termination_date  ? emp.termination_date.toISOString().slice(0,10)  : null;
-      const isTerminated       = !emp.active && !!terminationDateStr;
-
-      // Pro-rating, first-month payment and the year's target (see yearPayFigures)
-      const { earnedPay, firstMonthFull, salaryTarget, payBands: bands } = yearPayFigures({
-        emp, year, history: salaryHistory, annualSal, startDateStr, terminationDateStr, isTerminated });
-
-      // Auto-calculate UK PAYE + NI + pension for payroll employees
-      const ukPay = emp.employment_type === 'payroll' && annualSal > 0
-        ? calcUKNetPay(annualSal, parseFloat(emp.pension_rate) || 0)
-        : null;
-      const netMonthly      = ukPay ? ukPay.net_monthly : null;
-
-      const totalOffice   = sumForYear(officeRows, 'deduction_date', year);
-      const owedYear = yearOwed({ emp, year, history: salaryHistory, annualSal, salaryTarget, startDateStr, terminationDateStr,
-        payments, deductions: dayCalc.excess_deduction + totalOffice });
-      const netSalaryTarget = owedYear.target, netRemaining = owedYear.remaining, pctPaid = owedYear.pct, totalPaid = owedYear.totalPaid;
-
-      return {
-        employee_id:         emp.id,
-        name:                emp.name,
-        job_title:           emp.job_title || '',
-        department:          emp.department || '',
-        phone:               emp.phone || '',
-        email:               emp.email || '',
-        contract_end_date:   emp.contract_end_date ? emp.contract_end_date.toISOString().slice(0,10) : null,
-        employment_type:     emp.employment_type,
-        currency:            emp.currency || 'GBP',
-        annual_salary:       annualSal,
-        pension_rate:        parseFloat(emp.pension_rate) || 0,
-        paye_breakdown:      ukPay,
-        net_monthly:         netMonthly,
-        salary_target:       netSalaryTarget,
-        active:              emp.active ? 1 : 0,
-        start_date:          startDateStr,
-        termination_date:    terminationDateStr,
-        termination_reason:  emp.termination_reason || '',
-        is_terminated:       isTerminated,
-        earned_to_date:      isTerminated ? earnedPay?.total_expected ?? annualSal : null,
-        pro_rated:           !isTerminated ? earnedPay : null,
-        first_month_full:    firstMonthFull,
-        pay_bands:           bands,
-        earned_breakdown:    isTerminated ? earnedPay : null,
-        salary_history:      salaryHistory,
-        payments,
-        bonuses:             bonusRows,
-        total_bonuses:       sumForYear(bonusRows, 'bonus_date', year),
-        office_deductions:   officeRows,
-        total_office_deductions: parseFloat(totalOffice.toFixed(2)),
-        total_paid:          parseFloat(totalPaid.toFixed(2)),
-        total_days_off:      dayCalc.total_days_off,
-        allowance_days:      allowance,
-        excess_days:         dayCalc.excess_days,
-        exempt_days:         dayCalc.exempt_days,
-        excess_deduction:    dayCalc.excess_deduction,
-        waived_deduction:    dayCalc.waived_deduction,
-        breakdown:           dayCalc.breakdown,
-        net_remaining:       netRemaining,
-        pct_paid:            pctPaid,
-        pay_months:          owedYear.months,
-        has_pin:             !!emp.portal_pin
-      };
-    }));
-
-    res.json(overview);
+    res.json(await salaryOverview(parseInt(req.query.year) || new Date().getFullYear()));
   } catch (e) {
     console.error('/api/salary-overview error:', e);
     res.status(500).json({ error: e.message });
@@ -2328,21 +2330,24 @@ app.delete('/api/subscriptions/:id', requireAuth, requireFinance, async (req, re
 // over all the deal's allocations, or an equal part when no amounts were set.
 const DEAL_SHARE = `COALESCE(de.allocated_amount / NULLIF((SELECT SUM(x.allocated_amount) FROM deal_events x WHERE x.deal_id = de.deal_id), 0),
   1.0 / NULLIF((SELECT COUNT(*) FROM deal_events x WHERE x.deal_id = de.deal_id), 0), 1)`;
+// Every event with its deals added up (deals won, paid, how many, which companies)
+async function portfolioEventsWithTotals() {
+  const { rows } = await q(`
+    SELECT pe.*,
+      -- A deal split over several events counts towards each in proportion to its share
+      COALESCE(SUM(COALESCE(d.paid_inc_vat, 0) * ${DEAL_SHARE}),0) AS total_won,
+      COALESCE(SUM(de.allocated_amount),0) AS total_pipeline,
+      COUNT(DISTINCT de.deal_id) AS deal_count,
+      string_agg(DISTINCT NULLIF(COALESCE(NULLIF(d.company,''), d.title),''), ', ') AS companies
+    FROM portfolio_events pe
+    LEFT JOIN deal_events de ON de.event_id=pe.id
+    LEFT JOIN deals d ON d.id=de.deal_id
+    GROUP BY pe.id ORDER BY pe.event_date DESC NULLS LAST, pe.created_at DESC`);
+  return rows;
+}
 app.get('/api/portfolio-events', requireAuth, async (req, res) => {
-  try {
-    const { rows } = await q(`
-      SELECT pe.*,
-        -- A deal split over several events counts towards each in proportion to its share
-        COALESCE(SUM(COALESCE(d.paid_inc_vat, 0) * ${DEAL_SHARE}),0) AS total_won,
-        COALESCE(SUM(de.allocated_amount),0) AS total_pipeline,
-        COUNT(DISTINCT de.deal_id) AS deal_count,
-        string_agg(DISTINCT NULLIF(COALESCE(NULLIF(d.company,''), d.title),''), ', ') AS companies
-      FROM portfolio_events pe
-      LEFT JOIN deal_events de ON de.event_id=pe.id
-      LEFT JOIN deals d ON d.id=de.deal_id
-      GROUP BY pe.id ORDER BY pe.event_date DESC NULLS LAST, pe.created_at DESC`);
-    res.json(rows);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  try { res.json(await portfolioEventsWithTotals()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 // GET /api/portfolio-events/:id/deals — deals linked to an event with paid status
 app.get('/api/portfolio-events/:id/deals', requireAuth, requireFinance, async (req, res) => {
@@ -3774,105 +3779,11 @@ async function wmSaveMemory(key, value) {
   );
 }
 
-// ── Shared data access functions — used by Wasteman directly (no HTTP round-trip) ──
-async function wmFetchSalaryOverview(year) {
-  const { rows: employees } = await q('SELECT * FROM employees ORDER BY active DESC, name');
-  return Promise.all(employees.map(async emp => {
-    const { rows: payments } = await q(
-      'SELECT * FROM monthly_payments WHERE employee_id = ? AND payment_year = ? ORDER BY payment_month',
-      [emp.id, year]
-    );
-    const allowance  = allowanceFor(emp, year);
-    const annualSal  = parseFloat(emp.annual_salary) || 0;
-    const dayCalc    = await calcExcessDeductions(emp.id, year, annualSal, allowance);
-    const { rows: officeRows } = await q(
-      'SELECT *, deduction_date::TEXT AS deduction_date FROM office_deductions WHERE employee_id = ? ORDER BY office_deductions.deduction_date DESC',
-      [emp.id]
-    );
-    const { rows: bonusRows } = await q(
-      'SELECT *, bonus_date::TEXT AS bonus_date FROM bonuses WHERE employee_id = ? ORDER BY bonuses.bonus_date DESC',
-      [emp.id]
-    );
-    const { rows: salaryHistory } = await q(
-      'SELECT *, effective_from::TEXT AS effective_from FROM salary_history WHERE employee_id = ? ORDER BY salary_history.effective_from DESC, created_at DESC',
-      [emp.id]
-    );
-    const startDateStr       = emp.start_date       ? emp.start_date.toISOString().slice(0,10)       : null;
-    const terminationDateStr = emp.termination_date ? emp.termination_date.toISOString().slice(0,10) : null;
-    const isTerminated       = !emp.active && !!terminationDateStr;
-    const { salaryTarget } = yearPayFigures({
-      emp, year, history: salaryHistory, annualSal, startDateStr, terminationDateStr, isTerminated });
-    const ukPay          = emp.employment_type === 'payroll' && annualSal > 0 ? calcUKNetPay(annualSal, parseFloat(emp.pension_rate) || 0) : null;
-    const totalOffice    = sumForYear(officeRows, 'deduction_date', year);
-    const owedYear = yearOwed({ emp, year, history: salaryHistory, annualSal, salaryTarget, startDateStr, terminationDateStr,
-      payments, deductions: dayCalc.excess_deduction + totalOffice });
-    const netSalaryTarget = owedYear.target, netRemaining = owedYear.remaining, pctPaid = owedYear.pct, totalPaid = owedYear.totalPaid;
-    return {
-      employee_id: emp.id, name: emp.name, job_title: emp.job_title || '', department: emp.department || '',
-      employment_type: emp.employment_type, currency: emp.currency || 'GBP',
-      annual_salary: annualSal, net_monthly: ukPay?.net_monthly ?? null,
-      salary_target: netSalaryTarget, active: emp.active ? 1 : 0,
-      start_date: startDateStr, termination_date: terminationDateStr, is_terminated: isTerminated,
-      payments, salary_history: salaryHistory, bonuses: bonusRows,
-      total_bonuses: sumForYear(bonusRows, 'bonus_date', year),
-      office_deductions: officeRows, total_office_deductions: parseFloat(totalOffice.toFixed(2)),
-      total_paid: parseFloat(totalPaid.toFixed(2)), total_days_off: dayCalc.total_days_off,
-      allowance_days: allowance, excess_days: dayCalc.excess_days, exempt_days: dayCalc.exempt_days,
-      excess_deduction: dayCalc.excess_deduction, waived_deduction: dayCalc.waived_deduction,
-      net_remaining: netRemaining, pct_paid: pctPaid
-    };
-  }));
-}
-
-async function wmFetchEmployees() {
-  const { rows } = await q('SELECT id, name, job_title, department, employment_type, currency, start_date, active, annual_salary, allowance_days FROM employees ORDER BY name');
-  return rows;
-}
-
-async function wmFetchHotelExpenses() {
-  const { rows } = await q('SELECT * FROM hotel_expenses ORDER BY sort_order, id');
-  return rows;
-}
-
-async function wmFetchDeals() {
-  const { rows } = await q(`
-    SELECT d.*, COALESCE(json_agg(json_build_object('event_id',de.event_id,'event_name',pe.name,'allocated_amount',de.allocated_amount))
-      FILTER (WHERE de.event_id IS NOT NULL), '[]') AS events
-    FROM deals d
-    LEFT JOIN deal_events de ON de.deal_id = d.id
-    LEFT JOIN portfolio_events pe ON pe.id = de.event_id
-    GROUP BY d.id ORDER BY d.created_at DESC`);
-  return rows;
-}
-
-async function wmFetchAttendanceSummary(from, to) {
-  const year = from ? from.slice(0, 4) : new Date().getFullYear();
-  const { rows: employees } = await q('SELECT * FROM employees WHERE active = 1 ORDER BY name');
-  return Promise.all(employees.map(async emp => {
-    let sql = `SELECT r.*, r.record_date::TEXT AS record_date FROM daily_records r WHERE r.employee_id = ?`;
-    const params = [emp.id];
-    if (from) { sql += ' AND r.record_date >= ?'; params.push(from); }
-    if (to)   { sql += ' AND r.record_date <= ?'; params.push(to); }
-    const { rows: records } = await q(sql, params);
-    const allowance  = allowanceFor(emp, year);
-    const annualSal  = parseFloat(emp.annual_salary) || 0;
-    const dayCalc    = await calcExcessDeductions(emp.id, year, annualSal, allowance);
-    let periodDaysOff = 0;
-    records.forEach(r => { if (parseFloat(r.is_day_off) > 0) periodDaysOff += parseFloat(r.is_day_off); });
-    return {
-      employee_id: emp.id, name: emp.name, employment_type: emp.employment_type,
-      record_count: records.length, period_days_off: periodDaysOff,
-      year_days_off: dayCalc.total_days_off, allowance_days: allowance,
-      excess_days: dayCalc.excess_days, exempt_days: dayCalc.exempt_days,
-      excess_day_deduction: dayCalc.excess_deduction, waived_deduction: dayCalc.waived_deduction
-    };
-  }));
-}
-
 // ── Wasteman AI assistant (admin-only) ────────────────────────────────────
 registerWasteman(app, { requireAuth, requireAdmin, db: {
   q,
-  getSalaryOverview:    wmFetchSalaryOverview,
+  getSalaryOverview:    salaryOverview,
+  getPortfolioEvents:   portfolioEventsWithTotals,
   getMemories:          wmGetMemories,
   saveMemory:           wmSaveMemory,
 }});
