@@ -12848,6 +12848,7 @@ let _wmListening = false;
 let _wmVoiceChat = false;     // the hands-free conversation is running
 let _wmSilences = 0;          // times in a row it heard nothing
 let _wmSpeakRun = 0;          // identifies the answer being spoken, so a cancelled one stays quiet
+let _wmSpeaking = false;      // an answer is being read out (true through the pauses between sentences too)
 
 function wmToggle() {
   const panel = document.getElementById('wmPanel');
@@ -12962,8 +12963,10 @@ async function wmSend() {
 }
 
 // ── Wasteman's voice ──
-// English voices on this device, best first: the neural ones (Edge's "Natural", Apple's
-// premium and enhanced voices, Google's) sound human; the rest are the old robotic kind.
+// How human a voice sounds: 2 = neural (Edge's "Natural", Apple's premium and enhanced
+// voices), 1 = decent (Google's), 0 = the old robotic kind.
+function wmVoiceGrade(v) { return /natural|neural|premium|enhanced|siri/i.test(v.name) ? 2 : /google/i.test(v.name) ? 1 : 0; }
+// English voices on this device, most human first
 function wmVoices() {
   if (!window.speechSynthesis) return [];
   const score = v => (/natural|neural/i.test(v.name) ? 60 : 0) + (/premium|enhanced|siri/i.test(v.name) ? 50 : 0)
@@ -12978,40 +12981,76 @@ function wmVoice() {
   return voices.find(v => v.name === saved) || voices[0] || null;
 }
 
-// What is said is not always what is shown: currencies read as words, list rows as
-// phrases, and a long list is cut short (the full list is on screen).
+// People do not talk the way they write. Said aloud, "has not" is "hasn't", "it is" is
+// "it's" and "12 Nov 2026" is "the 12th of November 2026".
+const WM_SAID = [
+  [/\bcan ?not\b/gi, "can't"], [/\bwill not\b/gi, "won't"],
+  [/\b(is|are|was|were|has|have|had|do|does|did|would|could|should) not\b/gi, "$1n't"],
+  [/\bI am\b/g, "I'm"], [/\blet us\b/gi, "let's"],
+  [/\b(it|that|there|here|what|who|he|she) is\b(?= [a-z])/gi, "$1's"],
+  [/\b(you|we|they) are\b(?= [a-z])/gi, "$1're"],
+  [/\b(I|you|we|they|he|she|it|that) will\b(?= [a-z])/gi, "$1'll"],
+  [/\b(I|you|we|they|he|she) would\b(?= [a-z])/gi, "$1'd"],
+  [/\b(I|you|we|they) have\b(?= (?:been|got|only|just|never|no|taken|found|cut|put|left)\b)/gi, "$1've"],
+];
+const WM_MONTH = '(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)';
+const WM_MONTH_NAME = { Jan: 'January', Feb: 'February', Mar: 'March', Apr: 'April', May: 'May', Jun: 'June', Jul: 'July', Aug: 'August', Sep: 'September', Oct: 'October', Nov: 'November', Dec: 'December' };
+const wmNth = n => n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th');
+
+// What is said is not always what is shown: currencies and dates read as words, list rows
+// as phrases, and a long list is cut short (the full list is on screen).
 function wmSpeakable(text) {
   let lines = String(text || '').split('\n').map(l => l.trim()).filter(Boolean);
   if (lines.length > 7) lines = [...lines.slice(0, 6), `and ${lines.length - 6} more, which are on your screen`];
-  return lines.map(l => l
+  return lines.map(l => WM_SAID.reduce((said, [written, spoken]) => said.replace(written, spoken), l)
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2190}-\u{27BF}\u{FE0F}]/gu, '')
     .replace(/AED\s?([\d,]+(?:\.\d+)?)/g, '$1 dirhams').replace(/₱\s?([\d,]+(?:\.\d+)?)/g, '$1 pesos')
-    .replace(/^(\d+)\.\s/, '$1, ').replace(/["“”]/g, '').replace(/\+\s/g, '')
+    .replace(/£(\d+(?:\.\d+)?)k\b/gi, '$1 thousand pounds').replace(/\s&\s/g, ' and ')
+    .replace(new RegExp(`\\b(\\d{1,2}) ${WM_MONTH}\\b`, 'g'), (m, day, month) => `the ${wmNth(Number(day))} of ${WM_MONTH_NAME[month.slice(0, 3)]}`)
+    .replace(new RegExp(`\\b${WM_MONTH} (\\d{4})\\b`, 'g'), (m, month, year) => `${WM_MONTH_NAME[month.slice(0, 3)]} ${year}`)
+    .replace(/^(\d+)\.\s/, '$1, ').replace(/^[•*-]\s+/, '').replace(/["“”]/g, '').replace(/\+\s/g, '')
     .replace(/:\s*$/, '.').replace(/:\s/g, ', ').replace(/\s\(([^)]*)\)/g, ', $1,').replace(/,\s*([.!?])/g, '$1')
-    .replace(/([^.!?])$/, '$1.')).join(' ');
+    .replace(/\s+([.,!?])/g, '$1').trim().replace(/([^.!?])$/, '$1.')).join(' ');
 }
 
 function wmStopSpeaking() {
-  _wmSpeakRun++;
+  _wmSpeakRun++; _wmSpeaking = false;
   if (window.speechSynthesis) window.speechSynthesis.cancel();
 }
 
-// Reads an answer one sentence at a time (smoother, and long answers are not cut off);
+// Reads an answer the way a person would: one sentence at a time with a breath between
+// them, and a longer beat before a short last line (where the joke usually is).
 // `done` runs when it has finished or cannot speak.
 function wmSpeak(text, done) {
-  const synth = window.speechSynthesis, finish = () => { wmVoiceState(_wmVoiceChat ? 'listening' : ''); if (done) done(); };
+  const synth = window.speechSynthesis;
+  const finish = () => { _wmSpeaking = false; wmVoiceState(_wmVoiceChat ? 'listening' : ''); if (done) done(); };
   if (!synth || !text) { finish(); return; }
   synth.cancel();
   const run = ++_wmSpeakRun, voice = wmVoice(), rate = parseFloat(wmStore.get('wmRate', '1')) || 1;
   const sentences = wmSpeakable(text).replace(/([.!?])\s+/g, '$1\u0001').split('\u0001').filter(s => s.trim());
   if (!sentences.length) { finish(); return; }
+  _wmSpeaking = true;
   wmVoiceState('speaking');
-  sentences.forEach((sentence, i) => {
-    const u = new SpeechSynthesisUtterance(sentence);
+  const last = sentences.length - 1, punchline = last > 0 && sentences[last].length <= 110;
+  const sayFrom = i => {
+    if (run !== _wmSpeakRun) return;   // cut off, or another answer has started
+    if (i > last) { finish(); return; }
+    const u = new SpeechSynthesisUtterance(sentences[i]);
     if (voice) { u.voice = voice; u.lang = voice.lang; } else u.lang = 'en-GB';
     u.rate = rate; u.pitch = 1;
-    if (i === sentences.length - 1) u.onend = u.onerror = () => { if (run === _wmSpeakRun) finish(); };
+    let moved = false;
+    const next = () => {
+      if (moved) return;
+      moved = true; clearTimeout(stuck);
+      setTimeout(() => sayFrom(i + 1), i === last ? 0 : punchline && i === last - 1 ? 420 : 160);
+    };
+    // Some browsers never report that a sentence has ended: move on regardless once it must have
+    const stuck = setTimeout(next, 4000 + sentences[i].length * 110 / Math.min(rate, 1));
+    u.onend = u.onerror = next;
+    window._wmUtterance = u;   // kept alive: Chrome drops the "ended" event of an utterance nothing refers to
     synth.speak(u);
-  });
+  };
+  sayFrom(0);
 }
 
 // Voice menu: choose the voice and how fast it talks
@@ -13021,10 +13060,19 @@ function wmToggleVoiceMenu() {
   const show = menu.classList.toggle('hidden') === false;
   if (!show) return;
   const voices = wmVoices(), current = wmVoice(), sel = document.getElementById('wmVoiceSelect');
+  const option = v => `<option value="${esc(v.name)}"${current && v.name === current.name ? ' selected' : ''}>${esc(v.name.replace(/^(Microsoft|Google)\s+/, '').replace(/\s+Online \(Natural\)/, ' (natural)'))}</option>`;
+  const group = (label, list) => (list.length ? `<optgroup label="${label}">${list.map(option).join('')}</optgroup>` : '');
   sel.innerHTML = voices.length
-    ? voices.map(v => `<option value="${esc(v.name)}"${current && v.name === current.name ? ' selected' : ''}>${esc(v.name.replace(/^(Microsoft|Google)\s+/, '').replace(/\s+Online \(Natural\)/, ' (natural)'))}</option>`).join('')
+    ? group('Most human', voices.filter(v => wmVoiceGrade(v) === 2)) + group('Standard', voices.filter(v => wmVoiceGrade(v) < 2))
     : '<option value="">No voices on this device</option>';
   document.getElementById('wmRate').value = wmStore.get('wmRate', '1');
+  // The voices belong to the browser and the device, so say how to get a better one
+  const apple = /Mac|iPhone|iPad/.test(navigator.userAgent), phone = /iPhone|iPad|Android/.test(navigator.userAgent);
+  document.getElementById('wmVoiceHint').textContent = voices.some(v => wmVoiceGrade(v) === 2)
+    ? 'The voices under "Most human" are the natural ones on this device.'
+    : phone && !apple ? 'These voices come from your phone. On a computer, Microsoft Edge has free, properly human ones.'
+    : apple ? 'For a properly human voice, add an Enhanced or Premium English voice in Settings, Accessibility, Spoken Content' + (phone ? '.' : ', or open the tracker in Microsoft Edge.')
+    : 'This browser only has basic voices. For a properly human one, open the tracker in Microsoft Edge: its natural voices are free and Wasteman picks one by itself.';
 }
 function wmPickVoice(name) {
   wmStore.set('wmVoice', name);
@@ -13058,7 +13106,7 @@ function wmStopVoiceChat() {
 async function wmToggleMic() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (_wmVoiceChat) {
-    if (window.speechSynthesis?.speaking && !_wmListening) { wmStopSpeaking(); wmListen(); }
+    if (_wmSpeaking && !_wmListening) { wmStopSpeaking(); wmListen(); }
     else wmStopVoiceChat();
     return;
   }

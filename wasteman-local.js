@@ -39,8 +39,9 @@ const listOf = items => (items.length <= 1 ? items.join('') : items.slice(0, -1)
 const firstName = name => String(name || '').trim().split(/\s+/)[0];
 
 // ── Personality ───────────────────────────────────────────────────────────────
-// A light touch: now and then an opener, and a dry line about the situation (never about
-// a person). Nothing is added to answers about warnings, leavers or someone's details.
+// A light touch: now and then an opener, and a dry line about the situation. Warnings always
+// get a joke (only the admin can talk to Wasteman), and it is about the tally, never about
+// the reason behind a warning, which can be personal. Leavers and someone's details stay plain.
 const OPENERS = ['Right.', 'Okay.', 'Got it.', 'Here you go.', 'Let me see.', 'Easy one.', 'On it.'];
 const QUIPS = {
   allPaid: ['Everyone is paid up. The group chat stays quiet tonight.', 'All paid. Employer of the month stuff.', 'Nobody is waiting. Suspiciously organised of you.'],
@@ -58,6 +59,19 @@ const QUIPS = {
   targetFar: ['Plenty of runway left, to put it kindly.', 'Early days. Very early days.'],
   topEarner: ['No pressure on whoever is at the top.'],
   unknown: ['That one is above my pay grade, and I do not even get paid.', 'I would love to bluff it, but I only deal in real numbers.', 'You have found the edge of my world.'],
+};
+// Warnings: `clean` for none, then by how many; `final` once a final written warning is on file
+const WARNING_NAME = { verbal: 'verbal warning', written: 'written warning', final: 'final written warning' };
+const WARNING_JOKES = {
+  clean: ['Not a mark on them. Yet.', 'Spotless. Suspiciously spotless.', 'A clean record. Either a model employee or very good at not getting caught.'],
+  one: ['One on the board. Call it a warm-up.', 'A solo effort so far. Let us hope it stays a one-hit wonder.', 'Just the one. Everyone gets a practice lap.'],
+  two: ['A matching pair. Starting a collection, apparently.', 'Two now. One more and it is a hat-trick.', 'Once is a blip. Twice is a hobby.'],
+  many: ['Somebody is going for the high score.', 'If warnings were loyalty points, that would be a free coffee by now.', 'That is not a record, that is a box set.',
+    'At this rate they will need their own filing cabinet.'],
+  final: ['Best behaviour from here, you would hope.', 'Skating on ice thin enough to read through.', 'One of them says final. The clue is in the name.'],
+  nobody: ['A clean sheet all round. Enjoy it while it lasts.', 'Angels, the lot of them. Allegedly.', 'Either everyone is behaving or nobody is writing it down.'],
+  list: ['Nobody is winning employee of the month off that list.', 'That is the naughty list. Santa keeps a shorter one.'],
+  leader: ['{name} leads the table. Not a table anyone wants to lead.', '{name} is out in front, not that it is a competition.'],
 };
 const QUIP_MARK = '\u0001'; // where a quip joins the answer: same line after a sentence, a new line after a list
 const JOKES = [
@@ -438,16 +452,24 @@ const ANSWER = {
     return ending.length ? `Contracts ending within three months:\n` + ending.map(e => `${e.name}: ${niceDate(e.contract_end_date)}${e.contract_end_date < d.today ? ' (already passed)' : ''}`).join('\n') : 'No contracts end in the next three months.';
   },
 
-  async warnings(q, d) {
+  async warnings(q, d, say) {
     const { rows } = await d.q(`SELECT w.employee_id, e.name, w.issued_on::TEXT AS day, w.level, w.reason FROM employee_warnings w JOIN employees e ON e.id = w.employee_id ORDER BY w.issued_on DESC`);
+    const joke = kind => say.pick(WARNING_JOKES[kind]);
     if (q.people.length) return q.people.map(p => {
       const mine = rows.filter(w => w.employee_id === p.id);
-      return mine.length ? `${p.name} has ${plural(mine.length, 'warning')}:\n` + mine.map(w => `${niceDate(w.day)}, ${w.level}: ${w.reason}`).join('\n') : `${p.name} has no warnings.`;
+      if (!mine.length) return `${p.name} has no warnings. ${joke('clean')}`;
+      const kind = mine.some(w => w.level === 'final') ? 'final' : mine.length === 1 ? 'one' : mine.length === 2 ? 'two' : 'many';
+      return `${p.name} has ${plural(mine.length, 'warning')}:\n` + mine.map(w => `${niceDate(w.day)}, ${WARNING_NAME[w.level] || 'warning'}: ${w.reason}`).join('\n') + `\n${joke(kind)}`;
     }).join('\n');
-    if (!rows.length) return 'Nobody has a warning on file.';
+    if (!rows.length) return `Nobody has a warning on file. ${joke('nobody')}`;
     const by = new Map();
     rows.forEach(w => by.set(w.name, (by.get(w.name) || 0) + 1));
-    return `${plural(rows.length, 'warning')} on file: ${listOf([...by].map(([name, n]) => `${name} (${n})`))}.`;
+    // Whoever has the most gets singled out, when one person clearly does
+    const tally = [...by].sort((a, b) => b[1] - a[1]), [top, second] = tally;
+    const leads = top[1] >= 2 && (!second || top[1] > second[1]);
+    const shared = tally.filter(([name]) => firstName(name) === firstName(top[0])).length > 1;
+    return `${plural(rows.length, 'warning')} on file: ${listOf(tally.map(([name, n]) => `${name} (${n})`))}. `
+      + (leads ? joke('leader').replace('{name}', shared ? top[0] : firstName(top[0])) : joke('list'));
   },
 
   async deals(q, d, say) {
@@ -687,7 +709,7 @@ function createLocalWasteman(db, { rng = Math.random, now = () => new Date() } =
     let text = handler ? await handler(q, d, say) : null;
     if (!text) return finish(`I could not work out what you are asking.${say.quip('unknown', 0.7)}`) + `\n\n${HELP}`;
     if (q.guessed) text = `I took that as ${q.guessed.name}. ${text}`;
-    // Personal answers (warnings, leavers, details) stay plain; others sometimes get an opener
+    // Personal answers (leavers, details) stay plain and warnings bring their own joke; others sometimes get an opener
     const plain = ['warnings', 'leavers', 'profile', 'probation', 'contracts'].includes(q.topic);
     return finish(!plain && !q.guessed && rng() < 0.3 && !text.includes('\n') ? `${pick(OPENERS)} ${text}` : text);
   };
