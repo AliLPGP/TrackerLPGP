@@ -12832,13 +12832,22 @@ async function generateInvoice() {
 }
 
 // ══════════════════════════════════════════
-//  WASTEMAN — AI assistant (admin only)
+//  WASTEMAN — the tracker's assistant (admin only)
 // ══════════════════════════════════════════
+// Type a question or talk to it. Voice chat is hands-free: it listens, answers out loud in
+// the most natural voice the device has, then listens again until you tap the mic to stop.
 window._wmHistory = window._wmHistory || [];   // [{role, content}]
-window._wmSpeak = false;                        // read answers aloud
 window._wmBusy = false;
+const wmStore = {
+  get: (k, fallback) => { try { const v = localStorage.getItem(k); return v === null ? fallback : v; } catch { return fallback; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* private mode: not remembered */ } },
+};
+window._wmSpeak = wmStore.get('wmSpeak', '0') === '1';   // read typed answers aloud too
 let _wmRecognition = null;
 let _wmListening = false;
+let _wmVoiceChat = false;     // the hands-free conversation is running
+let _wmSilences = 0;          // times in a row it heard nothing
+let _wmSpeakRun = 0;          // identifies the answer being spoken, so a cancelled one stays quiet
 
 function wmToggle() {
   const panel = document.getElementById('wmPanel');
@@ -12846,7 +12855,8 @@ function wmToggle() {
   if (!panel) return;
   const open = panel.classList.toggle('wm-open');
   if (launcher) launcher.classList.toggle('wm-hidden', open);
-  if (open) setTimeout(() => document.getElementById('wmInput')?.focus(), 80);
+  if (open) { wmSyncSpeakButton(); setTimeout(() => document.getElementById('wmInput')?.focus(), 80); }
+  else { wmStopVoiceChat(); document.getElementById('wmVoiceMenu')?.classList.add('hidden'); }
 }
 
 function wmClear() {
@@ -12855,14 +12865,21 @@ function wmClear() {
   if (body) body.querySelectorAll('.wm-msg').forEach(m => m.remove());
   const empty = document.getElementById('wmEmpty');
   if (empty) empty.style.display = '';
-  if (window.speechSynthesis) window.speechSynthesis.cancel();
+  wmStopVoiceChat();
 }
 
+function wmSyncSpeakButton() {
+  const btn = document.getElementById('wmSpeakToggle');
+  if (!btn) return;
+  btn.textContent = window._wmSpeak ? '🔊' : '🔇';
+  btn.classList.toggle('wm-on', window._wmSpeak);
+  btn.title = window._wmSpeak ? 'Answers are read aloud. Click to mute.' : 'Read answers aloud';
+}
 function wmToggleSpeak() {
   window._wmSpeak = !window._wmSpeak;
-  const btn = document.getElementById('wmSpeakToggle');
-  if (btn) { btn.textContent = window._wmSpeak ? '🔊' : '🔇'; btn.classList.toggle('wm-on', window._wmSpeak); }
-  if (!window._wmSpeak && window.speechSynthesis) window.speechSynthesis.cancel();
+  wmStore.set('wmSpeak', window._wmSpeak ? '1' : '0');
+  wmSyncSpeakButton();
+  if (!window._wmSpeak) wmStopSpeaking();
 }
 
 function wmAppend(role, text) {
@@ -12889,6 +12906,7 @@ async function wmSend() {
   const q = input.value.trim();
   if (!q) return;
   input.value = '';
+  wmStopSpeaking();
   wmAppend('user', q);
 
   window._wmBusy = true;
@@ -12896,6 +12914,7 @@ async function wmSend() {
   if (sendBtn) sendBtn.disabled = true;
   const thinking = wmAppend('bot', '…');
   thinking.classList.add('wm-thinking');
+  wmVoiceState('thinking');
 
   // Abort if the server doesn't respond within 90 seconds
   const ctrl = new AbortController();
@@ -12904,6 +12923,7 @@ async function wmSend() {
   // Only add to history now — after we know we're actually sending
   window._wmHistory.push({ role: 'user', content: q });
 
+  let spoken = '';
   try {
     const res = await fetch('/api/wasteman', {
       method: 'POST',
@@ -12917,10 +12937,11 @@ async function wmSend() {
     if (!res.ok) {
       window._wmHistory.pop(); // remove the failed user message so history stays clean
       wmAppend('bot', data.error || 'Something went wrong.');
+      spoken = 'Sorry, something went wrong there.';
     } else {
       wmAppend('bot', data.reply);
       window._wmHistory.push({ role: 'assistant', content: data.reply });
-      if (window._wmSpeak) wmSpeak(data.reply);
+      spoken = data.reply;
     }
   } catch (e) {
     clearTimeout(tmOut);
@@ -12929,30 +12950,123 @@ async function wmSend() {
     wmAppend('bot', e.name === 'AbortError'
       ? 'Wasteman took too long to respond — try again or ask a simpler question.'
       : 'Could not reach Wasteman. Check your connection.');
+    spoken = 'Sorry, I could not get an answer just then.';
   } finally {
     window._wmBusy = false;
     if (sendBtn) sendBtn.disabled = false;
-    document.getElementById('wmInput')?.focus();
+    if (!_wmVoiceChat) document.getElementById('wmInput')?.focus();
   }
+  // In voice chat every answer is spoken, then it listens again; typed answers follow the speaker button
+  if (_wmVoiceChat) wmSpeak(spoken, () => { if (_wmVoiceChat) wmListen(); });
+  else { wmVoiceState(''); if (window._wmSpeak) wmSpeak(spoken); }
 }
 
-function wmSpeak(text) {
-  if (!window.speechSynthesis) return;
-  window.speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.rate = 1.05; u.pitch = 1;
-  window.speechSynthesis.speak(u);
+// ── Wasteman's voice ──
+// English voices on this device, best first: the neural ones (Edge's "Natural", Apple's
+// premium and enhanced voices, Google's) sound human; the rest are the old robotic kind.
+function wmVoices() {
+  if (!window.speechSynthesis) return [];
+  const score = v => (/natural|neural/i.test(v.name) ? 60 : 0) + (/premium|enhanced|siri/i.test(v.name) ? 50 : 0)
+    + (/google/i.test(v.name) ? 40 : 0) + (/online/i.test(v.name) ? 10 : 0)
+    + (/^en[-_]GB/i.test(v.lang) ? 25 : /^en[-_](US|AU|IE)/i.test(v.lang) ? 8 : 0)
+    + (/\b(sonia|ryan|libby|thomas|maisie|oliver|daniel|kate|serena|arthur|stephanie|jamie)\b/i.test(v.name) ? 6 : 0)
+    - (/compact|eloquence|novelty|albert|bad news|bells|boing|bubbles|cellos|jester|organ|superstar|trinoids|whisper|wobble|zarvox|fred|ralph|junior|kathy/i.test(v.name) ? 80 : 0);
+  return window.speechSynthesis.getVoices().filter(v => /^en([-_]|$)/i.test(v.lang)).sort((a, b) => score(b) - score(a));
+}
+function wmVoice() {
+  const voices = wmVoices(), saved = wmStore.get('wmVoice', '');
+  return voices.find(v => v.name === saved) || voices[0] || null;
 }
 
+// What is said is not always what is shown: currencies read as words, list rows as
+// phrases, and a long list is cut short (the full list is on screen).
+function wmSpeakable(text) {
+  let lines = String(text || '').split('\n').map(l => l.trim()).filter(Boolean);
+  if (lines.length > 7) lines = [...lines.slice(0, 6), `and ${lines.length - 6} more, which are on your screen`];
+  return lines.map(l => l
+    .replace(/AED\s?([\d,]+(?:\.\d+)?)/g, '$1 dirhams').replace(/₱\s?([\d,]+(?:\.\d+)?)/g, '$1 pesos')
+    .replace(/^(\d+)\.\s/, '$1, ').replace(/["“”]/g, '').replace(/\+\s/g, '')
+    .replace(/:\s*$/, '.').replace(/:\s/g, ', ').replace(/\s\(([^)]*)\)/g, ', $1,').replace(/,\s*([.!?])/g, '$1')
+    .replace(/([^.!?])$/, '$1.')).join(' ');
+}
+
+function wmStopSpeaking() {
+  _wmSpeakRun++;
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+}
+
+// Reads an answer one sentence at a time (smoother, and long answers are not cut off);
+// `done` runs when it has finished or cannot speak.
+function wmSpeak(text, done) {
+  const synth = window.speechSynthesis, finish = () => { wmVoiceState(_wmVoiceChat ? 'listening' : ''); if (done) done(); };
+  if (!synth || !text) { finish(); return; }
+  synth.cancel();
+  const run = ++_wmSpeakRun, voice = wmVoice(), rate = parseFloat(wmStore.get('wmRate', '1')) || 1;
+  const sentences = wmSpeakable(text).replace(/([.!?])\s+/g, '$1\u0001').split('\u0001').filter(s => s.trim());
+  if (!sentences.length) { finish(); return; }
+  wmVoiceState('speaking');
+  sentences.forEach((sentence, i) => {
+    const u = new SpeechSynthesisUtterance(sentence);
+    if (voice) { u.voice = voice; u.lang = voice.lang; } else u.lang = 'en-GB';
+    u.rate = rate; u.pitch = 1;
+    if (i === sentences.length - 1) u.onend = u.onerror = () => { if (run === _wmSpeakRun) finish(); };
+    synth.speak(u);
+  });
+}
+
+// Voice menu: choose the voice and how fast it talks
+function wmToggleVoiceMenu() {
+  const menu = document.getElementById('wmVoiceMenu');
+  if (!menu) return;
+  const show = menu.classList.toggle('hidden') === false;
+  if (!show) return;
+  const voices = wmVoices(), current = wmVoice(), sel = document.getElementById('wmVoiceSelect');
+  sel.innerHTML = voices.length
+    ? voices.map(v => `<option value="${esc(v.name)}"${current && v.name === current.name ? ' selected' : ''}>${esc(v.name.replace(/^(Microsoft|Google)\s+/, '').replace(/\s+Online \(Natural\)/, ' (natural)'))}</option>`).join('')
+    : '<option value="">No voices on this device</option>';
+  document.getElementById('wmRate').value = wmStore.get('wmRate', '1');
+}
+function wmPickVoice(name) {
+  wmStore.set('wmVoice', name);
+  wmSpeak('This is how I sound. Not bad for someone who lives in a spreadsheet.');
+}
+function wmSetRate(v) { wmStore.set('wmRate', String(v)); }
+if (window.speechSynthesis && window.speechSynthesis.addEventListener) window.speechSynthesis.addEventListener('voiceschanged', () => {
+  if (!document.getElementById('wmVoiceMenu')?.classList.contains('hidden')) { document.getElementById('wmVoiceMenu').classList.add('hidden'); wmToggleVoiceMenu(); }
+});
+
+// The strip under the header: what the voice chat is doing right now
+function wmVoiceState(state) {
+  const bar = document.getElementById('wmVoiceBar'), mic = document.getElementById('wmMic');
+  mic?.classList.toggle('wm-mic--live', state === 'listening');
+  mic?.classList.toggle('wm-mic--on', _wmVoiceChat && state !== 'listening');
+  if (!bar) return;
+  bar.className = 'wm-voicebar' + (_wmVoiceChat && state ? ` is-${state}` : ' hidden');
+  const label = { listening: 'Listening… ask away', thinking: 'Thinking…', speaking: 'Speaking… tap the mic to cut in' }[state] || '';
+  bar.querySelector('.wm-voicebar-text').textContent = label;
+}
+
+function wmStopVoiceChat() {
+  _wmVoiceChat = false; _wmSilences = 0;
+  if (_wmRecognition) { try { _wmRecognition.abort(); } catch { /* not running */ } }
+  _wmListening = false;
+  wmStopSpeaking();
+  wmVoiceState('');
+}
+
+// The mic button: starts the voice chat; while Wasteman is talking it cuts in; otherwise it stops
 async function wmToggleMic() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const micBtn = document.getElementById('wmMic');
-  // Firefox and others simply don't implement the API
-  if (!SR) {
-    showToast('Voice input isn\'t supported in this browser. Use Chrome, Edge or Safari, or type your question.', 'error', 6000);
+  if (_wmVoiceChat) {
+    if (window.speechSynthesis?.speaking && !_wmListening) { wmStopSpeaking(); wmListen(); }
+    else wmStopVoiceChat();
     return;
   }
-
+  // Firefox and others simply don't implement the API
+  if (!SR) {
+    showToast('Voice chat isn\'t supported in this browser. Use Chrome, Edge or Safari, or type your question.', 'error', 6000);
+    return;
+  }
   // Brave exposes SpeechRecognition but disables Google's speech service for
   // privacy, so it never returns a transcript. Detect it and tell the user.
   try {
@@ -12961,69 +13075,68 @@ async function wmToggleMic() {
       return;
     }
   } catch { /* isBrave() unavailable — carry on */ }
+  _wmVoiceChat = true; _wmSilences = 0;
+  // Phones only let a page talk after a tap: say nothing, now, so later answers may be spoken
+  if (window.speechSynthesis) { const hush = new SpeechSynthesisUtterance(' '); hush.volume = 0; window.speechSynthesis.speak(hush); }
+  wmListen();
+}
 
-  if (_wmListening && _wmRecognition) { _wmRecognition.stop(); return; }
-
+// Listens for one question and sends it
+function wmListen() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR || !_wmVoiceChat || _wmListening || window._wmBusy) return;
   _wmRecognition = new SR();
   _wmRecognition.lang = 'en-GB';
   _wmRecognition.interimResults = true;
   _wmRecognition.continuous = false;
 
-  let _sentThisTurn = false;
-  let _lastTranscript = '';
-
-  function _doSend() {
-    if (_sentThisTurn) return;
-    _sentThisTurn = true;
+  let sent = false, transcript = '', failed = false;
+  const send = () => {
+    if (sent) return;
+    sent = true; _wmSilences = 0;
     const input = document.getElementById('wmInput');
-    if (input && _lastTranscript) input.value = _lastTranscript;
+    if (input && transcript) input.value = transcript;
     setTimeout(() => wmSend(), 80);
-  }
-
-  _wmRecognition.onstart = () => { _wmListening = true; _sentThisTurn = false; _lastTranscript = ''; micBtn?.classList.add('wm-mic--live'); };
-
-  _wmRecognition.onresult = (ev) => {
-    _lastTranscript = Array.from(ev.results).map(r => r[0].transcript).join('');
-    const input = document.getElementById('wmInput');
-    if (input) input.value = _lastTranscript;
-    // Send as soon as we get a final result; onend will catch it if isFinal never fires
-    if (ev.results[ev.results.length - 1].isFinal) _doSend();
   };
 
+  _wmRecognition.onstart = () => { _wmListening = true; wmVoiceState('listening'); };
+  _wmRecognition.onresult = (ev) => {
+    transcript = Array.from(ev.results).map(r => r[0].transcript).join('');
+    const input = document.getElementById('wmInput');
+    if (input) input.value = transcript;
+    // Send as soon as we get a final result; onend will catch it if isFinal never fires
+    if (ev.results[ev.results.length - 1].isFinal) send();
+  };
   _wmRecognition.onend = () => {
     _wmListening = false;
-    micBtn?.classList.remove('wm-mic--live');
     // Chrome desktop can fire onend before onresult delivers the final transcript.
-    // _lastTranscript holds whatever was captured regardless of ordering.
-    if (_lastTranscript.trim()) {
-      _doSend();
-    } else if (!_sentThisTurn) {
-      showToast('Didn\'t catch that — try speaking again', 'info');
-    }
+    if (transcript.trim()) { send(); return; }
+    if (sent || failed || !_wmVoiceChat) return;
+    // Heard nothing: listen once more, then pause so the mic is not left open
+    if (++_wmSilences < 2) { wmListen(); return; }
+    wmStopVoiceChat();
+    showToast('Voice chat paused. Tap the mic to carry on.', 'info');
   };
-
   _wmRecognition.onerror = (ev) => {
     _wmListening = false;
-    micBtn?.classList.remove('wm-mic--live');
+    if (ev?.error === 'no-speech' || ev?.error === 'aborted') return; // onend decides what happens next
+    failed = true;
     const reasons = {
       'not-allowed':         'Microphone blocked — click the padlock in the address bar and allow microphone access, then reload.',
       'service-not-allowed': 'Microphone blocked — allow mic access for this site in browser settings.',
       'audio-capture':       'No microphone found. Check your mic is connected and enabled.',
-      'no-speech':           'No speech detected — try again and speak clearly.',
       'network':             'This browser couldn\'t reach a speech service (Brave and some browsers block it). Type your question, or use Chrome/Edge/Safari for voice.',
-      'aborted':             null
     };
-    const msg = reasons[ev?.error] ?? `Voice input error: ${ev?.error || 'unknown'}`;
-    if (msg) showToast(msg, 'error');
+    wmStopVoiceChat();
+    showToast(reasons[ev?.error] ?? `Voice input error: ${ev?.error || 'unknown'}`, 'error');
   };
   try {
     _wmRecognition.start();
   } catch (e) {
     // start() throws if called while already running, or on insecure (non-HTTPS) origins
-    _wmListening = false;
-    micBtn?.classList.remove('wm-mic--live');
+    wmStopVoiceChat();
     showToast(location.protocol === 'https:' || location.hostname === 'localhost'
       ? 'Couldn\'t start the microphone — try again.'
-      : 'Voice input needs a secure (HTTPS) connection.', 'error');
+      : 'Voice chat needs a secure (HTTPS) connection.', 'error');
   }
 }
