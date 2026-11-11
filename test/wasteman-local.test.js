@@ -34,6 +34,11 @@ const events = [
   { id: 1, name: 'Ops Summit Miami', event_date: '2027-05-06', location: 'Miami', date_tbc: '', programme_year: 2027, revenue_target: 60000, total_pipeline: 52000, total_won: 14400, deal_count: 2 },
   { id: 2, name: 'Private Debt Forum Berlin', event_date: '2027-03-18', location: 'Berlin', date_tbc: '', programme_year: 2027, revenue_target: null, total_pipeline: 0, total_won: 0, deal_count: 0 },
 ];
+let warnings = [
+  { employee_id: 1, name: 'Ali Example', day: '2026-10-02', level: 'written', reason: 'Late three times in a week' },
+  { employee_id: 1, name: 'Ali Example', day: '2026-06-15', level: 'verbal', reason: 'Missed a client call' },
+  { employee_id: 4, name: 'Fidak Sample', day: '2026-03-09', level: 'verbal', reason: 'Left the office unlocked' },
+];
 const db = {
   getSalaryOverview: async () => overview,
   getPortfolioEvents: async () => events,
@@ -41,6 +46,7 @@ const db = {
     : /FROM deals d/.test(sql) ? deals
     : /FROM hotel_expenses/.test(sql) ? [{ event_name: 'Berlin', hotel: 'Grand', paid_amount: 1000, cur: 'USD', status: 'paid', event_year: 2026 }, { event_name: 'Miami', hotel: 'Sands', paid_amount: 0, cur: 'USD', status: 'pending', event_year: 2026 }]
     : /FROM daily_records/.test(sql) ? [{ name: 'Sara Sample', department: 'Sales', day: '2026-11-17', is_day_off: 1 }]
+    : /FROM employee_warnings/.test(sql) ? warnings
     : [] }),
 };
 // rng fixed high: no openers, no quips, so the wording is the same every run
@@ -93,6 +99,19 @@ const has = (text, ...bits) => bits.forEach(b => assert.ok(text.includes(b), `ex
   has((await chat('who is off next week'))[0], 'Off next week', '17 Nov 2026: Sara Sample');
   has((await chat("what's ali example's email"))[0], "Ali Example's email is ali@example.test");
   has((await chat("What's outstanding on hotel expenses?"))[0], 'Hotels for 2026: 2 events', '1 event is still to pay', 'Miami (Sands): not paid');
+
+  // Warnings: the facts, then a joke about how many (never about the reason); only the admin reaches Wasteman
+  a = (await chat('does ali example have any warnings'))[0];
+  has(a, 'Ali Example has 2 warnings:', '2 Oct 2026, written warning: Late three times in a week', '15 Jun 2026, verbal warning: Missed a client call');
+  assert.strictEqual(a.split('\n').pop(), 'Once is a blip. Twice is a hobby.');
+  has((await chat('any warnings for fidak'))[0], 'Fidak Sample has 1 warning:', 'Just the one. Everyone gets a practice lap.');
+  has((await chat('has sara had a warning'))[0], 'Sara Sample has no warnings. A clean record.');
+  has((await chat('who has warnings'))[0], '3 warnings on file: Ali Example (2) and Fidak Sample (1). Ali is out in front, not that it is a competition.');
+  warnings.push({ employee_id: 4, name: 'Fidak Sample', day: '2026-11-03', level: 'final', reason: 'Left the office unlocked again' });
+  has((await chat('any warnings for fidak'))[0], 'Fidak Sample has 2 warnings:', 'final written warning: Left the office unlocked again', 'One of them says final. The clue is in the name.');
+  has((await chat('who has warnings'))[0], '4 warnings on file', 'That is the naughty list.'); // level on two each: nobody is singled out
+  warnings = [];
+  has((await chat('who has warnings'))[0], 'Nobody has a warning on file. Either everyone is behaving or nobody is writing it down.');
 
   // Small talk, sums, how-tos and the honest "I don't know"
   has((await chat('what is 20% of 40500'))[0], '8,100');
