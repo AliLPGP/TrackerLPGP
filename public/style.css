@@ -8267,3 +8267,12 @@ body[data-role="accounts"] #page-portfolio .pf-row-actions { display: none !impo
 
 /* The Wasteman button steps aside while a popup is open: on a phone it sat over the popup's own buttons */
 body:has(.modal-overlay.open) .wm-launcher, body:has(.modal-overlay.active) .wm-launcher { opacity: 0; pointer-events: none; }
+
+/* Wasteman's voice menu: the built-in natural voice sits above the browser's own voices */
+.wm-natural { grid-column: 1 / -1; display: grid; gap: 8px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.wm-natural.hidden { display: none; }
+.wm-natural-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; font: 600 12.5px/1.2 var(--font-sans); color: var(--text); }
+.wm-natural-link { padding: 0; border: none; background: none; cursor: pointer; font: 500 12px/1.2 var(--font-sans); color: var(--accent); }
+.wm-natural-link:hover { text-decoration: underline; }
+.wm-natural-bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.wm-natural-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width .3s ease; }
