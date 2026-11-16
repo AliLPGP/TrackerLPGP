@@ -2248,7 +2248,7 @@ function updatePreview() {
     html = `<h3>Day Off Note</h3>
       <div class="deduction-row"><span>${label}${typeNote}</span></div>
       <div class="deduction-row" style="font-size:0.8rem;color:var(--muted)">Day-off deductions are calculated at year level based on your allowance.</div>
-      ${noDeduct ? `<div class="deduction-row" style="font-size:0.8rem;color:var(--positive);font-weight:600">✓ Marked "doesn't count" — this day is logged and counts in the days-used total, but will never be deducted from salary.</div>` : ''}`;
+      ${noDeduct ? `<div class="deduction-row" style="font-size:0.8rem;color:var(--positive);font-weight:600">✓ Not deducted: this day is logged and counts in the days-used total, but will never be deducted from salary.</div>` : ''}`;
   } else {
     const brk = parseInt(document.getElementById('recBreak').value) || 0;
     const phone = parseInt(document.getElementById('recPhone').value) || 0;
@@ -4234,6 +4234,7 @@ async function declineLeave(id) {
   else showToast('Failed to decline', 'error');
 }
 
+let _dayModalEntries = [];   // the days off listed in the open day popup, for editDayOffEntry
 function openDayModal(dateStr, entries, remindersToday = []) {
   document.getElementById('dayModalTitle').textContent = formatDate(dateStr);
   const CAT_ICONS = { rent:'🏠', subscription:'📦', deposit:'💳', utility:'⚡', other:'📌' };
@@ -4256,9 +4257,10 @@ function openDayModal(dateStr, entries, remindersToday = []) {
     </div>`;
   }
 
+  _dayModalEntries = entries;
   if (entries.length) {
     content += `<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);margin-bottom:8px">Days Off</div>`;
-    content += entries.map(r => {
+    content += entries.map((r, i) => {
       const label = parseFloat(r.is_day_off) === 1 ? 'Full Day' : 'Half Day';
       const cls   = parseFloat(r.is_day_off) === 1 ? 'chip-full' : 'chip-half';
       const typeLabel = r.employment_type === 'self_employed' ? 'Self-Emp' : 'Payroll';
@@ -4266,8 +4268,12 @@ function openDayModal(dateStr, entries, remindersToday = []) {
         <span class="cal-chip ${cls}">${label}</span>
         <strong>${esc(r.employee_name)}</strong>
         <span class="badge badge-grey" style="font-size:0.72rem">${typeLabel}</span>
+        ${r.no_deduction ? '<span class="badge badge-green" style="font-size:0.72rem" title="Logged as a day off, but never deducted from salary">Not deducted</span>' : ''}
         ${r.notes ? `<span style="color:var(--muted);font-size:0.8rem">${esc(r.notes)}</span>` : ''}
-        <button class="btn btn-danger btn-sm" style="margin-left:auto" onclick="deleteRecord(${r.record_id});closeModal('dayModal')">Remove</button>
+        <span class="day-off-actions">
+          <button class="btn btn-ghost btn-sm" onclick="editDayOffEntry(${i})">Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteRecord(${r.record_id});closeModal('dayModal')">Remove</button>
+        </span>
       </div>`;
     }).join('');
   }
@@ -4279,6 +4285,17 @@ function openDayModal(dateStr, entries, remindersToday = []) {
   document.getElementById('dayModalContent').innerHTML = content;
   document.getElementById('dayModalBookBtn').onclick = () => { closeModal('dayModal'); openRecordModalForDate(dateStr); };
   openModal('dayModal');
+}
+
+// Edit a day off from the calendar's day popup: full or half day, the note, and whether
+// it is deducted from salary. The record form does the saving, then the calendar reloads.
+function editDayOffEntry(i) {
+  const r = _dayModalEntries[i];
+  if (!r) return;
+  closeModal('dayModal');
+  openEditRecord(r.record_id, r.employee_id, r.record_date, r.break_minutes, r.phone_minutes, r.wasted_minutes, r.late_minutes,
+    parseFloat(r.is_day_off), r.notes || '', !!r.no_deduction);
+  document.getElementById('recordModalTitle').textContent = `Edit day off – ${r.employee_name}`;
 }
 
 function openRecordModalForDate(dateStr) {
@@ -5196,7 +5213,7 @@ async function loadNotifPanel() {
         ${r.note ? `<div class="notif-item-note">"${esc(r.note)}"</div>` : ''}
         <label style="display:flex;align-items:center;gap:5px;font:500 11px/1 var(--font-sans);color:var(--muted);cursor:pointer;margin-top:4px">
           <input type="checkbox" id="hr-nodeduct-${r.id}" style="width:13px;height:13px;cursor:pointer">
-          Doesn't count towards the deduction
+          Don't deduct this day from salary
         </label>
         <div class="notif-item-actions">
           <button class="notif-approve-btn" onclick="reviewHolidayRequest(${r.id},'approve')">✓ Approve</button>

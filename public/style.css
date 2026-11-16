@@ -8258,3 +8258,12 @@ body[data-role="accounts"] #page-portfolio .pf-row-actions { display: none !impo
 .sc-mo.is-due { border: 1px dashed var(--border-bright, var(--border)); color: var(--muted); }
 .sc-mo.is-late { border: 1px solid var(--warning); background: var(--warning-soft); color: var(--warning); }
 .sc-mo.is-off { background: var(--surface-2); color: var(--dim); opacity: 0.6; }
+
+/* Calendar day popup: a day off's Edit and Remove sit together on the right. The row wraps
+   instead of squeezing the name and labels when there is a note as well. */
+.day-off-entry { flex-wrap: wrap; row-gap: 8px; }
+.day-off-entry > .cal-chip, .day-off-entry > strong, .day-off-entry > .badge { flex-shrink: 0; white-space: nowrap; }
+.day-off-actions { display: flex; gap: 6px; margin-left: auto; }
+
+/* The Wasteman button steps aside while a popup is open: on a phone it sat over the popup's own buttons */
+body:has(.modal-overlay.open) .wm-launcher, body:has(.modal-overlay.active) .wm-launcher { opacity: 0; pointer-events: none; }

@@ -1569,7 +1569,8 @@ app.get('/api/calendar', requireAuth, async (req, res) => {
   const to    = `${year}-${String(month).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
 
   const { rows } = await q(`
-    SELECT r.record_date::TEXT AS record_date, r.is_day_off, r.notes, r.id AS record_id,
+    SELECT r.record_date::TEXT AS record_date, r.is_day_off, r.notes, r.id AS record_id, r.no_deduction,
+           r.break_minutes, r.phone_minutes, r.wasted_minutes, r.late_minutes,
            e.id AS employee_id, e.name AS employee_name, e.employment_type
     FROM daily_records r
     JOIN employees e ON e.id = r.employee_id
