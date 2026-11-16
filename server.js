@@ -1463,97 +1463,112 @@ app.delete('/api/payments/:id', requireAuth, requireAdmin, async (req, res) => {
 async function salaryOverview(year) {
   // Include terminated employees so their final summary still shows
   const { rows: employees } = await q('SELECT * FROM employees ORDER BY active DESC, name');
-  return Promise.all(employees.map(async emp => {
-    const { rows: payments } = await q(
-      'SELECT * FROM monthly_payments WHERE employee_id = ? AND payment_year = ? ORDER BY payment_month',
-      [emp.id, year]
-    );
-
-    const allowance  = allowanceFor(emp, year);
-    const annualSal  = parseFloat(emp.annual_salary) || 0;
-    const dayCalc    = await calcExcessDeductions(emp.id, year, annualSal, allowance);
-
-    const { rows: officeRows } = await q(
-      'SELECT *, deduction_date::TEXT AS deduction_date FROM office_deductions WHERE employee_id = ? ORDER BY office_deductions.deduction_date DESC',
-      [emp.id]
-    );
-    const { rows: bonusRows } = await q(
-      'SELECT *, bonus_date::TEXT AS bonus_date FROM bonuses WHERE employee_id = ? ORDER BY bonuses.bonus_date DESC',
-      [emp.id]
-    );
-    const { rows: salaryHistory } = await q(
-      'SELECT *, effective_from::TEXT AS effective_from FROM salary_history WHERE employee_id = ? ORDER BY salary_history.effective_from DESC, created_at DESC',
-      [emp.id]
-    );
-
-    const startDateStr       = emp.start_date        ? emp.start_date.toISOString().slice(0,10)        : null;
-    const terminationDateStr = emp.termination_date  ? emp.termination_date.toISOString().slice(0,10)  : null;
-    const isTerminated       = !emp.active && !!terminationDateStr;
-
-    // Pro-rating, first-month payment and the year's target (see yearPayFigures)
-    const { earnedPay, firstMonthFull, salaryTarget, payBands: bands } = yearPayFigures({
-      emp, year, history: salaryHistory, annualSal, startDateStr, terminationDateStr, isTerminated });
-
-    // Auto-calculate UK PAYE + NI + pension for payroll employees
-    const ukPay = emp.employment_type === 'payroll' && annualSal > 0
-      ? calcUKNetPay(annualSal, parseFloat(emp.pension_rate) || 0)
-      : null;
-    const netMonthly      = ukPay ? ukPay.net_monthly : null;
-
-    const totalOffice   = sumForYear(officeRows, 'deduction_date', year);
-    const owedYear = yearOwed({ emp, year, history: salaryHistory, annualSal, salaryTarget, startDateStr, terminationDateStr,
-      payments, lastYearPayments: await lastYearPayroll(emp, year), deductions: dayCalc.excess_deduction + totalOffice });
-    const netSalaryTarget = owedYear.target, netRemaining = owedYear.remaining, pctPaid = owedYear.pct, totalPaid = owedYear.totalPaid;
-
-    return {
-      employee_id:         emp.id,
-      name:                emp.name,
-      job_title:           emp.job_title || '',
-      department:          emp.department || '',
-      phone:               emp.phone || '',
-      email:               emp.email || '',
-      contract_end_date:   emp.contract_end_date ? emp.contract_end_date.toISOString().slice(0,10) : null,
-      employment_type:     emp.employment_type,
-      currency:            emp.currency || 'GBP',
-      annual_salary:       annualSal,
-      pension_rate:        parseFloat(emp.pension_rate) || 0,
-      paye_breakdown:      ukPay,
-      net_monthly:         netMonthly,
-      // Payroll: what a whole month really pays (the latest payslip, else the estimate above)
-      monthly_pay:         owedYear.monthlyPay ?? null,
-      monthly_pay_from:    owedYear.months ? (owedYear.fromPayslip ? 'payslip' : 'estimate') : null,
-      salary_target:       netSalaryTarget,
-      active:              emp.active ? 1 : 0,
-      start_date:          startDateStr,
-      termination_date:    terminationDateStr,
-      termination_reason:  emp.termination_reason || '',
-      is_terminated:       isTerminated,
-      earned_to_date:      isTerminated ? earnedPay?.total_expected ?? annualSal : null,
-      pro_rated:           !isTerminated ? earnedPay : null,
-      first_month_full:    firstMonthFull,
-      pay_bands:           bands,
-      earned_breakdown:    isTerminated ? earnedPay : null,
-      salary_history:      salaryHistory,
-      payments,
-      bonuses:             bonusRows,
-      total_bonuses:       sumForYear(bonusRows, 'bonus_date', year),
-      office_deductions:   officeRows,
-      total_office_deductions: parseFloat(totalOffice.toFixed(2)),
-      total_paid:          parseFloat(totalPaid.toFixed(2)),
-      total_days_off:      dayCalc.total_days_off,
-      allowance_days:      allowance,
-      excess_days:         dayCalc.excess_days,
-      exempt_days:         dayCalc.exempt_days,
-      excess_deduction:    dayCalc.excess_deduction,
-      waived_deduction:    dayCalc.waived_deduction,
-      breakdown:           dayCalc.breakdown,
-      net_remaining:       netRemaining,
-      pct_paid:            pctPaid,
-      pay_months:          owedYear.months,
-      has_pin:             !!emp.portal_pin
-    };
-  }));
+  return Promise.all(employees.map(emp => salaryOverviewRow(emp, year)));
 }
+
+// One person's pay figures for a year: the row behind their card on the Salary page,
+// and the "Left to pay" panel on their own page, so the two can never disagree.
+async function salaryOverviewRow(emp, year) {
+  const { rows: payments } = await q(
+    'SELECT * FROM monthly_payments WHERE employee_id = ? AND payment_year = ? ORDER BY payment_month',
+    [emp.id, year]
+  );
+
+  const allowance  = allowanceFor(emp, year);
+  const annualSal  = parseFloat(emp.annual_salary) || 0;
+  const dayCalc    = await calcExcessDeductions(emp.id, year, annualSal, allowance);
+
+  const { rows: officeRows } = await q(
+    'SELECT *, deduction_date::TEXT AS deduction_date FROM office_deductions WHERE employee_id = ? ORDER BY office_deductions.deduction_date DESC',
+    [emp.id]
+  );
+  const { rows: bonusRows } = await q(
+    'SELECT *, bonus_date::TEXT AS bonus_date FROM bonuses WHERE employee_id = ? ORDER BY bonuses.bonus_date DESC',
+    [emp.id]
+  );
+  const { rows: salaryHistory } = await q(
+    'SELECT *, effective_from::TEXT AS effective_from FROM salary_history WHERE employee_id = ? ORDER BY salary_history.effective_from DESC, created_at DESC',
+    [emp.id]
+  );
+
+  const startDateStr       = emp.start_date        ? emp.start_date.toISOString().slice(0,10)        : null;
+  const terminationDateStr = emp.termination_date  ? emp.termination_date.toISOString().slice(0,10)  : null;
+  const isTerminated       = !emp.active && !!terminationDateStr;
+
+  // Pro-rating, first-month payment and the year's target (see yearPayFigures)
+  const { earnedPay, firstMonthFull, salaryTarget, payBands: bands } = yearPayFigures({
+    emp, year, history: salaryHistory, annualSal, startDateStr, terminationDateStr, isTerminated });
+
+  // Auto-calculate UK PAYE + NI + pension for payroll employees
+  const ukPay = emp.employment_type === 'payroll' && annualSal > 0
+    ? calcUKNetPay(annualSal, parseFloat(emp.pension_rate) || 0)
+    : null;
+  const netMonthly      = ukPay ? ukPay.net_monthly : null;
+
+  const totalOffice   = sumForYear(officeRows, 'deduction_date', year);
+  const owedYear = yearOwed({ emp, year, history: salaryHistory, annualSal, salaryTarget, startDateStr, terminationDateStr,
+    payments, lastYearPayments: await lastYearPayroll(emp, year), deductions: dayCalc.excess_deduction + totalOffice });
+  const netSalaryTarget = owedYear.target, netRemaining = owedYear.remaining, pctPaid = owedYear.pct, totalPaid = owedYear.totalPaid;
+
+  return {
+    employee_id:         emp.id,
+    name:                emp.name,
+    job_title:           emp.job_title || '',
+    department:          emp.department || '',
+    phone:               emp.phone || '',
+    email:               emp.email || '',
+    contract_end_date:   emp.contract_end_date ? emp.contract_end_date.toISOString().slice(0,10) : null,
+    employment_type:     emp.employment_type,
+    currency:            emp.currency || 'GBP',
+    annual_salary:       annualSal,
+    pension_rate:        parseFloat(emp.pension_rate) || 0,
+    paye_breakdown:      ukPay,
+    net_monthly:         netMonthly,
+    // Payroll: what a whole month really pays (the latest payslip, else the estimate above)
+    monthly_pay:         owedYear.monthlyPay ?? null,
+    monthly_pay_from:    owedYear.months ? (owedYear.fromPayslip ? 'payslip' : 'estimate') : null,
+    salary_target:       netSalaryTarget,
+    active:              emp.active ? 1 : 0,
+    start_date:          startDateStr,
+    termination_date:    terminationDateStr,
+    termination_reason:  emp.termination_reason || '',
+    is_terminated:       isTerminated,
+    earned_to_date:      isTerminated ? earnedPay?.total_expected ?? annualSal : null,
+    pro_rated:           !isTerminated ? earnedPay : null,
+    first_month_full:    firstMonthFull,
+    pay_bands:           bands,
+    earned_breakdown:    isTerminated ? earnedPay : null,
+    salary_history:      salaryHistory,
+    payments,
+    bonuses:             bonusRows,
+    total_bonuses:       sumForYear(bonusRows, 'bonus_date', year),
+    office_deductions:   officeRows,
+    total_office_deductions: parseFloat(totalOffice.toFixed(2)),
+    total_paid:          parseFloat(totalPaid.toFixed(2)),
+    total_days_off:      dayCalc.total_days_off,
+    allowance_days:      allowance,
+    excess_days:         dayCalc.excess_days,
+    exempt_days:         dayCalc.exempt_days,
+    excess_deduction:    dayCalc.excess_deduction,
+    waived_deduction:    dayCalc.waived_deduction,
+    breakdown:           dayCalc.breakdown,
+    net_remaining:       netRemaining,
+    pct_paid:            pctPaid,
+    pay_months:          owedYear.months,
+    has_pin:             !!emp.portal_pin
+  };
+}
+
+app.get('/api/salary-overview/:employeeId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await q('SELECT * FROM employees WHERE id = ?', [parseInt(req.params.employeeId) || 0]);
+    if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+    res.json(await salaryOverviewRow(rows[0], parseInt(req.query.year) || new Date().getFullYear()));
+  } catch (e) {
+    console.error('/api/salary-overview/:employeeId error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.get('/api/salary-overview', requireAuth, requireAdmin, async (req, res) => {
   try {

@@ -8276,3 +8276,12 @@ body:has(.modal-overlay.open) .wm-launcher, body:has(.modal-overlay.active) .wm-
 .wm-natural-link:hover { text-decoration: underline; }
 .wm-natural-bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
 .wm-natural-bar i { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width .3s ease; }
+
+/* Employee page: what is left to pay this year, and what the figure is made of */
+.ep-left-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.ep-left-head h3 { margin: 0; }
+.ep-left-fig { font: 700 22px/1.2 var(--font-sans); letter-spacing: -0.01em; color: var(--text); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ep-left-fig.is-none { color: var(--muted); }
+.ep-left .sc-mo-strip { margin-bottom: 4px; }
+.ep-left .ep-row strong { font-variant-numeric: tabular-nums; }
+.ep-left-foot { margin: 10px 0 0; font: 400 12px/1.4 var(--font-sans); color: var(--muted); }
