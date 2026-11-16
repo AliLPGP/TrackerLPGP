@@ -488,7 +488,9 @@ function calcProRatedPay(annualSalary, startDateStr) {
 // one (day rates, money deducted for days off or lost time), so a manager or the
 // accounts login cannot work out what someone earns.
 const PAY_FIELDS = ['annual_salary', 'daily_rate', 'pension_rate', 'salary_remaining', 'total_paid_year', 'ref_time_amount', 'ref_amount',
-  'excess_day_deduction', 'excess_deduction', 'waived_deduction', 'total_deduction', 'office_deductions', 'breakdown'];
+  'excess_day_deduction', 'excess_deduction', 'waived_deduction', 'total_deduction', 'office_deductions', 'breakdown',
+  // whether a day off is deducted from salary or not is for the admin alone
+  'no_deduction', 'exempt_days', 'charged_days'];
 const withoutPay = row => Object.fromEntries(Object.entries(row).filter(([k]) => !PAY_FIELDS.includes(k)));
 const payFor = (req, row) => (req.admin && req.admin.role === 'admin' ? row : withoutPay(row));
 
@@ -1024,7 +1026,7 @@ app.get('/api/employee/profile', requireAuth, async (req, res) => {
   const year = new Date().getFullYear();
   const allowance = allowanceFor(emp, year);
   const calc = await calcExcessDeductions(empId, year, parseFloat(emp.annual_salary) || 0, allowance);
-  res.json({ ...emp, has_pin, year, days_used: calc.total_days_off, allowance_days: allowance, excess_days: calc.excess_days, exempt_days: calc.exempt_days, excess_deduction: calc.excess_deduction, waived_deduction: calc.waived_deduction });
+  res.json({ ...emp, has_pin, year, days_used: calc.total_days_off, allowance_days: allowance, excess_days: calc.excess_days, excess_deduction: calc.excess_deduction });
 });
 
 // Employee: update own editable details (phone, job_title)
@@ -1241,9 +1243,7 @@ app.get('/api/employee/salary', requireAuth, async (req, res) => {
       total_days_off:   dayCalc.total_days_off,
       allowance_days:   allowance,
       excess_days:      dayCalc.excess_days,
-      exempt_days:      dayCalc.exempt_days,
       excess_deduction: dayCalc.excess_deduction,
-      waived_deduction: dayCalc.waived_deduction,
       net_remaining:    netRemaining,
       pct_paid:         pctPaid,
       year
@@ -1332,8 +1332,8 @@ app.post('/api/records', requireAuth, async (req, res) => {
   const { employee_id, record_date, break_minutes, phone_minutes, wasted_minutes, late_minutes, is_day_off, notes, no_deduction } = req.body;
   if (!employee_id || !record_date) return res.status(400).json({ error: 'employee_id and record_date required' });
   const dayOffVal = parseFloat(is_day_off) || 0;
-  // Only a day off can be exempt — a working day has nothing to waive
-  const noDeduct = dayOffVal > 0 && no_deduction === true;
+  // Only a day off can be exempt (a working day has nothing to waive), and only an admin can exempt one
+  const noDeduct = dayOffVal > 0 && no_deduction === true && req.admin.role === 'admin';
   try {
     const { rows } = await q(
       `INSERT INTO daily_records (employee_id, record_date, break_minutes, phone_minutes, wasted_minutes, late_minutes, is_day_off, notes, no_deduction, created_by)
@@ -1351,8 +1351,13 @@ app.post('/api/records', requireAuth, async (req, res) => {
 app.put('/api/records/:id', requireAuth, async (req, res) => {
   const { break_minutes, phone_minutes, wasted_minutes, late_minutes, is_day_off, notes, no_deduction } = req.body;
   const dayOffVal = parseFloat(is_day_off) || 0;
-  // Only a day off can be exempt — switching a record back to a working day clears the flag
-  const noDeduct = dayOffVal > 0 && no_deduction === true;
+  // Only a day off can be exempt: switching a record back to a working day clears the flag.
+  // Only an admin decides it; anyone else's edit leaves the day as the admin set it.
+  let noDeduct = dayOffVal > 0 && no_deduction === true;
+  if (req.admin.role !== 'admin') {
+    const { rows } = await q('SELECT no_deduction FROM daily_records WHERE id = ?', [req.params.id]);
+    noDeduct = dayOffVal > 0 && isExemptDay(rows[0]?.no_deduction);
+  }
   await q(
     `UPDATE daily_records SET break_minutes=?, phone_minutes=?, wasted_minutes=?, late_minutes=?, is_day_off=?, notes=?, no_deduction=?, updated_at=NOW() WHERE id=?`,
     [break_minutes || 0, phone_minutes || 0, wasted_minutes || 0, late_minutes || 0, dayOffVal, notes || '', noDeduct, req.params.id]
@@ -1578,7 +1583,14 @@ app.get('/api/calendar', requireAuth, async (req, res) => {
     ORDER BY r.record_date, e.name
   `, [from, to]);
 
-  res.json(rows);
+  // Staff see who is off and when, nothing more. The time figures (for editing a day from
+  // the calendar) go to managers and admins, and whether it is deducted to admins alone.
+  const role = req.user.role, canEdit = role === 'admin' || role === 'manager';
+  res.json(rows.map(({ no_deduction, break_minutes, phone_minutes, wasted_minutes, late_minutes, ...day }) => ({
+    ...day,
+    ...(canEdit ? { break_minutes, phone_minutes, wasted_minutes, late_minutes } : {}),
+    ...(role === 'admin' ? { no_deduction } : {}),
+  })));
 });
 
 // ─── SUMMARY REPORT ──────────────────────────────────────────────────────────
@@ -3364,11 +3376,12 @@ app.put('/api/holiday-requests/:id/approve', requireAuth, async (req, res) => {
     if (!hr) return res.status(404).json({ error: 'Request not found' });
     if (hr.status !== 'pending') return res.status(400).json({ error: 'Request already reviewed' });
     const dayOff = hr.day_type === 'half' ? 0.5 : 1;
-    const noDeduct = req.body?.no_deduction === true;
+    // Whether the day is deducted is the admin's call; another approver leaves any existing choice alone
+    const isAdmin = req.admin.role === 'admin', noDeduct = isAdmin && req.body?.no_deduction === true;
     await q(
       `INSERT INTO daily_records (employee_id, record_date, is_day_off, notes, no_deduction)
        VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT (employee_id, record_date) DO UPDATE SET is_day_off = EXCLUDED.is_day_off, notes = EXCLUDED.notes, no_deduction = EXCLUDED.no_deduction`,
+       ON CONFLICT (employee_id, record_date) DO UPDATE SET is_day_off = EXCLUDED.is_day_off, notes = EXCLUDED.notes, no_deduction = ${isAdmin ? 'EXCLUDED' : 'daily_records'}.no_deduction`,
       [hr.employee_id, hr.request_date, dayOff, hr.note || 'Portal request (approved)', noDeduct]
     );
     await q(

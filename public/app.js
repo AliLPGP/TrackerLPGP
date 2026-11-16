@@ -4198,10 +4198,13 @@ function renderDayOffRequestsBanner(pending) {
           '<button class="btn btn-primary btn-sm" onclick="approveLeave(' + r.id + ')">Approve</button>' +
           '<button class="btn btn-danger btn-sm" onclick="declineLeave(' + r.id + ')">Decline</button>' +
         '</div>' +
-        '<label style="display:flex;align-items:center;gap:5px;font:500 10.5px/1 var(--font-sans);color:var(--muted);cursor:pointer;white-space:nowrap">' +
-          '<input type="checkbox" id="dor-nodeduct-' + r.id + '" style="width:13px;height:13px;cursor:pointer">' +
-          'No deduct' +
-        '</label>' +
+        // Whether a day off is deducted from salary is the admin's call, and theirs alone to see
+        (currentUser.role === 'admin'
+          ? '<label style="display:flex;align-items:center;gap:5px;font:500 10.5px/1 var(--font-sans);color:var(--muted);cursor:pointer;white-space:nowrap">' +
+              '<input type="checkbox" id="dor-nodeduct-' + r.id + '" style="width:13px;height:13px;cursor:pointer">' +
+              'No deduct' +
+            '</label>'
+          : '') +
       '</div>' +
     '</div>';
   }).join('');
@@ -4258,6 +4261,7 @@ function openDayModal(dateStr, entries, remindersToday = []) {
   }
 
   _dayModalEntries = entries;
+  const canEdit = ['admin', 'manager'].includes(currentUser.role);   // "Not deducted" itself only reaches an admin
   if (entries.length) {
     content += `<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);margin-bottom:8px">Days Off</div>`;
     content += entries.map((r, i) => {
@@ -4271,7 +4275,7 @@ function openDayModal(dateStr, entries, remindersToday = []) {
         ${r.no_deduction ? '<span class="badge badge-green" style="font-size:0.72rem" title="Logged as a day off, but never deducted from salary">Not deducted</span>' : ''}
         ${r.notes ? `<span style="color:var(--muted);font-size:0.8rem">${esc(r.notes)}</span>` : ''}
         <span class="day-off-actions">
-          <button class="btn btn-ghost btn-sm" onclick="editDayOffEntry(${i})">Edit</button>
+          ${canEdit ? `<button class="btn btn-ghost btn-sm" onclick="editDayOffEntry(${i})">Edit</button>` : ''}
           <button class="btn btn-danger btn-sm" onclick="deleteRecord(${r.record_id});closeModal('dayModal')">Remove</button>
         </span>
       </div>`;
@@ -5211,10 +5215,10 @@ async function loadNotifPanel() {
         <div class="notif-item-name">${esc(r.employee_name)}</div>
         <div class="notif-item-meta">${dateStr} · ${typeStr} · Requested ${since}</div>
         ${r.note ? `<div class="notif-item-note">"${esc(r.note)}"</div>` : ''}
-        <label style="display:flex;align-items:center;gap:5px;font:500 11px/1 var(--font-sans);color:var(--muted);cursor:pointer;margin-top:4px">
+        ${currentUser.role === 'admin' ? `<label style="display:flex;align-items:center;gap:5px;font:500 11px/1 var(--font-sans);color:var(--muted);cursor:pointer;margin-top:4px">
           <input type="checkbox" id="hr-nodeduct-${r.id}" style="width:13px;height:13px;cursor:pointer">
           Don't deduct this day from salary
-        </label>
+        </label>` : ''}
         <div class="notif-item-actions">
           <button class="notif-approve-btn" onclick="reviewHolidayRequest(${r.id},'approve')">✓ Approve</button>
           <button class="notif-deny-btn" onclick="reviewHolidayRequest(${r.id},'deny')">✕ Deny</button>
