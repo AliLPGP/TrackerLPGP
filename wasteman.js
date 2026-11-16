@@ -139,7 +139,7 @@ SELECT only. No INSERT/UPDATE/DELETE. A LIMIT is added automatically if omitted.
   },
   {
     name: 'get_salary_overview',
-    description: 'Get the fully-computed salary summary for all employees for a given year. Includes: net_remaining (what is genuinely still owed this year, after PAYE, day-off deductions, and office deductions), pct_paid, net_monthly, payments[], office_deductions[], bonuses[]. More accurate than raw SQL for salary questions because it applies UK PAYE and pro-rating automatically.',
+    description: 'Get the fully-computed salary summary for all employees for a given year. Includes: net_remaining (what is genuinely still owed this year, after PAYE, day-off deductions, and office deductions), pct_paid, net_monthly (estimated take-home), monthly_pay (payroll: what a whole month really pays, from the latest payslip logged), pay_months[] (payroll is counted in months: each one paid or still due), payments[], office_deductions[], bonuses[]. More accurate than raw SQL for salary questions because it applies UK PAYE and pro-rating automatically.',
     input_schema: {
       type: 'object',
       properties: { year: { type: 'integer', description: 'Year (defaults to current year)' } }
@@ -205,7 +205,7 @@ GBP = £, AED = "AED ", PHP = ₱. Always display in the employee's own currency
 }
 
 // The salary overview without its bulky breakdowns, so the whole team fits in one tool result
-const OVERVIEW_FIELDS = ['employee_id', 'name', 'job_title', 'department', 'employment_type', 'currency', 'annual_salary', 'net_monthly',
+const OVERVIEW_FIELDS = ['employee_id', 'name', 'job_title', 'department', 'employment_type', 'currency', 'annual_salary', 'net_monthly', 'monthly_pay', 'monthly_pay_from',
   'salary_target', 'total_paid', 'net_remaining', 'pct_paid', 'active', 'is_terminated', 'start_date', 'termination_date',
   'total_days_off', 'allowance_days', 'excess_days', 'excess_deduction', 'total_office_deductions', 'total_bonuses', 'pay_months'];
 const compactOverview = rows => rows.map(r => ({

@@ -9,7 +9,7 @@ const employees = [
   emp(1, 'Ali Example', { department: 'Sales', job_title: 'Sales Executive', email: 'ali@example.test' }),
   emp(2, 'Ali Other', { department: 'Production' }),
   emp(3, 'Sara Sample', { employment_type: 'self_employed', currency: 'AED', annual_salary: 36000, department: 'Sales' }),
-  emp(4, 'Fidak Sample', { department: 'Production', annual_salary: 28500 }),
+  emp(4, 'Farah Sample', { department: 'Production', annual_salary: 27000 }),
   emp(5, 'Gone Person', { active: 0, termination_date: '2026-06-30' }),
 ];
 const row = (e, extra) => ({ employee_id: e.id, name: e.name, department: e.department, employment_type: e.employment_type, currency: e.currency, annual_salary: e.annual_salary,
@@ -22,8 +22,9 @@ const overview = [
     pay_months: [...Array.from({ length: 10 }, (_, i) => month(i + 1, 2093.3, 'paid')), month(11, 2093.3, 'due'), month(12, 2093.3, 'due')], total_days_off: 12 }),
   row(employees[1], { net_monthly: 2093.3, total_paid: 25119.6, net_remaining: 0, pct_paid: 100, payments: paidTo(12, 2093.3) }),
   row(employees[2], { total_paid: 30000, net_remaining: 6000, pct_paid: 83, payments: paidTo(10, 3000) }),
-  row(employees[3], { net_monthly: 2003.3, total_paid: 22036.3, net_remaining: 2003.3, pct_paid: 92, payments: paidTo(11, 2003.3),
-    pay_months: [...Array.from({ length: 11 }, (_, i) => month(i + 1, 2003.3, 'paid')), month(12, 2003.3, 'due')], total_days_off: 21, excess_days: 1, excess_deduction: 109.6 }),
+  // Payroll, paid to November: payslips of 1,850 against a tax estimate of 1,913.30, so December is owed at 1,850
+  row(employees[3], { net_monthly: 1913.3, monthly_pay: 1850, monthly_pay_from: 'payslip', total_paid: 20350, net_remaining: 1745.7, pct_paid: 92, payments: paidTo(11, 1850),
+    pay_months: [...Array.from({ length: 11 }, (_, i) => month(i + 1, 1850, 'paid')), month(12, 1850, 'due')], total_days_off: 21, excess_days: 1, excess_deduction: 104.3 }),
   row(employees[4], {}),
 ];
 const deals = [
@@ -37,7 +38,7 @@ const events = [
 let warnings = [
   { employee_id: 1, name: 'Ali Example', day: '2026-10-02', level: 'written', reason: 'Late three times in a week' },
   { employee_id: 1, name: 'Ali Example', day: '2026-06-15', level: 'verbal', reason: 'Missed a client call' },
-  { employee_id: 4, name: 'Fidak Sample', day: '2026-03-09', level: 'verbal', reason: 'Left the office unlocked' },
+  { employee_id: 4, name: 'Farah Sample', day: '2026-03-09', level: 'verbal', reason: 'Left the office unlocked' },
 ];
 const db = {
   getSalaryOverview: async () => overview,
@@ -68,11 +69,14 @@ const has = (text, ...bits) => bits.forEach(b => assert.ok(text.includes(b), `ex
   ['payLeft', 'unpaid', 'hotels', 'daysoff', 'daysoff', 'deals', 'targets', 'salaryRank', 'spending', 'leavers', 'salary']);
 
   // Pay left: the months still to pay; follow-ups keep the question and swap the person
-  let a = await chat('How much does Fidak have left to be paid this year?', 'and Sara?', 'how much has she been paid', 'what is she on');
-  has(a[0], 'Fidak Sample has £2,003.30 left to be paid in 2026', 'December at £2,003.30', 'less £109.60 in deductions');
+  let a = await chat('How much does Farah have left to be paid this year?', 'and Sara?', 'how much has she been paid', 'what is she on');
+  has(a[0], 'Farah Sample has £1,745.70 left to be paid in 2026', 'December at £1,850', 'less £104.30 in deductions');
   has(a[1], 'Sara Sample has AED 6,000 left', 'out of AED 36,000');
   has(a[2], 'Sara Sample has been paid AED 30,000', '10 payments');
   has(a[3], 'AED 36,000 a year (self-employed)', 'AED 3,000 a month');
+  // Payroll take-home is the latest payslip when one is logged, else the tax estimate
+  has((await chat('what is farah on'))[0], '£27,000 a year (payroll)', 'take home £1,850 a month, going by their latest payslip');
+  has((await chat('what is ali example on'))[0], 'Take-home is about £2,093.30 a month after tax');
 
   // Two people share a first name: it asks, then answers
   a = await chat('how much does ali have left', 'Ali Example');
@@ -80,13 +84,13 @@ const has = (text, ...bits) => bits.forEach(b => assert.ok(text.includes(b), `ex
   has(a[1], 'Ali Example has £4,186.60 left', 'November and December at £2,093.30 each');
 
   // A misheard name is matched and said; an unknown one is not guessed
-  has((await chat('how many days off has fidack taken'))[0], 'I took that as Fidak Sample', '21 of 20 days off', '1 over the allowance');
+  has((await chat('how many days off has farrah taken'))[0], 'I took that as Farah Sample', '21 of 20 days off', '1 over the allowance');
   has((await chat('how much does zorblax have left'))[0], 'could not find a person or a company called Zorblax');
 
   // Who has not been paid this month, with what each is due
   a = (await chat("Who hasn't been paid this month?"))[0];
   has(a, '2 people have not been paid for November', 'Ali Example: £2,093.30', 'Sara Sample: AED 3,000');
-  assert.ok(!a.includes('Fidak'), 'someone paid for November is not listed');
+  assert.ok(!a.includes('Farah'), 'someone paid for November is not listed');
 
   // Deals, a company and an event by name
   has((await chat('who still owes us on deals'))[0], 'Still to collect: £40,000 across 1 deal', 'Northwind Capital: £40,000');
@@ -104,11 +108,11 @@ const has = (text, ...bits) => bits.forEach(b => assert.ok(text.includes(b), `ex
   a = (await chat('does ali example have any warnings'))[0];
   has(a, 'Ali Example has 2 warnings:', '2 Oct 2026, written warning: Late three times in a week', '15 Jun 2026, verbal warning: Missed a client call');
   assert.strictEqual(a.split('\n').pop(), 'Once is a blip. Twice is a hobby.');
-  has((await chat('any warnings for fidak'))[0], 'Fidak Sample has 1 warning:', 'Just the one. Everyone gets a practice lap.');
+  has((await chat('any warnings for farah'))[0], 'Farah Sample has 1 warning:', 'Just the one. Everyone gets a practice lap.');
   has((await chat('has sara had a warning'))[0], 'Sara Sample has no warnings. A clean record.');
-  has((await chat('who has warnings'))[0], '3 warnings on file: Ali Example (2) and Fidak Sample (1). Ali is out in front, not that it is a competition.');
-  warnings.push({ employee_id: 4, name: 'Fidak Sample', day: '2026-11-03', level: 'final', reason: 'Left the office unlocked again' });
-  has((await chat('any warnings for fidak'))[0], 'Fidak Sample has 2 warnings:', 'final written warning: Left the office unlocked again', 'One of them says final. The clue is in the name.');
+  has((await chat('who has warnings'))[0], '3 warnings on file: Ali Example (2) and Farah Sample (1). Ali is out in front, not that it is a competition.');
+  warnings.push({ employee_id: 4, name: 'Farah Sample', day: '2026-11-03', level: 'final', reason: 'Left the office unlocked again' });
+  has((await chat('any warnings for farah'))[0], 'Farah Sample has 2 warnings:', 'final written warning: Left the office unlocked again', 'One of them says final. The clue is in the name.');
   has((await chat('who has warnings'))[0], '4 warnings on file', 'That is the naughty list.'); // level on two each: nobody is singled out
   warnings = [];
   has((await chat('who has warnings'))[0], 'Nobody has a warning on file. Either everyone is behaving or nobody is writing it down.');

@@ -392,7 +392,7 @@ const ALLOWED_BREAK_MINUTES = 40;
 const DAY_OFF_ALLOWANCE = { payroll: 20, self_employed: 5 };
 
 const { allowanceFor: allowanceForYear } = require('./allowance');
-const { selfEmployedYearTarget, salaryOnDate, payBands, periodsFrom, payrollMonths } = require('./salary-periods');
+const { selfEmployedYearTarget, salaryOnDate, payBands, periodsFrom, payrollMonths, payrollYear } = require('./salary-periods');
 const allowanceFor = (emp, year) => allowanceForYear(emp, year, DAY_OFF_ALLOWANCE);
 
 // Count Mon–Fri days in a given month (no bank holidays — add if needed)
@@ -493,35 +493,27 @@ const withoutPay = row => Object.fromEntries(Object.entries(row).filter(([k]) =>
 const payFor = (req, row) => (req.admin && req.admin.role === 'admin' ? row : withoutPay(row));
 
 // What someone is owed for a year, and how much of it is left.
-// Payroll: a fixed take-home every month, so what is left is what each month is still
-// owed (each at the salary in force that month), less deductions. A month is paid once its
-// full take-home is logged; an extra or larger payment never hides a month still to pay.
+// Payroll: counted in months, at what the person really takes home (see payrollYear):
+// the months with no payment logged, less deductions. `lastYearPayments` lets last year's
+// payslips set the monthly pay until this year has one.
 // Self-employed: the year's target (see yearPayFigures) less deductions, less what was paid.
-function yearOwed({ emp, year, history, annualSal, salaryTarget, startDateStr, terminationDateStr, payments, deductions }) {
-  const totalPaid = payments.reduce((a, b) => a + (parseFloat(b.amount) || 0), 0);
+function yearOwed({ emp, year, history, annualSal, salaryTarget, startDateStr, terminationDateStr, payments, lastYearPayments, deductions }) {
   if (emp.employment_type === 'payroll' && annualSal > 0) {
-    const pension = parseFloat(emp.pension_rate) || 0;
-    // What was logged for each month. A month is paid once its full take-home is logged
-    // (within 3%, as the take-home is an estimate of the payslip); less is part paid,
-    // and the rest of it is still to pay. Paying more in one month does not cover another.
-    const logged = {};
-    payments.forEach(p => { const m = Number(p.payment_month); logged[m] = (logged[m] || 0) + (parseFloat(p.amount) || 0); });
-    const months = payrollMonths({ history, year, startDate: startDateStr, endDate: terminationDateStr, annual: annualSal,
-      netMonthly: a => calcUKNetPay(a, pension).net_monthly }).map(m => {
-        const got = round2(logged[m.month] || 0);
-        const paid = got >= m.due * 0.97;
-        return { ...m, logged: got, paid, status: paid ? 'paid' : got > 0 ? 'part' : 'due', left: paid ? 0 : round2(m.due - got) };
-      });
-    const target = months.reduce((a, m) => a + m.due, 0);
-    const remaining = months.reduce((a, m) => a + m.left, 0) - deductions;
-    const owed = Math.max(0, remaining);
-    return { target: round2(target), remaining: round2(remaining), totalPaid: round2(totalPaid), months,
-      pct: totalPaid + owed > 0 ? Math.min(100, Math.round(totalPaid / (totalPaid + owed) * 100)) : 100 };
+    const takeHome = a => calcUKNetPay(a, parseFloat(emp.pension_rate) || 0).net_monthly;
+    const monthsOf = y => payrollMonths({ history, year: y, startDate: startDateStr, endDate: terminationDateStr, annual: annualSal, netMonthly: takeHome });
+    const owed = payrollYear({ months: monthsOf(year), payments, deductions,
+      lastYear: lastYearPayments && lastYearPayments.length ? { months: monthsOf(year - 1), payments: lastYearPayments } : null });
+    return { ...owed, monthlyPay: round2(takeHome(annualSal) * owed.rate) };
   }
+  const totalPaid = payments.reduce((a, b) => a + (parseFloat(b.amount) || 0), 0);
   const effective = salaryTarget - deductions;
   return { target: round2(salaryTarget), remaining: round2(effective - totalPaid), totalPaid: round2(totalPaid), months: null,
     pct: effective > 0 ? Math.min(100, Math.round(totalPaid / effective * 100)) : (totalPaid > 0 ? 100 : 0) };
 }
+
+// Last year's payments for a payroll person (nobody else's pay is counted in months)
+const lastYearPayroll = async (emp, year) => (emp.employment_type !== 'payroll' ? []
+  : (await q('SELECT payment_month, amount FROM monthly_payments WHERE employee_id = ? AND payment_year = ?', [emp.id, year - 1])).rows);
 const round2 = v => Math.round(v * 100) / 100;
 
 // Office deductions and bonuses belong to the year they are dated in
@@ -1219,6 +1211,7 @@ app.get('/api/employee/salary', requireAuth, async (req, res) => {
     const totalOffice     = officeRows.reduce((a, b) => a + parseFloat(b.amount), 0);
     // The same figures the admin salary page shows (yearOwed)
     const owedYear = yearOwed({ emp, year, history, annualSal, salaryTarget, startDateStr, payments,
+      lastYearPayments: await lastYearPayroll(emp, year),
       terminationDateStr: emp.termination_date ? emp.termination_date.toISOString().slice(0, 10) : null,
       deductions: dayCalc.excess_deduction + totalOffice });
     const netSalaryTarget = owedYear.target, netRemaining = owedYear.remaining, pctPaid = owedYear.pct, totalPaid = owedYear.totalPaid;
@@ -1231,6 +1224,8 @@ app.get('/api/employee/salary', requireAuth, async (req, res) => {
       pension_rate:     parseFloat(emp.pension_rate) || 0,
       paye_breakdown:   ukPay,
       net_monthly:      ukPay ? ukPay.net_monthly : null,
+      monthly_pay:      owedYear.monthlyPay ?? null,
+      monthly_pay_from: owedYear.months ? (owedYear.fromPayslip ? 'payslip' : 'estimate') : null,
       salary_target:    netSalaryTarget,
       start_date:       startDateStr,
       is_terminated:    isTerminated,
@@ -1502,7 +1497,7 @@ async function salaryOverview(year) {
 
     const totalOffice   = sumForYear(officeRows, 'deduction_date', year);
     const owedYear = yearOwed({ emp, year, history: salaryHistory, annualSal, salaryTarget, startDateStr, terminationDateStr,
-      payments, deductions: dayCalc.excess_deduction + totalOffice });
+      payments, lastYearPayments: await lastYearPayroll(emp, year), deductions: dayCalc.excess_deduction + totalOffice });
     const netSalaryTarget = owedYear.target, netRemaining = owedYear.remaining, pctPaid = owedYear.pct, totalPaid = owedYear.totalPaid;
 
     return {
@@ -1519,6 +1514,9 @@ async function salaryOverview(year) {
       pension_rate:        parseFloat(emp.pension_rate) || 0,
       paye_breakdown:      ukPay,
       net_monthly:         netMonthly,
+      // Payroll: what a whole month really pays (the latest payslip, else the estimate above)
+      monthly_pay:         owedYear.monthlyPay ?? null,
+      monthly_pay_from:    owedYear.months ? (owedYear.fromPayslip ? 'payslip' : 'estimate') : null,
       salary_target:       netSalaryTarget,
       active:              emp.active ? 1 : 0,
       start_date:          startDateStr,
@@ -1963,41 +1961,29 @@ app.get('/api/contracts/expiring', requireAuth, async (req, res) => {
 app.get('/api/export/payroll-csv', requireAuth, requireAdmin, async (req, res) => {
   try {
     const year = parseInt(req.query.year) || new Date().getFullYear();
-    const { rows: employees } = await q('SELECT * FROM employees WHERE active = 1 ORDER BY department, name');
-
-    const rows = await Promise.all(employees.map(async emp => {
-      const annualSal = parseFloat(emp.annual_salary) || 0;
-      const [{ rows: payments }, { rows: officeRows }] = await Promise.all([
-        q('SELECT SUM(amount) AS total FROM monthly_payments WHERE employee_id = ? AND payment_year = ?', [emp.id, year]),
-        q('SELECT COALESCE(SUM(amount),0) AS total FROM office_deductions WHERE employee_id = ? AND EXTRACT(YEAR FROM deduction_date) = ?', [emp.id, year])
-      ]);
-      const totalPaid   = parseFloat(payments[0]?.total || 0);
-      const totalOffice = parseFloat(officeRows[0]?.total || 0);
-      const ukPay = emp.employment_type === 'payroll' && annualSal > 0
-        ? calcUKNetPay(annualSal, parseFloat(emp.pension_rate) || 0) : null;
-      const netMonthly    = ukPay ? ukPay.net_monthly : annualSal / 12;
-      const grossMonthly  = ukPay ? ukPay.gross_monthly : annualSal / 12;
-      const grossTarget   = emp.employment_type === 'payroll' && ukPay ? ukPay.net_annual : annualSal;
-      const outstanding   = parseFloat((grossTarget - totalPaid).toFixed(2));
-      const netOutstanding = parseFloat((outstanding - totalOffice).toFixed(2));
-      return {
-        name: emp.name,
-        department: emp.department || '',
-        job_title: emp.job_title || '',
-        employment_type: emp.employment_type,
-        currency: emp.currency || 'GBP',
-        annual_salary: annualSal,
-        gross_monthly: parseFloat(grossMonthly.toFixed(2)),
-        net_monthly: parseFloat(netMonthly.toFixed(2)),
-        income_tax_yr: ukPay ? ukPay.income_tax : 0,
-        ni_yr: ukPay ? ukPay.national_insurance : 0,
-        pension_yr: ukPay ? ukPay.pension : 0,
-        total_paid: totalPaid,
-        office_deductions: totalOffice,
-        outstanding,
-        net_outstanding: netOutstanding
-      };
-    }));
+    // The Salary page's own figures (salaryOverview), so the export never disagrees with it
+    const rows = (await salaryOverview(year)).filter(r => r.active)
+      .sort((a, b) => a.department.localeCompare(b.department) || a.name.localeCompare(b.name))
+      .map(r => {
+        const paye = r.paye_breakdown, monthly = round2(r.annual_salary / 12);
+        return {
+          name: r.name,
+          department: r.department,
+          job_title: r.job_title,
+          employment_type: r.employment_type,
+          currency: r.currency,
+          annual_salary: r.annual_salary,
+          gross_monthly: paye ? paye.gross_monthly : monthly,
+          net_monthly: r.monthly_pay ?? monthly,
+          income_tax_yr: paye ? paye.income_tax : 0,
+          ni_yr: paye ? paye.national_insurance : 0,
+          pension_yr: paye ? paye.pension : 0,
+          total_paid: r.total_paid,
+          office_deductions: r.total_office_deductions,
+          outstanding: round2(r.net_remaining + r.total_office_deductions),
+          net_outstanding: r.net_remaining
+        };
+      });
 
     const headers = ['Name','Department','Job Title','Type','Currency','Annual Salary',
       'Gross/Month','Net/Month','Income Tax/Yr','NI/Yr','Pension/Yr',

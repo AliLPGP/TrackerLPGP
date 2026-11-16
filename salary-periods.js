@@ -7,6 +7,8 @@
 //
 // Returns null unless the history shows at least two salaries, so people who
 // were never promoted keep the existing calculation untouched.
+const round2 = v => Math.round(v * 100) / 100;
+
 function iso(d) {
   if (!d) return null;
   return d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10);
@@ -101,8 +103,8 @@ function selfEmployedYearTarget({ history, year, startDate, endDate }) {
 // Payroll staff are paid a fixed amount every month, so their year is a list of months,
 // each owed in full at the salary in force that month (take-home, from netMonthly).
 // A month they only partly worked (they started or left in it, or their salary changed
-// in it) is split by working days. Returns [{ month, due }] for the months they were
-// employed in `year`.
+// in it) is split by working days. Returns [{ month, due, whole }] for the months they
+// were employed in `year`; `whole` marks a month worked start to end on one salary.
 function payrollMonths({ history, year, startDate, endDate, annual, netMonthly }) {
   const y = String(year), yStart = `${y}-01-01`, yEnd = `${y}-12-31`;
   const start = iso(startDate), end = iso(endDate);
@@ -126,9 +128,55 @@ function payrollMonths({ history, year, startDate, endDate, annual, netMonthly }
       const segEnd = addDay(cuts[i + 1], -1);
       due += netMonthly(salaryOn(cuts[i])) * workdaysBetween(cuts[i], segEnd) / full;
     }
-    out.push({ month: m, due: Math.round(due * 100) / 100 });
+    out.push({ month: m, due: round2(due), whole: s === mStart && e === mEnd && cuts.length === 2 });
   }
   return out;
 }
 
-module.exports = { selfEmployedYearTarget, periodsFrom, workdaysBetween, salaryOnDate, payBands, payrollMonths };
+// A payroll person's year, counted in months rather than pounds, because that is how
+// they are paid: a month with a payment logged is paid, and what is left is the months
+// without one, each at what the person really takes home, less deductions. Paid to
+// October means November and December are owed, whatever the amounts logged were.
+//
+// What they really take home is their latest payslip. The take-home worked out from the
+// salary is only our tax estimate, which knows nothing of pension schemes, student loans
+// or tax codes: with payslips of 1,900 logged against an estimate of 2,000, the months
+// still to pay are 1,900 each. Only a whole month's payslip sets that rate, and only when
+// it is near the estimate (PAYSLIP_BAND), so an advance or a bonus paid with the salary
+// does not. Last year's payslips carry the rate into January, before the new year has one.
+//
+// `months` (and `lastYear.months`) come from payrollMonths. Returns the months with what
+// was logged and what is still due, plus `rate` (payslip ÷ estimate, 1 with no payslip yet).
+const PAYSLIP_BAND = [0.75, 1.25];
+
+function loggedByMonth(payments) {
+  const logged = {};
+  (payments || []).forEach(p => { const m = Number(p.payment_month); logged[m] = (logged[m] || 0) + (parseFloat(p.amount) || 0); });
+  return logged;
+}
+
+function payslipRate(months, logged) {
+  let rate = null;
+  for (const m of months || []) {
+    const got = logged[m.month] || 0;
+    if (m.whole && m.due > 0 && got >= m.due * PAYSLIP_BAND[0] && got <= m.due * PAYSLIP_BAND[1]) rate = got / m.due;
+  }
+  return rate;
+}
+
+function payrollYear({ months, payments, deductions = 0, lastYear = null }) {
+  const logged = loggedByMonth(payments);
+  const payslip = payslipRate(months, logged) ?? (lastYear ? payslipRate(lastYear.months, loggedByMonth(lastYear.payments)) : null);
+  const rate = payslip ?? 1;
+  const rows = months.map(m => {
+    const got = round2(logged[m.month] || 0), due = round2(m.due * rate), paid = got > 0;
+    return { month: m.month, due, logged: got, paid, status: paid ? 'paid' : 'due', left: paid ? 0 : due };
+  });
+  const totalPaid = round2((payments || []).reduce((a, p) => a + (parseFloat(p.amount) || 0), 0));
+  const toPay = round2(rows.reduce((a, m) => a + m.left, 0));
+  const remaining = round2(toPay - deductions), owed = Math.max(0, remaining);
+  return { months: rows, rate, fromPayslip: payslip !== null, target: round2(totalPaid + toPay), remaining, totalPaid,
+    pct: totalPaid + owed > 0 ? Math.min(100, Math.round(totalPaid / (totalPaid + owed) * 100)) : 100 };
+}
+
+module.exports = { selfEmployedYearTarget, periodsFrom, workdaysBetween, salaryOnDate, payBands, payrollMonths, payrollYear };

@@ -1,7 +1,7 @@
 'use strict';
 // Payroll: each month owed in full at the salary in force; months not paid are what is left
 const assert = require('assert');
-const { payrollMonths } = require('../salary-periods');
+const { payrollMonths, payrollYear } = require('../salary-periods');
 
 const net = a => a / 12; // keep the arithmetic readable: take-home = gross / 12
 // Started 1 Aug on 18k (probation), 28.5k from 1 Oct
@@ -15,12 +15,13 @@ assert.strictEqual(left, 4750, 'November and December still to pay, at 28.5k');
 
 // Never changed salary, all year: twelve equal months
 const flat = payrollMonths({ history: [], year: 2026, startDate: '2024-05-01', endDate: null, annual: 24000, netMonthly: net });
-assert.strictEqual(flat.length, 12); assert.ok(flat.every(m => m.due === 2000));
+assert.strictEqual(flat.length, 12); assert.ok(flat.every(m => m.due === 2000 && m.whole));
 
 // Left on 15 May: May is part of a month (by working days); nothing after
 const leaver = payrollMonths({ history: [], year: 2026, startDate: '2024-05-01', endDate: '2026-05-15', annual: 24000, netMonthly: net });
 assert.deepStrictEqual(leaver.map(m => m.month), [1, 2, 3, 4, 5]);
 assert.ok(leaver[4].due > 0 && leaver[4].due < 2000, 'May is part paid');
+assert.ok(leaver[3].whole && !leaver[4].whole, 'May is not a whole month');
 
 // Salary changed mid-month: that month is split by working days
 const mid = payrollMonths({ history: [{ effective_from: '2025-01-01', annual_salary: 24000 }, { effective_from: '2026-06-15', annual_salary: 36000 }],
@@ -28,5 +29,51 @@ const mid = payrollMonths({ history: [{ effective_from: '2025-01-01', annual_sal
 const june = mid.find(m => m.month === 6).due;
 assert.ok(june > 2000 && june < 3000, 'June is between the two monthly amounts');
 assert.strictEqual(mid.find(m => m.month === 7).due, 3000);
+
+assert.ok(!mid.find(m => m.month === 6).whole, 'nor is a month the salary changed in');
+
+// ── The year in months (payrollYear) ──
+// Jane Example started 19 January on a take-home we estimate at 2,000 a month. Her payslips
+// are 1,900 (a pension the estimate knows nothing about), logged for January to October.
+const pay = (month, amount) => ({ payment_month: month, amount });
+const jane = payrollMonths({ history: [], year: 2026, startDate: '2026-01-19', endDate: null, annual: 24000, netMonthly: net });
+const janePaid = [pay(1, 1250), ...[2, 3, 4, 5, 6, 7, 8, 9, 10].map(m => pay(m, 1900))];
+let y = payrollYear({ months: jane, payments: janePaid, deductions: 150 });
+assert.deepStrictEqual(y.months.filter(m => !m.paid).map(m => [m.month, m.due]), [[11, 1900], [12, 1900]], 'paid to October: two months owed, at what she really gets');
+assert.strictEqual(y.remaining, 3650, 'two payslips, less deductions');
+assert.strictEqual(y.rate, 0.95); assert.ok(y.fromPayslip);
+assert.strictEqual(y.totalPaid, 18350);
+assert.strictEqual(y.target, 18350 + 3800, 'the year adds up to what was paid plus what is still to pay');
+assert.ok(y.months.slice(0, 10).every(m => m.paid && m.left === 0), 'a month with a payslip is paid, though it is under the estimate');
+
+// Nothing logged yet: the estimate stands in for a payslip
+y = payrollYear({ months: flat, payments: [], deductions: 0 });
+assert.strictEqual(y.remaining, 24000); assert.ok(!y.fromPayslip); assert.strictEqual(y.pct, 0);
+
+// January of a new year: last year's payslips still set the monthly pay
+y = payrollYear({ months: flat, payments: [], lastYear: { months: flat, payments: [pay(11, 1900), pay(12, 1900)] } });
+assert.strictEqual(y.months[0].due, 1900); assert.strictEqual(y.remaining, 22800); assert.ok(y.fromPayslip);
+
+// Only a whole month's payslip near the estimate sets the rate: not the part month she
+// started in, an advance, or a month with a bonus on top
+y = payrollYear({ months: jane, payments: [pay(1, 1250)] });
+assert.strictEqual(y.rate, 1, 'a part month says nothing about a whole one');
+y = payrollYear({ months: flat, payments: [pay(1, 1900), pay(2, 500), pay(3, 4400)] });
+assert.strictEqual(y.rate, 0.95, 'the advance and the bonus month are passed over');
+assert.deepStrictEqual(y.months.slice(0, 4).map(m => m.paid), [true, true, true, false], 'but each still counts as a paid month');
+
+// A month missed in the middle is still owed
+y = payrollYear({ months: flat, payments: [1, 3, 4].map(m => pay(m, 2000)) });
+assert.deepStrictEqual(y.months.filter(m => !m.paid).map(m => m.month), [2, 5, 6, 7, 8, 9, 10, 11, 12]);
+
+// After a raise the payslip follows the new salary in the same proportion
+const raised = payrollMonths({ history: [{ effective_from: '2025-01-01', annual_salary: 24000 }, { effective_from: '2026-07-01', annual_salary: 30000 }],
+  year: 2026, startDate: '2025-01-01', endDate: null, annual: 30000, netMonthly: net });
+y = payrollYear({ months: raised, payments: [1, 2, 3, 4, 5, 6].map(m => pay(m, 1900)) });
+assert.strictEqual(y.months.find(m => m.month === 7).due, 2375, '2,500 estimated, at 95%');
+
+// Everything paid, with a deduction never taken off a payslip: paid ahead by that much
+y = payrollYear({ months: flat, payments: flat.map(m => pay(m.month, 2000)), deductions: 100 });
+assert.strictEqual(y.remaining, -100); assert.strictEqual(y.pct, 100);
 
 console.log('payroll months tests passed');

@@ -2819,6 +2819,38 @@ function initSalaryYearSelect() {
   sel.value = now;
 }
 
+// ── Payroll card: the year in months ──
+// Payroll staff are paid monthly, so their card counts months rather than a yearly target:
+// which months have a payment logged, which are still to pay, and what those come to at
+// the person's real monthly pay, less deductions (the server works it out: payrollYear).
+function payrollCardMonths(emp, year) {
+  const months = emp.pay_months, sym = currencySymbol(emp.currency || 'GBP');
+  const money = v => sym + v.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const paid = months.filter(m => m.paid), toPay = months.filter(m => !m.paid);
+  const lastPaid = paid.length ? paid[paid.length - 1].month : 0;
+  const missed = toPay.filter(m => m.month < lastPaid);
+  // A month still to pay is late once it is over: every month of a past year, and the ones before this month
+  const now = new Date(), y = Number(year);
+  const lateBefore = y < now.getFullYear() ? 13 : y === now.getFullYear() ? now.getMonth() + 1 : 0;
+  const headline = !paid.length ? 'No months paid yet' : !toPay.length ? `Paid for all of ${year}`
+    : `Paid to ${MONTHS[lastPaid]}${missed.length ? `, except ${missed.map(m => MONTHS[m.month].slice(0, 3)).join(', ')}` : ''}`;
+  const count = toPay.length ? `${toPay.length} month${toPay.length > 1 ? 's' : ''} to pay` : '';
+  const strip = MONTHS.slice(1).map((name, i) => {
+    const m = months.find(x => x.month === i + 1);
+    const state = !m ? 'off' : m.paid ? 'paid' : m.month < lateBefore ? 'late' : 'due';
+    const tip = !m ? `${name}: not on the payroll` : m.paid ? `${name}: ${money(m.logged)} paid` : `${name}: ${money(m.due)} to pay${state === 'late' ? ', overdue' : ''}`;
+    return `<span class="sc-mo is-${state}" title="${tip}">${name[0]}</span>`;
+  }).join('');
+
+  const left = parseFloat(emp.net_remaining) || 0;
+  const ded = (parseFloat(emp.excess_deduction) || 0) + (parseFloat(emp.total_office_deductions) || 0);
+  const sameDue = toPay.every(m => Math.abs(m.due - toPay[0].due) < 0.005);
+  const sum = !toPay.length ? (ded > 0 ? `${money(ded)} of deductions not taken off` : 'Every month is paid')
+    : (toPay.length === 1 ? `${MONTHS[toPay[0].month]} at ${money(toPay[0].due)}` : sameDue ? `${toPay.length} months × ${money(toPay[0].due)}` : `${toPay.length} months`)
+      + (ded > 0 ? `, less ${money(ded)} deductions` : '');
+  return { headline, count, strip, sum, left: left > 0 ? money(left) : 'Nothing left', owing: left > 0 };
+}
+
 async function loadSalaryPage() {
   const container = document.getElementById('salaryCards');
   try {
@@ -3058,7 +3090,7 @@ async function loadSalaryPage() {
       const detailRows = canExpand ? groupUnpaid.map(r => {
         const sym = currencySymbol(r.currency || 'GBP');
         const grossMo = (parseFloat(r.annual_salary) || 0) / 12;
-        const netMo = r.net_monthly ? parseFloat(r.net_monthly) : null;
+        const netMo = parseFloat(r.monthly_pay) || parseFloat(r.net_monthly) || null;
         const amt = netMo ?? grossMo;
         const remain = parseFloat(r.net_remaining);
         const remainHtml = isFinite(remain)
@@ -3177,40 +3209,24 @@ async function loadSalaryPage() {
       const cur             = emp.currency || 'GBP';
       const sym             = currencySymbol(cur);
       const paye            = emp.paye_breakdown || null;
-      const netMonthly      = emp.net_monthly ? parseFloat(emp.net_monthly) : null;
+      // Payroll is counted in months, at what a whole month really pays (the latest payslip, else the estimate)
+      const byMonth         = Array.isArray(emp.pay_months) && emp.pay_months.length ? payrollCardMonths(emp, year) : null;
+      const monthlyPay      = parseFloat(emp.monthly_pay) || 0;
+      const fromPayslip     = emp.monthly_pay_from === 'payslip';
 
-      // First-month suggestion: server-provided or client-side fallback
-      const pr = emp.pro_rated;
+      // First-month suggestion, in the year they started: part of a month, by working days
       const fm = emp.first_month_full;
       const isPartialFirstMonth = fm && fm.first_month_days < fm.first_month_total_days;
       const payeNetFactor = paye && annualSalary > 0 ? paye.net_annual / annualSalary : 1;
-      let suggestedFirstMonthNet = isPartialFirstMonth
+      const suggestedFirstMonthNet = isPartialFirstMonth
         ? parseFloat((fm.first_month_pay * payeNetFactor).toFixed(2))
         : null;
-      let fmMeta = isPartialFirstMonth ? {
-        monthName: MONTHS[parseInt(fm.first_month.split('-')[1]) - 1] || fm.first_month,
+      const fmMeta = isPartialFirstMonth ? {
+        monthName: MONTHS[parseInt(fm.first_month.split('-')[1])] || fm.first_month,
         startDate: fm.start_date || emp.start_date,
         daysWorked: fm.first_month_days,
         daysTotal: fm.first_month_total_days
       } : null;
-
-      // Client-side fallback: derive from emp.start_date when server didn't provide fm data
-      if (suggestedFirstMonthNet === null && emp.start_date && !emp.is_terminated) {
-        const sd = new Date(emp.start_date + 'T00:00:00');
-        const startDay = sd.getDate();
-        if (startDay > 1) {
-          const daysInMonth = new Date(sd.getFullYear(), sd.getMonth() + 1, 0).getDate();
-          const daysWorked = daysInMonth - startDay + 1;
-          const netM = (paye ? paye.net_monthly : null) || netMonthly || (annualSalary / 12);
-          suggestedFirstMonthNet = parseFloat((netM * (daysWorked / daysInMonth)).toFixed(2));
-          fmMeta = {
-            monthName: MONTHS[sd.getMonth()],
-            startDate: emp.start_date,
-            daysWorked,
-            daysTotal: daysInMonth
-          };
-        }
-      }
 
       const initials = (emp.name || '?').split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
       const typeLabel = emp.employment_type === 'self_employed' ? 'Self-Employed' : 'Payroll';
@@ -3250,13 +3266,19 @@ async function loadSalaryPage() {
             </div>
           </div>
           <div class="sc-annual">
-            <div class="sc-annual-lbl">${isTerminated ? 'Final earned' : isProRatedYear ? `Target ${year}` : 'Annual'}</div>
-            <div class="sc-annual-val">${sym}${(isTerminated ? (earnedTotal ?? annualSalary) : isProRatedYear ? salaryTarget : annualSalary).toLocaleString('en-GB',{maximumFractionDigits:0})}</div>
+            <div class="sc-annual-lbl">${isTerminated ? 'Final earned' : byMonth ? `Monthly pay${fromPayslip ? '' : ' (est.)'}` : isProRatedYear ? `Target ${year}` : 'Annual'}</div>
+            <div class="sc-annual-val">${sym}${(isTerminated ? (earnedTotal ?? annualSalary) : byMonth ? monthlyPay : isProRatedYear ? salaryTarget : annualSalary).toLocaleString('en-GB',{maximumFractionDigits:0})}</div>
           </div>
           ${!isTerminated ? `<button class="btn btn-primary btn-sm" onclick="openSalaryPaymentModal(${emp.employee_id})" style="flex-shrink:0">+ Pay</button>` : ''}
         </div>
 
-        <div class="sc-prog">
+        ${byMonth ? `<div class="sc-prog">
+          <div class="sc-prog-meta">
+            <span>${byMonth.headline}</span>
+            <span class="sc-prog-left">${byMonth.count}</span>
+          </div>
+          <div class="sc-mo-strip" role="img" aria-label="${byMonth.headline}${byMonth.count ? ', ' + byMonth.count : ''}">${byMonth.strip}</div>
+        </div>` : `<div class="sc-prog">
           <div class="sc-prog-meta">
             <span>${pctPaid}% paid</span>
             <span class="sc-prog-left${isOverpaid ? ' is-over' : ''}">${isOverpaid ? 'Overpaid' : netRemaining === 0 ? 'Fully paid' : `${sym}${Math.abs(netRemaining).toLocaleString('en-GB',{maximumFractionDigits:0})} left`}</span>
@@ -3264,7 +3286,7 @@ async function loadSalaryPage() {
           <div class="sc-prog-track">
             <div class="sc-prog-fill${isOverpaid ? ' overpaid' : ''}" style="width:${Math.min(pctPaid,100)}%"></div>
           </div>
-        </div>
+        </div>`}
 
 
         ${(() => {
@@ -3274,11 +3296,17 @@ async function loadSalaryPage() {
           const showFirstMonth = suggestedFirstMonthNet !== null && fmMeta && !isOverpaid;
           const firstMonthUnpaid = showFirstMonth && totalPaidEmp === 0;
           return '<div class="sc-figs">' +
-            '<div class="sc-fig">' +
-              '<div class="sc-fig-lbl">' + monthlyLbl + '</div>' +
-              '<div class="sc-fig-val">' + sym + monthlyVal.toLocaleString('en-GB',{maximumFractionDigits:0}) + '</div>' +
-              (monthlySub ? '<div class="sc-fig-sub">' + monthlySub + '</div>' : '') +
-            '</div>' +
+            (byMonth
+              ? '<div class="sc-fig">' +
+                  '<div class="sc-fig-lbl">Left to pay in ' + year + '</div>' +
+                  '<div class="sc-fig-val' + (byMonth.owing ? '' : ' is-none') + '">' + byMonth.left + '</div>' +
+                  '<div class="sc-fig-sub">' + byMonth.sum + '</div>' +
+                '</div>'
+              : '<div class="sc-fig">' +
+                  '<div class="sc-fig-lbl">' + monthlyLbl + '</div>' +
+                  '<div class="sc-fig-val">' + sym + monthlyVal.toLocaleString('en-GB',{maximumFractionDigits:0}) + '</div>' +
+                  (monthlySub ? '<div class="sc-fig-sub">' + monthlySub + '</div>' : '') +
+                '</div>') +
             '<div class="sc-fig">' +
               (firstMonthUnpaid
                 ? '<div class="sc-fig-lbl">Pay this month</div>' +
@@ -3361,9 +3389,10 @@ async function loadSalaryPage() {
                 </div>` : ''}
               </div>
               <div class="sc-paye-footer">
-                <span class="sc-paye-footer-lbl">Monthly take-home</span>
+                <span class="sc-paye-footer-lbl">Estimated take-home</span>
                 <span class="sc-paye-footer-val">${sym}${paye.net_monthly.toLocaleString('en-GB',{minimumFractionDigits:2})}</span>
               </div>
+              ${fromPayslip ? `<div class="sc-hist-hint">This is the tracker's own tax estimate. Their latest payslip was ${sym}${monthlyPay.toLocaleString('en-GB',{minimumFractionDigits:2})}, and that is the monthly pay used for the months still to pay.</div>` : ''}
             </div>
           </div>` : ''}
 
@@ -3427,29 +3456,9 @@ async function loadSalaryPage() {
           </div>` : ''}
 
           <!-- Pro-rated breakdown -->
-          ${(emp.pro_rated || emp.first_month_full || (suggestedFirstMonthNet !== null && fmMeta)) ? (() => {
+          ${(emp.pro_rated || emp.first_month_full) ? (() => {
             const pr = emp.pro_rated;
             const fmr = emp.first_month_full;
-            // Client-side fallback only (no server data)
-            if (!pr && !fmr && suggestedFirstMonthNet !== null && fmMeta) {
-              const grossMonthly = annualSalary / 12;
-              const grossProrata = grossMonthly * (fmMeta.daysWorked / fmMeta.daysTotal);
-              const payLabel = paye ? ('Net after PAYE/NI' + (paye.pension > 0 ? '/pension' : '')) : 'Pro-rata amount';
-              return `
-          <div class="sc-section">
-            <button class="sc-sec-toggle" onclick="toggleSection(this)">
-              <span class="sc-sec-title">Pro-Rated Pay — started ${fmMeta.startDate}</span>
-              <span class="sc-chevron">›</span>
-            </button>
-            <div class="sc-sec-body">
-              <div class="sc-breakdown">
-                <div class="sc-breakdown-title">First month payment — ${fmMeta.monthName}</div>
-                <div class="sc-breakdown-row"><span>${fmMeta.daysWorked} of ${fmMeta.daysTotal} days in ${fmMeta.monthName}</span><span>${sym}${grossProrata.toLocaleString('en-GB',{minimumFractionDigits:2})} gross</span></div>
-                <div class="sc-breakdown-row total"><span>${payLabel}</span><span>${sym}${suggestedFirstMonthNet.toLocaleString('en-GB',{minimumFractionDigits:2})}</span></div>
-              </div>
-            </div>
-          </div>`;
-            }
             const showFmFull = fmr && fmr.first_month_days < fmr.first_month_total_days;
             const fmrName = fmr ? (MONTHS[parseInt(fmr.first_month.split('-')[1])] || fmr.first_month) : null;
             const fmrGross = fmr ? fmr.first_month_pay : 0;
@@ -3479,23 +3488,23 @@ async function loadSalaryPage() {
             </div>
           </div>`; })() : ''}
 
-          <!-- Payroll: each month of the year, what it is due and whether it is paid -->
-          ${Array.isArray(emp.pay_months) && emp.pay_months.length ? (() => {
-            const toPay = emp.pay_months.filter(m => !m.paid);
+          <!-- Payroll: each month of the year, paid (what was logged) or still to pay (what is due) -->
+          ${byMonth ? (() => {
+            const toPay = emp.pay_months.filter(m => !m.paid).length;
+            const money = v => sym + v.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            const ded = excessDeduction + officeTotal;
             return `<div class="sc-section">
             <button class="sc-sec-toggle" onclick="toggleSection(this)">
-              <span class="sc-sec-title">Month by month — ${emp.pay_months.length - toPay.length} paid${toPay.some(m => m.status === 'part') ? `, ${toPay.filter(m => m.status === 'part').length} part paid` : ''}, ${toPay.filter(m => m.status !== 'part').length} to pay</span>
+              <span class="sc-sec-title">Month by month — ${emp.pay_months.length - toPay} paid, ${toPay} to pay</span>
               <span class="sc-chevron">›</span>
             </button>
             <div class="sc-sec-body">
-              ${emp.pay_months.map(m => {
-                const money = v => sym + v.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-                return `<div class="sc-month${m.paid ? ' is-paid' : ''}">
-                <span>${MONTHS[m.month]} ${year}${m.status === 'part' ? `<small>${money(m.logged)} logged, ${money(m.left)} still to pay</small>` : ''}</span>
-                <span>${money(m.due)}</span>
-                <span class="db-tag ${m.paid ? '' : 'is-warn'}">${m.paid ? 'Paid' : m.status === 'part' ? 'Part paid' : 'To pay'}</span>
-              </div>`; }).join('')}
-              <div class="sc-hist-hint">Take-home for each month at the salary in force that month. A month is paid once its full take-home is logged (within 3%, as the take-home is an estimate). What is left is what each month is still owed${(parseFloat(emp.excess_deduction) || 0) + (parseFloat(emp.total_office_deductions) || 0) > 0 ? ', less deductions' : ''}.</div>
+              ${emp.pay_months.map(m => `<div class="sc-month${m.paid ? ' is-paid' : ''}">
+                <span>${MONTHS[m.month]} ${year}</span>
+                <span>${money(m.paid ? m.logged : m.due)}</span>
+                <span class="db-tag ${m.paid ? '' : 'is-warn'}">${m.paid ? 'Paid' : 'To pay'}</span>
+              </div>`).join('')}
+              <div class="sc-hist-hint">A month is paid once a payment is logged for it. The months still to pay are at ${fromPayslip ? 'their latest payslip' : 'the estimated take-home, until a payslip is logged'}${ded > 0 ? `, and ${money(ded)} of deductions comes off what is left` : ''}.</div>
             </div>
           </div>`; })() : ''}
 
@@ -8043,9 +8052,11 @@ async function loadEmployeeDashboard(user) {
       const s = sal;
       const sSym = s.currency === 'GBP' ? '£' : s.currency === 'USD' ? '$' : (s.currency + ' ');
       const paye = s.paye_breakdown;
-      const monthlyVal = paye ? paye.net_monthly : s.annual_salary / 12;
+      // Payroll: the latest payslip when one is logged, else the tax estimate
+      const fromPayslip = s.monthly_pay_from === 'payslip';
+      const monthlyVal = fromPayslip ? s.monthly_pay : paye ? paye.net_monthly : s.annual_salary / 12;
       const monthlyLbl = paye ? 'Take-home / mo' : 'Monthly pay';
-      const monthlySub = paye
+      const monthlySub = fromPayslip ? 'as last paid' : paye
         ? ('after PAYE + NI' + (paye.pension > 0 ? ' + pension' : ''))
         : (sSym + s.annual_salary.toLocaleString('en-GB',{maximumFractionDigits:0}) + '/yr');
       const netRemaining = parseFloat(s.net_remaining) || 0;
@@ -8059,21 +8070,11 @@ async function loadEmployeeDashboard(user) {
       const fm = s.first_month_full;
       const isPartialFirstMonth = fm && fm.first_month_days < fm.first_month_total_days;
       const payeNetFactor = paye && s.annual_salary > 0 ? paye.net_annual / s.annual_salary : 1;
-      let sugFirstMonthNet = isPartialFirstMonth ? parseFloat((fm.first_month_pay * payeNetFactor).toFixed(2)) : null;
-      let fmMeta2 = isPartialFirstMonth ? {
-        monthName: MONTHS[parseInt(fm.first_month.split('-')[1]) - 1] || fm.first_month,
+      const sugFirstMonthNet = isPartialFirstMonth ? parseFloat((fm.first_month_pay * payeNetFactor).toFixed(2)) : null;
+      const fmMeta2 = isPartialFirstMonth ? {
+        monthName: MONTHS[parseInt(fm.first_month.split('-')[1])] || fm.first_month,
         daysWorked: fm.first_month_days, daysTotal: fm.first_month_total_days
       } : null;
-      if (sugFirstMonthNet === null && s.start_date) {
-        const sd2 = new Date(s.start_date + 'T00:00:00');
-        if (sd2.getDate() > 1) {
-          const dim = new Date(sd2.getFullYear(), sd2.getMonth() + 1, 0).getDate();
-          const dw  = dim - sd2.getDate() + 1;
-          const nm  = paye ? paye.net_monthly : s.annual_salary / 12;
-          sugFirstMonthNet = parseFloat((nm * (dw / dim)).toFixed(2));
-          fmMeta2 = { monthName: MONTHS[sd2.getMonth()], daysWorked: dw, daysTotal: dim };
-        }
-      }
       const showFM = sugFirstMonthNet !== null && fmMeta2 && !isOverpaid;
 
       const payments = Array.isArray(s.payments) ? s.payments : [];

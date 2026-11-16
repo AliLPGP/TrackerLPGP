@@ -278,16 +278,14 @@ function payLeftLine(r, year) {
   const gone = r.is_terminated ? ` (left on ${niceDate(r.termination_date)})` : '';
   if (left < -0.5) return `${who}${gone} has nothing left to be paid in ${year}. They are ${money(-left, cur)} ahead of what the year adds up to.`;
   if (left <= 0.5) return num(r.total_paid) > 0 ? `${who}${gone} is fully paid for ${year}: ${money(r.total_paid, cur)} in total.` : `${who}${gone} was not due any pay in ${year}.`;
+  // Payroll is counted in months: the ones with no payment logged
   const months = (r.pay_months || []).filter(m => !m.paid);
   if (months.length) {
-    const full = months.filter(m => m.status !== 'part'), part = months.filter(m => m.status === 'part');
-    const sameDue = full.length && full.every(m => Math.abs(m.due - full[0].due) < 0.01);
-    const bits = [];
-    if (full.length) bits.push(sameDue ? `${listOf(full.map(m => MONTHS[m.month - 1]))} at ${money(full[0].due, cur)}${full.length > 1 ? ' each' : ''}`
-      : listOf(full.map(m => `${MONTHS[m.month - 1]} (${money(m.due, cur)})`)));
-    part.forEach(m => bits.push(`${money(m.left, cur)} still owed for ${MONTHS[m.month - 1]}`));
+    const sameDue = months.every(m => Math.abs(m.due - months[0].due) < 0.01);
+    const what = sameDue ? `${listOf(months.map(m => MONTHS[m.month - 1]))} at ${money(months[0].due, cur)}${months.length > 1 ? ' each' : ''}`
+      : listOf(months.map(m => `${MONTHS[m.month - 1]} (${money(m.due, cur)})`));
     const ded = num(r.excess_deduction) + num(r.total_office_deductions);
-    return `${who}${gone} has ${money(left, cur)} left to be paid in ${year}. That is ${bits.join(', plus ')}${ded > 0 ? `, less ${money(ded, cur)} in deductions` : ''}. Paid so far: ${money(r.total_paid, cur)}.`;
+    return `${who}${gone} has ${money(left, cur)} left to be paid in ${year}. That is ${what}${ded > 0 ? `, less ${money(ded, cur)} in deductions` : ''}. Paid so far: ${money(r.total_paid, cur)}.`;
   }
   return `${who}${gone} has ${money(left, cur)} left to be paid in ${year}, out of ${money(num(r.total_paid) + left, cur)} for the year. Paid so far: ${money(r.total_paid, cur)} (${r.pct_paid}%).`;
 }
@@ -317,13 +315,11 @@ const ANSWER = {
       && !(r.start_date && r.start_date.slice(0, 7) > `${year}-${String(month).padStart(2, '0')}`));
     const due = r => { const pm = (r.pay_months || []).find(m => m.month === month); return pm ? pm.due : num(r.annual_salary) / 12; };
     const none = rows.filter(r => !(r.payments || []).some(p => Number(p.payment_month) === month));
-    const part = rows.filter(r => (r.pay_months || []).some(m => m.month === month && m.status === 'part'));
     const mName = `${MONTHS[month - 1]}${year !== Number(now.slice(0, 4)) ? ' ' + year : ''}`;
-    if (!none.length && !part.length) return `Everyone has been paid for ${mName}.` + say.quip('allPaid', 0.8);
+    if (!none.length) return `Everyone has been paid for ${mName}.` + say.quip('allPaid', 0.8);
     const total = none.reduce((a, r) => a + gbpOf(due(r), r.currency), 0);
-    let out = none.length ? `${plural(none.length, 'person has', 'people have')} not been paid for ${mName} yet, about ${pounds(total)} in pounds:\n` + none.slice(0, 40).map(r => `${r.name}: ${money(due(r), r.currency)}`).join('\n') + (none.length > 40 ? `\nand ${none.length - 40} more on the Salary page.` : '') : `Nobody is waiting on a full payment for ${mName}.`;
-    if (part.length) out += `\nPart paid: ${listOf(part.map(r => `${r.name} (${money(r.pay_months.find(m => m.month === month).left, r.currency)} to go)`))}.`;
-    return out + (none.length > 3 ? say.quip('unpaid') : '');
+    return `${plural(none.length, 'person has', 'people have')} not been paid for ${mName} yet, about ${pounds(total)} in pounds:\n` + none.slice(0, 40).map(r => `${r.name}: ${money(due(r), r.currency)}`).join('\n')
+      + (none.length > 40 ? `\nand ${none.length - 40} more on the Salary page.` : '') + (none.length > 3 ? say.quip('unpaid') : '');
   },
 
   async paid(q, d) {
@@ -347,8 +343,11 @@ const ANSWER = {
     return q.people.map(p => {
       const r = rows.find(x => x.employee_id === p.id), cur = p.currency || 'GBP', annual = num(p.annual_salary);
       if (!(annual > 0)) return `${p.name} has no salary set yet.`;
+      // Payroll take-home: their latest payslip when one is logged, else our tax estimate
+      const takeHome = r && (r.monthly_pay || r.net_monthly);
       return p.employment_type === 'payroll'
-        ? `${p.name} is on ${money(annual, cur)} a year (payroll). Take-home is about ${money(r && r.net_monthly ? r.net_monthly : annual / 12, cur)} a month${r && r.net_monthly ? ' after tax' : ''}.`
+        ? `${p.name} is on ${money(annual, cur)} a year (payroll). ${!takeHome ? `That is ${money(annual / 12, cur)} a month before tax.`
+          : r.monthly_pay_from === 'payslip' ? `They take home ${money(takeHome, cur)} a month, going by their latest payslip.` : `Take-home is about ${money(takeHome, cur)} a month after tax.`}`
         : `${p.name} is paid ${money(annual, cur)} a year (self-employed), which is ${money(annual / 12, cur)} a month${cur !== 'GBP' ? `, about ${pounds(gbpOf(annual, cur))} a year in pounds` : ''}.`;
     }).join('\n');
   },

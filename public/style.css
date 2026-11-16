@@ -8250,3 +8250,11 @@ body[data-role="accounts"] #page-portfolio .pf-row-actions { display: none !impo
 @keyframes wmEq { 0%, 100% { height: 4px; } 50% { height: 14px; } }
 .wm-mic--on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
 @media (prefers-reduced-motion: reduce) { .wm-voicebar-eq i, .wm-mic--live { animation: none !important; } }
+
+/* Payroll card: the year as twelve months, each paid or still to pay */
+.sc-mo-strip { display: grid; grid-template-columns: repeat(12, 1fr); gap: 4px; }
+.sc-mo { display: grid; place-items: center; height: 26px; border-radius: 6px; font: 600 11px/1 var(--font-sans); cursor: default; }
+.sc-mo.is-paid { background: var(--accent); color: #fff; }
+.sc-mo.is-due { border: 1px dashed var(--border-bright, var(--border)); color: var(--muted); }
+.sc-mo.is-late { border: 1px solid var(--warning); background: var(--warning-soft); color: var(--warning); }
+.sc-mo.is-off { background: var(--surface-2); color: var(--dim); opacity: 0.6; }
