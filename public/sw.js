@@ -1,4 +1,4 @@
-const CACHE = 'lpgp-v143';
+const CACHE = 'lpgp-v147';
 const STATIC = [
   '/',
   '/style.css',
@@ -37,6 +37,9 @@ self.addEventListener('fetch', e => {
 
   // Never intercept API calls — always go to network
   if (url.pathname.includes('/api/')) return;
+
+  // Wasteman's natural voice keeps its own downloads (a 90 MB model): they must not be copied in here too
+  if (/(^|\.)(huggingface\.co|hf\.co)$/.test(url.hostname) || url.hostname === 'cdn.jsdelivr.net') return;
 
   // Navigation requests: network-first so the app always loads fresh, fall back to cache offline
   if (e.request.mode === 'navigate') {

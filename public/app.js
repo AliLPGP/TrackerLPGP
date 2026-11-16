@@ -2248,7 +2248,7 @@ function updatePreview() {
     html = `<h3>Day Off Note</h3>
       <div class="deduction-row"><span>${label}${typeNote}</span></div>
       <div class="deduction-row" style="font-size:0.8rem;color:var(--muted)">Day-off deductions are calculated at year level based on your allowance.</div>
-      ${noDeduct ? `<div class="deduction-row" style="font-size:0.8rem;color:var(--positive);font-weight:600">✓ Marked "doesn't count" — this day is logged and counts in the days-used total, but will never be deducted from salary.</div>` : ''}`;
+      ${noDeduct ? `<div class="deduction-row" style="font-size:0.8rem;color:var(--positive);font-weight:600">✓ Not deducted: this day is logged and counts in the days-used total, but will never be deducted from salary.</div>` : ''}`;
   } else {
     const brk = parseInt(document.getElementById('recBreak').value) || 0;
     const phone = parseInt(document.getElementById('recPhone').value) || 0;
@@ -2819,6 +2819,38 @@ function initSalaryYearSelect() {
   sel.value = now;
 }
 
+// ── Payroll card: the year in months ──
+// Payroll staff are paid monthly, so their card counts months rather than a yearly target:
+// which months have a payment logged, which are still to pay, and what those come to at
+// the person's real monthly pay, less deductions (the server works it out: payrollYear).
+function payrollCardMonths(emp, year) {
+  const months = emp.pay_months, sym = currencySymbol(emp.currency || 'GBP');
+  const money = v => sym + v.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const paid = months.filter(m => m.paid), toPay = months.filter(m => !m.paid);
+  const lastPaid = paid.length ? paid[paid.length - 1].month : 0;
+  const missed = toPay.filter(m => m.month < lastPaid);
+  // A month still to pay is late once it is over: every month of a past year, and the ones before this month
+  const now = new Date(), y = Number(year);
+  const lateBefore = y < now.getFullYear() ? 13 : y === now.getFullYear() ? now.getMonth() + 1 : 0;
+  const headline = !paid.length ? 'No months paid yet' : !toPay.length ? `Paid for all of ${year}`
+    : `Paid to ${MONTHS[lastPaid]}${missed.length ? `, except ${missed.map(m => MONTHS[m.month].slice(0, 3)).join(', ')}` : ''}`;
+  const count = toPay.length ? `${toPay.length} month${toPay.length > 1 ? 's' : ''} to pay` : '';
+  const strip = MONTHS.slice(1).map((name, i) => {
+    const m = months.find(x => x.month === i + 1);
+    const state = !m ? 'off' : m.paid ? 'paid' : m.month < lateBefore ? 'late' : 'due';
+    const tip = !m ? `${name}: not on the payroll` : m.paid ? `${name}: ${money(m.logged)} paid` : `${name}: ${money(m.due)} to pay${state === 'late' ? ', overdue' : ''}`;
+    return `<span class="sc-mo is-${state}" title="${tip}">${name[0]}</span>`;
+  }).join('');
+
+  const left = parseFloat(emp.net_remaining) || 0;
+  const ded = (parseFloat(emp.excess_deduction) || 0) + (parseFloat(emp.total_office_deductions) || 0);
+  const sameDue = toPay.every(m => Math.abs(m.due - toPay[0].due) < 0.005);
+  const sum = !toPay.length ? (ded > 0 ? `${money(ded)} of deductions not taken off` : 'Every month is paid')
+    : (toPay.length === 1 ? `${MONTHS[toPay[0].month]} at ${money(toPay[0].due)}` : sameDue ? `${toPay.length} months × ${money(toPay[0].due)}` : `${toPay.length} months`)
+      + (ded > 0 ? `, less ${money(ded)} deductions` : '');
+  return { headline, count, strip, sum, left: left > 0 ? money(left) : 'Nothing left', owing: left > 0 };
+}
+
 async function loadSalaryPage() {
   const container = document.getElementById('salaryCards');
   try {
@@ -3058,7 +3090,7 @@ async function loadSalaryPage() {
       const detailRows = canExpand ? groupUnpaid.map(r => {
         const sym = currencySymbol(r.currency || 'GBP');
         const grossMo = (parseFloat(r.annual_salary) || 0) / 12;
-        const netMo = r.net_monthly ? parseFloat(r.net_monthly) : null;
+        const netMo = parseFloat(r.monthly_pay) || parseFloat(r.net_monthly) || null;
         const amt = netMo ?? grossMo;
         const remain = parseFloat(r.net_remaining);
         const remainHtml = isFinite(remain)
@@ -3177,40 +3209,24 @@ async function loadSalaryPage() {
       const cur             = emp.currency || 'GBP';
       const sym             = currencySymbol(cur);
       const paye            = emp.paye_breakdown || null;
-      const netMonthly      = emp.net_monthly ? parseFloat(emp.net_monthly) : null;
+      // Payroll is counted in months, at what a whole month really pays (the latest payslip, else the estimate)
+      const byMonth         = Array.isArray(emp.pay_months) && emp.pay_months.length ? payrollCardMonths(emp, year) : null;
+      const monthlyPay      = parseFloat(emp.monthly_pay) || 0;
+      const fromPayslip     = emp.monthly_pay_from === 'payslip';
 
-      // First-month suggestion: server-provided or client-side fallback
-      const pr = emp.pro_rated;
+      // First-month suggestion, in the year they started: part of a month, by working days
       const fm = emp.first_month_full;
       const isPartialFirstMonth = fm && fm.first_month_days < fm.first_month_total_days;
       const payeNetFactor = paye && annualSalary > 0 ? paye.net_annual / annualSalary : 1;
-      let suggestedFirstMonthNet = isPartialFirstMonth
+      const suggestedFirstMonthNet = isPartialFirstMonth
         ? parseFloat((fm.first_month_pay * payeNetFactor).toFixed(2))
         : null;
-      let fmMeta = isPartialFirstMonth ? {
-        monthName: MONTHS[parseInt(fm.first_month.split('-')[1]) - 1] || fm.first_month,
+      const fmMeta = isPartialFirstMonth ? {
+        monthName: MONTHS[parseInt(fm.first_month.split('-')[1])] || fm.first_month,
         startDate: fm.start_date || emp.start_date,
         daysWorked: fm.first_month_days,
         daysTotal: fm.first_month_total_days
       } : null;
-
-      // Client-side fallback: derive from emp.start_date when server didn't provide fm data
-      if (suggestedFirstMonthNet === null && emp.start_date && !emp.is_terminated) {
-        const sd = new Date(emp.start_date + 'T00:00:00');
-        const startDay = sd.getDate();
-        if (startDay > 1) {
-          const daysInMonth = new Date(sd.getFullYear(), sd.getMonth() + 1, 0).getDate();
-          const daysWorked = daysInMonth - startDay + 1;
-          const netM = (paye ? paye.net_monthly : null) || netMonthly || (annualSalary / 12);
-          suggestedFirstMonthNet = parseFloat((netM * (daysWorked / daysInMonth)).toFixed(2));
-          fmMeta = {
-            monthName: MONTHS[sd.getMonth()],
-            startDate: emp.start_date,
-            daysWorked,
-            daysTotal: daysInMonth
-          };
-        }
-      }
 
       const initials = (emp.name || '?').split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
       const typeLabel = emp.employment_type === 'self_employed' ? 'Self-Employed' : 'Payroll';
@@ -3250,13 +3266,19 @@ async function loadSalaryPage() {
             </div>
           </div>
           <div class="sc-annual">
-            <div class="sc-annual-lbl">${isTerminated ? 'Final earned' : isProRatedYear ? `Target ${year}` : 'Annual'}</div>
-            <div class="sc-annual-val">${sym}${(isTerminated ? (earnedTotal ?? annualSalary) : isProRatedYear ? salaryTarget : annualSalary).toLocaleString('en-GB',{maximumFractionDigits:0})}</div>
+            <div class="sc-annual-lbl">${isTerminated ? 'Final earned' : byMonth ? `Monthly pay${fromPayslip ? '' : ' (est.)'}` : isProRatedYear ? `Target ${year}` : 'Annual'}</div>
+            <div class="sc-annual-val">${sym}${(isTerminated ? (earnedTotal ?? annualSalary) : byMonth ? monthlyPay : isProRatedYear ? salaryTarget : annualSalary).toLocaleString('en-GB',{maximumFractionDigits:0})}</div>
           </div>
           ${!isTerminated ? `<button class="btn btn-primary btn-sm" onclick="openSalaryPaymentModal(${emp.employee_id})" style="flex-shrink:0">+ Pay</button>` : ''}
         </div>
 
-        <div class="sc-prog">
+        ${byMonth ? `<div class="sc-prog">
+          <div class="sc-prog-meta">
+            <span>${byMonth.headline}</span>
+            <span class="sc-prog-left">${byMonth.count}</span>
+          </div>
+          <div class="sc-mo-strip" role="img" aria-label="${byMonth.headline}${byMonth.count ? ', ' + byMonth.count : ''}">${byMonth.strip}</div>
+        </div>` : `<div class="sc-prog">
           <div class="sc-prog-meta">
             <span>${pctPaid}% paid</span>
             <span class="sc-prog-left${isOverpaid ? ' is-over' : ''}">${isOverpaid ? 'Overpaid' : netRemaining === 0 ? 'Fully paid' : `${sym}${Math.abs(netRemaining).toLocaleString('en-GB',{maximumFractionDigits:0})} left`}</span>
@@ -3264,7 +3286,7 @@ async function loadSalaryPage() {
           <div class="sc-prog-track">
             <div class="sc-prog-fill${isOverpaid ? ' overpaid' : ''}" style="width:${Math.min(pctPaid,100)}%"></div>
           </div>
-        </div>
+        </div>`}
 
 
         ${(() => {
@@ -3274,11 +3296,17 @@ async function loadSalaryPage() {
           const showFirstMonth = suggestedFirstMonthNet !== null && fmMeta && !isOverpaid;
           const firstMonthUnpaid = showFirstMonth && totalPaidEmp === 0;
           return '<div class="sc-figs">' +
-            '<div class="sc-fig">' +
-              '<div class="sc-fig-lbl">' + monthlyLbl + '</div>' +
-              '<div class="sc-fig-val">' + sym + monthlyVal.toLocaleString('en-GB',{maximumFractionDigits:0}) + '</div>' +
-              (monthlySub ? '<div class="sc-fig-sub">' + monthlySub + '</div>' : '') +
-            '</div>' +
+            (byMonth
+              ? '<div class="sc-fig">' +
+                  '<div class="sc-fig-lbl">Left to pay in ' + year + '</div>' +
+                  '<div class="sc-fig-val' + (byMonth.owing ? '' : ' is-none') + '">' + byMonth.left + '</div>' +
+                  '<div class="sc-fig-sub">' + byMonth.sum + '</div>' +
+                '</div>'
+              : '<div class="sc-fig">' +
+                  '<div class="sc-fig-lbl">' + monthlyLbl + '</div>' +
+                  '<div class="sc-fig-val">' + sym + monthlyVal.toLocaleString('en-GB',{maximumFractionDigits:0}) + '</div>' +
+                  (monthlySub ? '<div class="sc-fig-sub">' + monthlySub + '</div>' : '') +
+                '</div>') +
             '<div class="sc-fig">' +
               (firstMonthUnpaid
                 ? '<div class="sc-fig-lbl">Pay this month</div>' +
@@ -3361,9 +3389,10 @@ async function loadSalaryPage() {
                 </div>` : ''}
               </div>
               <div class="sc-paye-footer">
-                <span class="sc-paye-footer-lbl">Monthly take-home</span>
+                <span class="sc-paye-footer-lbl">Estimated take-home</span>
                 <span class="sc-paye-footer-val">${sym}${paye.net_monthly.toLocaleString('en-GB',{minimumFractionDigits:2})}</span>
               </div>
+              ${fromPayslip ? `<div class="sc-hist-hint">This is the tracker's own tax estimate. Their latest payslip was ${sym}${monthlyPay.toLocaleString('en-GB',{minimumFractionDigits:2})}, and that is the monthly pay used for the months still to pay.</div>` : ''}
             </div>
           </div>` : ''}
 
@@ -3427,29 +3456,9 @@ async function loadSalaryPage() {
           </div>` : ''}
 
           <!-- Pro-rated breakdown -->
-          ${(emp.pro_rated || emp.first_month_full || (suggestedFirstMonthNet !== null && fmMeta)) ? (() => {
+          ${(emp.pro_rated || emp.first_month_full) ? (() => {
             const pr = emp.pro_rated;
             const fmr = emp.first_month_full;
-            // Client-side fallback only (no server data)
-            if (!pr && !fmr && suggestedFirstMonthNet !== null && fmMeta) {
-              const grossMonthly = annualSalary / 12;
-              const grossProrata = grossMonthly * (fmMeta.daysWorked / fmMeta.daysTotal);
-              const payLabel = paye ? ('Net after PAYE/NI' + (paye.pension > 0 ? '/pension' : '')) : 'Pro-rata amount';
-              return `
-          <div class="sc-section">
-            <button class="sc-sec-toggle" onclick="toggleSection(this)">
-              <span class="sc-sec-title">Pro-Rated Pay — started ${fmMeta.startDate}</span>
-              <span class="sc-chevron">›</span>
-            </button>
-            <div class="sc-sec-body">
-              <div class="sc-breakdown">
-                <div class="sc-breakdown-title">First month payment — ${fmMeta.monthName}</div>
-                <div class="sc-breakdown-row"><span>${fmMeta.daysWorked} of ${fmMeta.daysTotal} days in ${fmMeta.monthName}</span><span>${sym}${grossProrata.toLocaleString('en-GB',{minimumFractionDigits:2})} gross</span></div>
-                <div class="sc-breakdown-row total"><span>${payLabel}</span><span>${sym}${suggestedFirstMonthNet.toLocaleString('en-GB',{minimumFractionDigits:2})}</span></div>
-              </div>
-            </div>
-          </div>`;
-            }
             const showFmFull = fmr && fmr.first_month_days < fmr.first_month_total_days;
             const fmrName = fmr ? (MONTHS[parseInt(fmr.first_month.split('-')[1])] || fmr.first_month) : null;
             const fmrGross = fmr ? fmr.first_month_pay : 0;
@@ -3479,23 +3488,23 @@ async function loadSalaryPage() {
             </div>
           </div>`; })() : ''}
 
-          <!-- Payroll: each month of the year, what it is due and whether it is paid -->
-          ${Array.isArray(emp.pay_months) && emp.pay_months.length ? (() => {
-            const toPay = emp.pay_months.filter(m => !m.paid);
+          <!-- Payroll: each month of the year, paid (what was logged) or still to pay (what is due) -->
+          ${byMonth ? (() => {
+            const toPay = emp.pay_months.filter(m => !m.paid).length;
+            const money = v => sym + v.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            const ded = excessDeduction + officeTotal;
             return `<div class="sc-section">
             <button class="sc-sec-toggle" onclick="toggleSection(this)">
-              <span class="sc-sec-title">Month by month — ${emp.pay_months.length - toPay.length} paid${toPay.some(m => m.status === 'part') ? `, ${toPay.filter(m => m.status === 'part').length} part paid` : ''}, ${toPay.filter(m => m.status !== 'part').length} to pay</span>
+              <span class="sc-sec-title">Month by month — ${emp.pay_months.length - toPay} paid, ${toPay} to pay</span>
               <span class="sc-chevron">›</span>
             </button>
             <div class="sc-sec-body">
-              ${emp.pay_months.map(m => {
-                const money = v => sym + v.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-                return `<div class="sc-month${m.paid ? ' is-paid' : ''}">
-                <span>${MONTHS[m.month]} ${year}${m.status === 'part' ? `<small>${money(m.logged)} logged, ${money(m.left)} still to pay</small>` : ''}</span>
-                <span>${money(m.due)}</span>
-                <span class="db-tag ${m.paid ? '' : 'is-warn'}">${m.paid ? 'Paid' : m.status === 'part' ? 'Part paid' : 'To pay'}</span>
-              </div>`; }).join('')}
-              <div class="sc-hist-hint">Take-home for each month at the salary in force that month. A month is paid once its full take-home is logged (within 3%, as the take-home is an estimate). What is left is what each month is still owed${(parseFloat(emp.excess_deduction) || 0) + (parseFloat(emp.total_office_deductions) || 0) > 0 ? ', less deductions' : ''}.</div>
+              ${emp.pay_months.map(m => `<div class="sc-month${m.paid ? ' is-paid' : ''}">
+                <span>${MONTHS[m.month]} ${year}</span>
+                <span>${money(m.paid ? m.logged : m.due)}</span>
+                <span class="db-tag ${m.paid ? '' : 'is-warn'}">${m.paid ? 'Paid' : 'To pay'}</span>
+              </div>`).join('')}
+              <div class="sc-hist-hint">A month is paid once a payment is logged for it. The months still to pay are at ${fromPayslip ? 'their latest payslip' : 'the estimated take-home, until a payslip is logged'}${ded > 0 ? `, and ${money(ded)} of deductions comes off what is left` : ''}.</div>
             </div>
           </div>`; })() : ''}
 
@@ -4189,10 +4198,13 @@ function renderDayOffRequestsBanner(pending) {
           '<button class="btn btn-primary btn-sm" onclick="approveLeave(' + r.id + ')">Approve</button>' +
           '<button class="btn btn-danger btn-sm" onclick="declineLeave(' + r.id + ')">Decline</button>' +
         '</div>' +
-        '<label style="display:flex;align-items:center;gap:5px;font:500 10.5px/1 var(--font-sans);color:var(--muted);cursor:pointer;white-space:nowrap">' +
-          '<input type="checkbox" id="dor-nodeduct-' + r.id + '" style="width:13px;height:13px;cursor:pointer">' +
-          'No deduct' +
-        '</label>' +
+        // Whether a day off is deducted from salary is the admin's call, and theirs alone to see
+        (currentUser.role === 'admin'
+          ? '<label style="display:flex;align-items:center;gap:5px;font:500 10.5px/1 var(--font-sans);color:var(--muted);cursor:pointer;white-space:nowrap">' +
+              '<input type="checkbox" id="dor-nodeduct-' + r.id + '" style="width:13px;height:13px;cursor:pointer">' +
+              'No deduct' +
+            '</label>'
+          : '') +
       '</div>' +
     '</div>';
   }).join('');
@@ -4225,6 +4237,7 @@ async function declineLeave(id) {
   else showToast('Failed to decline', 'error');
 }
 
+let _dayModalEntries = [];   // the days off listed in the open day popup, for editDayOffEntry
 function openDayModal(dateStr, entries, remindersToday = []) {
   document.getElementById('dayModalTitle').textContent = formatDate(dateStr);
   const CAT_ICONS = { rent:'🏠', subscription:'📦', deposit:'💳', utility:'⚡', other:'📌' };
@@ -4247,9 +4260,11 @@ function openDayModal(dateStr, entries, remindersToday = []) {
     </div>`;
   }
 
+  _dayModalEntries = entries;
+  const canEdit = ['admin', 'manager'].includes(currentUser.role);   // "Not deducted" itself only reaches an admin
   if (entries.length) {
     content += `<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);margin-bottom:8px">Days Off</div>`;
-    content += entries.map(r => {
+    content += entries.map((r, i) => {
       const label = parseFloat(r.is_day_off) === 1 ? 'Full Day' : 'Half Day';
       const cls   = parseFloat(r.is_day_off) === 1 ? 'chip-full' : 'chip-half';
       const typeLabel = r.employment_type === 'self_employed' ? 'Self-Emp' : 'Payroll';
@@ -4257,8 +4272,12 @@ function openDayModal(dateStr, entries, remindersToday = []) {
         <span class="cal-chip ${cls}">${label}</span>
         <strong>${esc(r.employee_name)}</strong>
         <span class="badge badge-grey" style="font-size:0.72rem">${typeLabel}</span>
+        ${r.no_deduction ? '<span class="badge badge-green" style="font-size:0.72rem" title="Logged as a day off, but never deducted from salary">Not deducted</span>' : ''}
         ${r.notes ? `<span style="color:var(--muted);font-size:0.8rem">${esc(r.notes)}</span>` : ''}
-        <button class="btn btn-danger btn-sm" style="margin-left:auto" onclick="deleteRecord(${r.record_id});closeModal('dayModal')">Remove</button>
+        <span class="day-off-actions">
+          ${canEdit ? `<button class="btn btn-ghost btn-sm" onclick="editDayOffEntry(${i})">Edit</button>` : ''}
+          <button class="btn btn-danger btn-sm" onclick="deleteRecord(${r.record_id});closeModal('dayModal')">Remove</button>
+        </span>
       </div>`;
     }).join('');
   }
@@ -4270,6 +4289,17 @@ function openDayModal(dateStr, entries, remindersToday = []) {
   document.getElementById('dayModalContent').innerHTML = content;
   document.getElementById('dayModalBookBtn').onclick = () => { closeModal('dayModal'); openRecordModalForDate(dateStr); };
   openModal('dayModal');
+}
+
+// Edit a day off from the calendar's day popup: full or half day, the note, and whether
+// it is deducted from salary. The record form does the saving, then the calendar reloads.
+function editDayOffEntry(i) {
+  const r = _dayModalEntries[i];
+  if (!r) return;
+  closeModal('dayModal');
+  openEditRecord(r.record_id, r.employee_id, r.record_date, r.break_minutes, r.phone_minutes, r.wasted_minutes, r.late_minutes,
+    parseFloat(r.is_day_off), r.notes || '', !!r.no_deduction);
+  document.getElementById('recordModalTitle').textContent = `Edit day off – ${r.employee_name}`;
 }
 
 function openRecordModalForDate(dateStr) {
@@ -5185,10 +5215,10 @@ async function loadNotifPanel() {
         <div class="notif-item-name">${esc(r.employee_name)}</div>
         <div class="notif-item-meta">${dateStr} · ${typeStr} · Requested ${since}</div>
         ${r.note ? `<div class="notif-item-note">"${esc(r.note)}"</div>` : ''}
-        <label style="display:flex;align-items:center;gap:5px;font:500 11px/1 var(--font-sans);color:var(--muted);cursor:pointer;margin-top:4px">
+        ${currentUser.role === 'admin' ? `<label style="display:flex;align-items:center;gap:5px;font:500 11px/1 var(--font-sans);color:var(--muted);cursor:pointer;margin-top:4px">
           <input type="checkbox" id="hr-nodeduct-${r.id}" style="width:13px;height:13px;cursor:pointer">
-          Doesn't count towards the deduction
-        </label>
+          Don't deduct this day from salary
+        </label>` : ''}
         <div class="notif-item-actions">
           <button class="notif-approve-btn" onclick="reviewHolidayRequest(${r.id},'approve')">✓ Approve</button>
           <button class="notif-deny-btn" onclick="reviewHolidayRequest(${r.id},'deny')">✕ Deny</button>
@@ -8043,9 +8073,11 @@ async function loadEmployeeDashboard(user) {
       const s = sal;
       const sSym = s.currency === 'GBP' ? '£' : s.currency === 'USD' ? '$' : (s.currency + ' ');
       const paye = s.paye_breakdown;
-      const monthlyVal = paye ? paye.net_monthly : s.annual_salary / 12;
+      // Payroll: the latest payslip when one is logged, else the tax estimate
+      const fromPayslip = s.monthly_pay_from === 'payslip';
+      const monthlyVal = fromPayslip ? s.monthly_pay : paye ? paye.net_monthly : s.annual_salary / 12;
       const monthlyLbl = paye ? 'Take-home / mo' : 'Monthly pay';
-      const monthlySub = paye
+      const monthlySub = fromPayslip ? 'as last paid' : paye
         ? ('after PAYE + NI' + (paye.pension > 0 ? ' + pension' : ''))
         : (sSym + s.annual_salary.toLocaleString('en-GB',{maximumFractionDigits:0}) + '/yr');
       const netRemaining = parseFloat(s.net_remaining) || 0;
@@ -8059,21 +8091,11 @@ async function loadEmployeeDashboard(user) {
       const fm = s.first_month_full;
       const isPartialFirstMonth = fm && fm.first_month_days < fm.first_month_total_days;
       const payeNetFactor = paye && s.annual_salary > 0 ? paye.net_annual / s.annual_salary : 1;
-      let sugFirstMonthNet = isPartialFirstMonth ? parseFloat((fm.first_month_pay * payeNetFactor).toFixed(2)) : null;
-      let fmMeta2 = isPartialFirstMonth ? {
-        monthName: MONTHS[parseInt(fm.first_month.split('-')[1]) - 1] || fm.first_month,
+      const sugFirstMonthNet = isPartialFirstMonth ? parseFloat((fm.first_month_pay * payeNetFactor).toFixed(2)) : null;
+      const fmMeta2 = isPartialFirstMonth ? {
+        monthName: MONTHS[parseInt(fm.first_month.split('-')[1])] || fm.first_month,
         daysWorked: fm.first_month_days, daysTotal: fm.first_month_total_days
       } : null;
-      if (sugFirstMonthNet === null && s.start_date) {
-        const sd2 = new Date(s.start_date + 'T00:00:00');
-        if (sd2.getDate() > 1) {
-          const dim = new Date(sd2.getFullYear(), sd2.getMonth() + 1, 0).getDate();
-          const dw  = dim - sd2.getDate() + 1;
-          const nm  = paye ? paye.net_monthly : s.annual_salary / 12;
-          sugFirstMonthNet = parseFloat((nm * (dw / dim)).toFixed(2));
-          fmMeta2 = { monthName: MONTHS[sd2.getMonth()], daysWorked: dw, daysTotal: dim };
-        }
-      }
       const showFM = sugFirstMonthNet !== null && fmMeta2 && !isOverpaid;
 
       const payments = Array.isArray(s.payments) ? s.payments : [];
@@ -12856,7 +12878,7 @@ function wmToggle() {
   if (!panel) return;
   const open = panel.classList.toggle('wm-open');
   if (launcher) launcher.classList.toggle('wm-hidden', open);
-  if (open) { wmSyncSpeakButton(); setTimeout(() => document.getElementById('wmInput')?.focus(), 80); }
+  if (open) { wmSyncSpeakButton(); if (window._wmSpeak) wmNaturalStart(); setTimeout(() => document.getElementById('wmInput')?.focus(), 80); }
   else { wmStopVoiceChat(); document.getElementById('wmVoiceMenu')?.classList.add('hidden'); }
 }
 
@@ -12881,6 +12903,7 @@ function wmToggleSpeak() {
   wmStore.set('wmSpeak', window._wmSpeak ? '1' : '0');
   wmSyncSpeakButton();
   if (!window._wmSpeak) wmStopSpeaking();
+  else { wmNaturalUnlock(); wmNaturalStart(); }
 }
 
 function wmAppend(role, text) {
@@ -12908,6 +12931,7 @@ async function wmSend() {
   if (!q) return;
   input.value = '';
   wmStopSpeaking();
+  if (window._wmSpeak || _wmVoiceChat) wmNaturalUnlock();
   wmAppend('user', q);
 
   window._wmBusy = true;
@@ -13014,27 +13038,30 @@ function wmSpeakable(text) {
 }
 
 function wmStopSpeaking() {
-  _wmSpeakRun++; _wmSpeaking = false;
+  const run = _wmSpeakRun++; _wmSpeaking = false;
   if (window.speechSynthesis) window.speechSynthesis.cancel();
+  wmNaturalHush(run);
 }
 
 // Reads an answer the way a person would: one sentence at a time with a breath between
 // them, and a longer beat before a short last line (where the joke usually is).
+// In the natural voice when that is switched on, else the browser's own.
 // `done` runs when it has finished or cannot speak.
 function wmSpeak(text, done) {
-  const synth = window.speechSynthesis;
+  const synth = window.speechSynthesis, natural = wmNaturalOn();
   const finish = () => { _wmSpeaking = false; wmVoiceState(_wmVoiceChat ? 'listening' : ''); if (done) done(); };
-  if (!synth || !text) { finish(); return; }
-  synth.cancel();
+  wmNaturalHush(_wmSpeakRun);
+  if (synth) synth.cancel();
   const run = ++_wmSpeakRun, voice = wmVoice(), rate = parseFloat(wmStore.get('wmRate', '1')) || 1;
-  const sentences = wmSpeakable(text).replace(/([.!?])\s+/g, '$1\u0001').split('\u0001').filter(s => s.trim());
-  if (!sentences.length) { finish(); return; }
+  const sentences = text ? wmSpeakable(text).replace(/([.!?])\s+/g, '$1\u0001').split('\u0001').filter(s => s.trim()) : [];
+  if (!sentences.length || (!synth && !natural)) { finish(); return; }
   _wmSpeaking = true;
   wmVoiceState('speaking');
   const last = sentences.length - 1, punchline = last > 0 && sentences[last].length <= 110;
+  const gapAfter = i => (i === last ? 0 : punchline && i === last - 1 ? 420 : 160);
   const sayFrom = i => {
     if (run !== _wmSpeakRun) return;   // cut off, or another answer has started
-    if (i > last) { finish(); return; }
+    if (i > last || !synth) { finish(); return; }
     const u = new SpeechSynthesisUtterance(sentences[i]);
     if (voice) { u.voice = voice; u.lang = voice.lang; } else u.lang = 'en-GB';
     u.rate = rate; u.pitch = 1;
@@ -13042,7 +13069,7 @@ function wmSpeak(text, done) {
     const next = () => {
       if (moved) return;
       moved = true; clearTimeout(stuck);
-      setTimeout(() => sayFrom(i + 1), i === last ? 0 : punchline && i === last - 1 ? 420 : 160);
+      setTimeout(() => sayFrom(i + 1), gapAfter(i));
     };
     // Some browsers never report that a sentence has ended: move on regardless once it must have
     const stuck = setTimeout(next, 4000 + sentences[i].length * 110 / Math.min(rate, 1));
@@ -13050,7 +13077,209 @@ function wmSpeak(text, done) {
     window._wmUtterance = u;   // kept alive: Chrome drops the "ended" event of an utterance nothing refers to
     synth.speak(u);
   };
-  sayFrom(0);
+  if (!natural) { sayFrom(0); return; }
+  // If the natural voice is not there in time, the browser's voice takes over from that sentence
+  const pieces = sentences.flatMap((sentence, i) => {
+    const cut = wmNaturalPieces(sentence);
+    return cut.map((words, k) => ({ text: words, sentence: i, gap: k === cut.length - 1 ? gapAfter(i) : 60 }));
+  });
+  wmNaturalSay(pieces, run, rate, finish, piece => sayFrom(pieces[piece].sentence));
+}
+
+// ── The natural voice (built in) ──
+// An optional voice that sounds human in any browser: the Kokoro model, run on this device
+// by /wasteman-voice.js, so nothing said or typed leaves it. It is switched on by choice
+// because it needs a one-off download of about 115 MB, and because it takes a moment to
+// make each phrase. The browser's own voice stays as the backup.
+const WM_NATURAL_VOICES = [['bm_george', 'George', 'British'], ['bf_emma', 'Emma', 'British'], ['bm_fable', 'Fable', 'British'],
+  ['af_heart', 'Heart', 'American'], ['af_bella', 'Bella', 'American'], ['am_michael', 'Michael', 'American']];
+// `pace` is the seconds this computer needs to make one second of speech (measured when the
+// voice loads). Past WM_NATURAL_SLOW it cannot keep up with itself, so the browser's voice is
+// used unless the admin chooses "Use it anyway".
+const WM_NATURAL_SLOW = 2;
+// state: off (not started in this visit), loading, ready, slow or failed
+const _wmNat = { worker: null, state: 'off', step: '', pct: null, pace: null, error: '', ctx: null, source: null, made: new Map(), waiting: new Map(), greet: false };
+
+// A computer found too slow keeps that verdict between visits, rather than loading it all to find out again
+{
+  const pace = parseFloat(wmStore.get('wmNaturalPace', ''));
+  if (pace > WM_NATURAL_SLOW && wmStore.get('wmNaturalAnyway', '0') !== '1') Object.assign(_wmNat, { state: 'slow', pace });
+}
+
+const wmNaturalCan = () => !!(window.Worker && window.WebAssembly && (window.AudioContext || window.webkitAudioContext));
+const wmNaturalOn = () => wmStore.get('wmNatural', '0') === '1' && wmNaturalCan() && _wmNat.state !== 'failed' && _wmNat.state !== 'slow';
+const wmNaturalVoiceId = () => { const id = wmStore.get('wmNaturalVoice', ''); return WM_NATURAL_VOICES.some(v => v[0] === id) ? id : WM_NATURAL_VOICES[0][0]; };
+
+// Sound may only start from a tap or a key press, so the output is opened during one
+function wmNaturalUnlock() {
+  if (!wmNaturalOn()) return;
+  try {
+    _wmNat.ctx = _wmNat.ctx || new (window.AudioContext || window.webkitAudioContext)();
+    if (_wmNat.ctx.state !== 'running') _wmNat.ctx.resume().catch(() => {});
+  } catch { /* no audio output: the backup voice is used */ }
+}
+
+// Loads the voice, the first time by downloading it, afterwards from the browser's own store
+function wmNaturalStart() {
+  if (_wmNat.worker || !wmNaturalOn()) return;
+  try { _wmNat.worker = new Worker('/wasteman-voice.js', { type: 'module' }); }
+  catch { wmNaturalFailed('This browser cannot run the natural voice.'); return; }
+  Object.assign(_wmNat, { state: 'loading', step: '', pct: null, pace: null, error: '' });
+  _wmNat.worker.onerror = () => wmNaturalFailed('This browser could not start the natural voice.');
+  _wmNat.worker.onmessage = ({ data }) => {
+    const key = `${data.run}:${data.index}`, waiter = _wmNat.waiting.get(key);
+    if (data.type === 'loading') { _wmNat.step = data.step; _wmNat.pct = data.pct ?? null; }
+    else if (data.type === 'ready') {
+      _wmNat.pace = data.pace;
+      wmStore.set('wmNaturalPace', String(data.pace));
+      if (data.pace > WM_NATURAL_SLOW && wmStore.get('wmNaturalAnyway', '0') !== '1') {
+        // Too slow to be worth the wait: the browser's voice does the talking, and the engine is let go
+        _wmNat.worker.terminate();
+        Object.assign(_wmNat, { worker: null, state: 'slow', greet: false });
+      } else {
+        _wmNat.state = 'ready';
+        if (_wmNat.greet) { _wmNat.greet = false; wmNaturalSample(); }
+      }
+    }
+    else if (data.type === 'error') { wmNaturalFailed(data.message); return; }
+    else if (data.type === 'audio') { if (waiter) waiter.resolve(data); else if (data.run === _wmSpeakRun) _wmNat.made.set(key, data); }
+    else if (data.type === 'failed' && waiter) waiter.reject(new Error(data.message));
+    if (data.type === 'audio' || data.type === 'failed') _wmNat.waiting.delete(key);
+    else wmNaturalShow();
+  };
+  _wmNat.worker.postMessage({ type: 'load', voice: wmNaturalVoiceId(), pace: parseFloat(wmStore.get('wmNaturalPace', '')) || null });
+  wmNaturalShow();
+}
+
+function wmNaturalFailed(message) {
+  if (_wmNat.worker) _wmNat.worker.terminate();
+  _wmNat.waiting.forEach(w => w.reject(new Error(message)));
+  // A download that did not arrive is the usual reason, and "Failed to fetch" says that badly
+  const error = /fetch|network|download/i.test(message || '') ? 'It needs the internet the first time: check the connection and try again.' : message || '';
+  Object.assign(_wmNat, { worker: null, state: 'failed', error, greet: false });
+  _wmNat.waiting.clear(); _wmNat.made.clear();
+  wmNaturalShow();
+}
+
+// Quiet, now: stops the phrase being played and drops the rest of that answer
+function wmNaturalHush(run) {
+  const src = _wmNat.source;
+  if (src) { src.onended = null; try { src.stop(); } catch { /* already ended */ } }
+  _wmNat.source = null;
+  _wmNat.waiting.forEach(w => w.reject(new Error('stopped')));
+  _wmNat.waiting.clear(); _wmNat.made.clear();
+  if (_wmNat.worker) _wmNat.worker.postMessage({ type: 'stop', run });
+}
+
+// The natural voice takes a moment to make each piece, so a long sentence is cut at its
+// commas: the first words are heard sooner, and any wait falls where a speaker would pause.
+function wmNaturalPieces(sentence) {
+  if (sentence.length <= 70) return [sentence];
+  const out = []; let piece = '';
+  for (const part of sentence.replace(/([,;])\s+/g, '$1\u0001').split('\u0001')) {
+    piece = piece ? `${piece} ${part}` : part;
+    if (piece.length >= 30) { out.push(piece); piece = ''; }
+  }
+  if (piece) { if (out.length) out[out.length - 1] += ' ' + piece; else out.push(piece); }
+  return out;
+}
+
+// Speaks `pieces` ([{ text, gap }]) in order, each as soon as it has been made. If one is
+// not ready in time, or cannot be played, `backup(i)` carries on from that piece.
+function wmNaturalSay(pieces, run, rate, finish, backup) {
+  wmNaturalStart();
+  const nat = _wmNat, voice = wmNaturalVoiceId();
+  if (!nat.worker) { backup(0); return; }
+  pieces.forEach((p, index) => nat.worker.postMessage({ type: 'say', run, index, text: p.text, voice, speed: rate }));
+  // How long a piece may take before the backup voice steps in: a few seconds while the voice
+  // is still loading, otherwise twice what this computer should need for that many words
+  const patience = i => (nat.state !== 'ready' ? 6000 : 8000 + 2 * (nat.pace || 1) * pieces[i].text.length * 75);
+  const made = i => new Promise((resolve, reject) => {
+    const key = `${run}:${i}`, ready = nat.made.get(key);
+    if (ready) { nat.made.delete(key); resolve(ready); return; }
+    const timer = setTimeout(() => { nat.waiting.delete(key); reject(new Error('too slow')); }, patience(i));
+    nat.waiting.set(key, { resolve: v => { clearTimeout(timer); resolve(v); }, reject: e => { clearTimeout(timer); reject(e); } });
+  });
+  const playFrom = async i => {
+    if (run !== _wmSpeakRun) return;
+    if (i >= pieces.length) { finish(); return; }
+    let audio;
+    try {
+      audio = await made(i);
+      if (nat.ctx && nat.ctx.state !== 'running') await nat.ctx.resume().catch(() => {});
+      if (!nat.ctx || nat.ctx.state !== 'running') throw new Error('no sound output');
+    } catch {
+      if (run !== _wmSpeakRun) return;
+      nat.waiting.clear(); nat.made.clear();
+      if (nat.worker) nat.worker.postMessage({ type: 'stop', run });
+      backup(i);
+      return;
+    }
+    if (run !== _wmSpeakRun) return;
+    const buffer = nat.ctx.createBuffer(1, audio.samples.length, audio.rate);
+    buffer.getChannelData(0).set(audio.samples);
+    const src = nat.ctx.createBufferSource();
+    src.buffer = buffer; src.connect(nat.ctx.destination);
+    let moved = false;
+    const next = () => {
+      if (moved) return;
+      moved = true; clearTimeout(stuck);
+      if (nat.source === src) nat.source = null;
+      setTimeout(() => playFrom(i + 1), pieces[i].gap);
+    };
+    const stuck = setTimeout(next, buffer.duration * 1000 + 1500);   // in case the "ended" event never comes
+    src.onended = next;
+    nat.source = src;
+    src.start();
+  };
+  playFrom(0);
+}
+
+const wmNaturalSample = () => wmSpeak('This is how I sound. Not bad for someone who lives in a spreadsheet.');
+function wmNaturalTurnOn() {
+  wmStore.set('wmNatural', '1');
+  _wmNat.state = 'off'; _wmNat.greet = true;   // says hello once it is ready
+  wmNaturalUnlock(); wmNaturalStart(); wmNaturalShow();
+}
+// "Use it anyway", on a computer too slow to keep up: their choice, remembered
+function wmNaturalAnyway() { wmStore.set('wmNaturalAnyway', '1'); wmNaturalTurnOn(); }
+function wmNaturalTurnOff() {
+  wmStopSpeaking();
+  wmStore.set('wmNatural', '0'); wmStore.set('wmNaturalAnyway', '0'); wmStore.set('wmNaturalPace', '');
+  if (_wmNat.worker) _wmNat.worker.terminate();
+  Object.assign(_wmNat, { worker: null, state: 'off', greet: false });
+  wmNaturalShow();
+}
+function wmPickNatural(id) { wmStore.set('wmNaturalVoice', id); wmNaturalUnlock(); wmNaturalSample(); }
+
+// The natural voice's part of the voice menu: the offer, the download, then the choice of voice
+function wmNaturalShow() {
+  const box = document.getElementById('wmNatural');
+  if (!box) return;
+  box.classList.toggle('hidden', !wmNaturalCan());
+  const wanted = wmStore.get('wmNatural', '0') === '1', nat = _wmNat, picked = wmNaturalVoiceId();
+  const off = '<button type="button" class="wm-natural-link" onclick="wmNaturalTurnOff()">Turn off</button>';
+  box.innerHTML = !wanted
+    ? `<div class="wm-natural-head"><b>Natural voice</b><button type="button" class="btn btn-primary btn-sm" onclick="wmNaturalTurnOn()">Turn on</button></div>
+       <p>A human-sounding voice built into Wasteman, the same in every browser. It is a one-off download of about 115 MB and then runs on this computer. It takes a moment to start speaking, so it suits a computer better than a phone.</p>`
+    : nat.state === 'failed'
+    ? `<div class="wm-natural-head"><b>Natural voice</b><span><button type="button" class="wm-natural-link" onclick="wmNaturalTurnOn()">Try again</button> · ${off}</span></div>
+       <p>It could not be loaded, so the voice below is being used. ${esc(nat.error)}</p>`
+    : nat.state === 'slow'
+    ? `<div class="wm-natural-head"><b>Natural voice</b><span><button type="button" class="wm-natural-link" onclick="wmNaturalAnyway()">Use it anyway</button> · ${off}</span></div>
+       <p>This computer needs about ${Math.round(nat.pace)} seconds to make each second of speech, which is too slow to hold a conversation, so the voice below is being used instead.</p>`
+    : nat.state === 'ready'
+    ? `<div class="wm-natural-head"><b>Natural voice</b>${off}</div>
+       <select id="wmNaturalVoice" aria-label="Natural voice" onchange="wmPickNatural(this.value)">${WM_NATURAL_VOICES.map(([id, name, accent]) =>
+         `<option value="${id}"${id === picked ? ' selected' : ''}>${name} (${accent})</option>`).join('')}</select>
+       <p>Wasteman speaks in this voice. ${nat.pace > 1.2 ? 'On this computer it will pause between phrases while it works out the next one.' : 'The one below is only the backup.'}</p>`
+    : `<div class="wm-natural-head"><b>Natural voice</b>${off}</div>
+       <div class="wm-natural-bar"><i style="width:${nat.pct ?? 4}%"></i></div>
+       <p>${nat.step === 'pace' ? 'Checking how quickly this computer can speak…' : nat.pct != null && nat.pct < 100 ? `Downloading the voice… ${nat.pct}%` : 'Getting the voice ready…'} You can carry on; the voice below is used until it is ready.</p>`;
+  // While the natural voice does the talking, the browser's voices are just the backup
+  const inUse = wanted && nat.state === 'ready', label = document.querySelector('label[for="wmVoiceSelect"]');
+  if (label) label.textContent = inUse ? 'Backup' : 'Voice';
+  document.getElementById('wmVoiceHint')?.classList.toggle('hidden', inUse);
 }
 
 // Voice menu: choose the voice and how fast it talks
@@ -13059,6 +13288,7 @@ function wmToggleVoiceMenu() {
   if (!menu) return;
   const show = menu.classList.toggle('hidden') === false;
   if (!show) return;
+  wmNaturalShow();
   const voices = wmVoices(), current = wmVoice(), sel = document.getElementById('wmVoiceSelect');
   const option = v => `<option value="${esc(v.name)}"${current && v.name === current.name ? ' selected' : ''}>${esc(v.name.replace(/^(Microsoft|Google)\s+/, '').replace(/\s+Online \(Natural\)/, ' (natural)'))}</option>`;
   const group = (label, list) => (list.length ? `<optgroup label="${label}">${list.map(option).join('')}</optgroup>` : '');
@@ -13126,6 +13356,7 @@ async function wmToggleMic() {
   _wmVoiceChat = true; _wmSilences = 0;
   // Phones only let a page talk after a tap: say nothing, now, so later answers may be spoken
   if (window.speechSynthesis) { const hush = new SpeechSynthesisUtterance(' '); hush.volume = 0; window.speechSynthesis.speak(hush); }
+  wmNaturalUnlock(); wmNaturalStart();
   wmListen();
 }
 
