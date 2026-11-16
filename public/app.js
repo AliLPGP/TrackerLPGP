@@ -1557,7 +1557,7 @@ function empLeftToPayHtml(row, year) {
     ].filter(Boolean).join(' · '))).join('');
     if (!toPay.length) rows = line('Every month is paid', money(0));
     else foot = `A whole month is ${money(parseFloat(row.monthly_pay) || 0)}: ${row.monthly_pay_from === 'payslip'
-      ? 'their latest payslip.' : 'the take-home worked out from their salary, until a whole month\'s payslip is logged.'}`;
+      ? 'their usual payslip, leaving out one-off extras such as a bonus or a refund.' : 'the take-home worked out from their salary, until a whole month\'s payslip is logged.'}`;
   } else {
     // Self-employed: the year's pay, less what has been paid
     const target = parseFloat(row.salary_target) || 0;
@@ -3272,7 +3272,7 @@ async function loadSalaryPage() {
       const cur             = emp.currency || 'GBP';
       const sym             = currencySymbol(cur);
       const paye            = emp.paye_breakdown || null;
-      // Payroll is counted in months, at what a whole month really pays (the latest payslip, else the estimate)
+      // Payroll is counted in months, at what a whole month really pays (the usual payslip, else the estimate)
       const byMonth         = Array.isArray(emp.pay_months) && emp.pay_months.length ? payrollCardMonths(emp, year) : null;
       const monthlyPay      = parseFloat(emp.monthly_pay) || 0;
       const fromPayslip     = emp.monthly_pay_from === 'payslip';
@@ -3455,7 +3455,7 @@ async function loadSalaryPage() {
                 <span class="sc-paye-footer-lbl">Estimated take-home</span>
                 <span class="sc-paye-footer-val">${sym}${paye.net_monthly.toLocaleString('en-GB',{minimumFractionDigits:2})}</span>
               </div>
-              ${fromPayslip ? `<div class="sc-hist-hint">This is the tracker's own tax estimate. Their latest payslip was ${sym}${monthlyPay.toLocaleString('en-GB',{minimumFractionDigits:2})}, and that is the monthly pay used for the months still to pay.</div>` : ''}
+              ${fromPayslip ? `<div class="sc-hist-hint">This is the tracker's own tax estimate. Their usual payslip is ${sym}${monthlyPay.toLocaleString('en-GB',{minimumFractionDigits:2})}, and that is the monthly pay used for the months still to pay.</div>` : ''}
             </div>
           </div>` : ''}
 
@@ -3567,7 +3567,7 @@ async function loadSalaryPage() {
                 <span>${money(m.paid ? m.logged : m.due)}</span>
                 <span class="db-tag ${m.paid ? '' : 'is-warn'}">${m.paid ? 'Paid' : 'To pay'}</span>
               </div>`).join('')}
-              <div class="sc-hist-hint">A month is paid once a payment is logged for it. The months still to pay are at ${fromPayslip ? 'their latest payslip' : 'the estimated take-home, until a payslip is logged'}${ded > 0 ? `, and ${money(ded)} of deductions comes off what is left` : ''}.</div>
+              <div class="sc-hist-hint">A month is paid once a payment is logged for it. The months still to pay are at ${fromPayslip ? 'their usual payslip (a month with a bonus or refund on top does not change it)' : 'the estimated take-home, until a payslip is logged'}${ded > 0 ? `, and ${money(ded)} of deductions comes off what is left` : ''}.</div>
             </div>
           </div>`; })() : ''}
 
@@ -8136,7 +8136,7 @@ async function loadEmployeeDashboard(user) {
       const s = sal;
       const sSym = s.currency === 'GBP' ? '£' : s.currency === 'USD' ? '$' : (s.currency + ' ');
       const paye = s.paye_breakdown;
-      // Payroll: the latest payslip when one is logged, else the tax estimate
+      // Payroll: the usual payslip when one is logged, else the tax estimate
       const fromPayslip = s.monthly_pay_from === 'payslip';
       const monthlyVal = fromPayslip ? s.monthly_pay : paye ? paye.net_monthly : s.annual_salary / 12;
       const monthlyLbl = paye ? 'Take-home / mo' : 'Monthly pay';

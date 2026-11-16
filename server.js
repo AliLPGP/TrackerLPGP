@@ -1524,7 +1524,7 @@ async function salaryOverviewRow(emp, year) {
     pension_rate:        parseFloat(emp.pension_rate) || 0,
     paye_breakdown:      ukPay,
     net_monthly:         netMonthly,
-    // Payroll: what a whole month really pays (the latest payslip, else the estimate above)
+    // Payroll: what a whole month really pays (the usual payslip, else the estimate above)
     monthly_pay:         owedYear.monthlyPay ?? null,
     monthly_pay_from:    owedYear.months ? (owedYear.fromPayslip ? 'payslip' : 'estimate') : null,
     salary_target:       netSalaryTarget,

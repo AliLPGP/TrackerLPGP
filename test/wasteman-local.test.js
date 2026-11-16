@@ -74,8 +74,8 @@ const has = (text, ...bits) => bits.forEach(b => assert.ok(text.includes(b), `ex
   has(a[1], 'Sara Sample has AED 6,000 left', 'out of AED 36,000');
   has(a[2], 'Sara Sample has been paid AED 30,000', '10 payments');
   has(a[3], 'AED 36,000 a year (self-employed)', 'AED 3,000 a month');
-  // Payroll take-home is the latest payslip when one is logged, else the tax estimate
-  has((await chat('what is farah on'))[0], '£27,000 a year (payroll)', 'take home £1,850 a month, going by their latest payslip');
+  // Payroll take-home is the usual payslip when one is logged, else the tax estimate
+  has((await chat('what is farah on'))[0], '£27,000 a year (payroll)', 'take home £1,850 a month, going by their payslips');
   has((await chat('what is ali example on'))[0], 'Take-home is about £2,093.30 a month after tax');
 
   // Two people share a first name: it asks, then answers

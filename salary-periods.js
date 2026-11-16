@@ -138,16 +138,22 @@ function payrollMonths({ history, year, startDate, endDate, annual, netMonthly }
 // without one, each at what the person really takes home, less deductions. Paid to
 // October means November and December are owed, whatever the amounts logged were.
 //
-// What they really take home is their latest payslip. The take-home worked out from the
+// What they really take home is their usual payslip. The take-home worked out from the
 // salary is only our tax estimate, which knows nothing of pension schemes, student loans
 // or tax codes: with payslips of 1,900 logged against an estimate of 2,000, the months
-// still to pay are 1,900 each. Only a whole month's payslip sets that rate, and only when
-// it is near the estimate (PAYSLIP_BAND), so an advance or a bonus paid with the salary
-// does not. Last year's payslips carry the rate into January, before the new year has one.
+// still to pay are 1,900 each. Only a whole month's payslip counts, and only when it is
+// near the estimate (PAYSLIP_BAND), so an advance does not.
+//
+// Some months pay extra on top: a bonus, a tax refund, expenses paid back. Those are
+// one-offs, so the usual payslip is the amount that repeats: the latest one that has come
+// up at least twice (usualRate). A pay change is picked up from its second month, and a
+// single month of 2,150 among the 1,900s changes nothing. Last year's payslips count too,
+// so the rate carries into January and a January bonus does not set the new year.
 //
 // `months` (and `lastYear.months`) come from payrollMonths. Returns the months with what
 // was logged and what is still due, plus `rate` (payslip ÷ estimate, 1 with no payslip yet).
 const PAYSLIP_BAND = [0.75, 1.25];
+const SAME_PAYSLIP = 0.001;   // payslips within 0.1% of each other (2 in 2,000) are the same amount
 
 function loggedByMonth(payments) {
   const logged = {};
@@ -155,18 +161,31 @@ function loggedByMonth(payments) {
   return logged;
 }
 
-function payslipRate(months, logged) {
-  let rate = null;
+// Each whole month's payslip as a share of the estimate for that month, oldest first
+function payslipRates(months, logged) {
+  const rates = [];
   for (const m of months || []) {
     const got = logged[m.month] || 0;
-    if (m.whole && m.due > 0 && got >= m.due * PAYSLIP_BAND[0] && got <= m.due * PAYSLIP_BAND[1]) rate = got / m.due;
+    if (m.whole && m.due > 0 && got >= m.due * PAYSLIP_BAND[0] && got <= m.due * PAYSLIP_BAND[1]) rates.push(got / m.due);
   }
-  return rate;
+  return rates;
+}
+
+// The usual one of those: the latest that matches another (SAME_PAYSLIP). With no two
+// alike yet it is the middle one, the lower of two, since a one-off is usually extra.
+function usualRate(rates) {
+  if (!rates.length) return null;
+  const same = (a, b) => Math.abs(a - b) <= SAME_PAYSLIP * b;
+  for (let i = rates.length - 1; i >= 0; i--) {
+    if (rates.some((r, j) => j !== i && same(r, rates[i]))) return rates[i];
+  }
+  const sorted = [...rates].sort((a, b) => a - b);
+  return sorted[Math.floor((sorted.length - 1) / 2)];
 }
 
 function payrollYear({ months, payments, deductions = 0, lastYear = null }) {
   const logged = loggedByMonth(payments);
-  const payslip = payslipRate(months, logged) ?? (lastYear ? payslipRate(lastYear.months, loggedByMonth(lastYear.payments)) : null);
+  const payslip = usualRate([...(lastYear ? payslipRates(lastYear.months, loggedByMonth(lastYear.payments)) : []), ...payslipRates(months, logged)]);
   const rate = payslip ?? 1;
   const rows = months.map(m => {
     const got = round2(logged[m.month] || 0), due = round2(m.due * rate), paid = got > 0;

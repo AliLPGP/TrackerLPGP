@@ -139,7 +139,7 @@ SELECT only. No INSERT/UPDATE/DELETE. A LIMIT is added automatically if omitted.
   },
   {
     name: 'get_salary_overview',
-    description: 'Get the fully-computed salary summary for all employees for a given year. Includes: net_remaining (what is genuinely still owed this year, after PAYE, day-off deductions, and office deductions), pct_paid, net_monthly (estimated take-home), monthly_pay (payroll: what a whole month really pays, from the latest payslip logged), pay_months[] (payroll is counted in months: each one paid or still due), payments[], office_deductions[], bonuses[]. More accurate than raw SQL for salary questions because it applies UK PAYE and pro-rating automatically.',
+    description: 'Get the fully-computed salary summary for all employees for a given year. Includes: net_remaining (what is genuinely still owed this year, after PAYE, day-off deductions, and office deductions), pct_paid, net_monthly (estimated take-home), monthly_pay (payroll: what a whole month really pays, from the usual payslip logged, ignoring one-off extras such as a bonus or refund), pay_months[] (payroll is counted in months: each one paid or still due), payments[], office_deductions[], bonuses[]. More accurate than raw SQL for salary questions because it applies UK PAYE and pro-rating automatically.',
     input_schema: {
       type: 'object',
       properties: { year: { type: 'integer', description: 'Year (defaults to current year)' } }
