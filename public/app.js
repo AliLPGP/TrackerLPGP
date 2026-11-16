@@ -1390,6 +1390,10 @@ async function openEmployeeProfile(empId, opts = {}) {
       <h3>${year} so far</h3>
       <div class="ep-tiles" id="epTiles"><div class="ep-loading">Loading…</div></div>
     </section>`;
+  const secLeft = isAdmin ? `<section class="ep-sec ep-left" id="epLeft">
+      <h3>Left to pay in ${year}</h3>
+      <div class="ep-loading">Loading…</div>
+    </section>` : '';
   const secDaysOff = asPage ? `<section class="ep-sec">
       <h3>Days off in ${year}</h3>
       <div id="epDaysOff" class="ep-list"><div class="ep-loading">Loading…</div></div>
@@ -1466,7 +1470,7 @@ async function openEmployeeProfile(empId, opts = {}) {
       <div class="ep-cols">
         <div class="ep-col">
           <div class="card ep-card">${secDetails}</div>
-          <div class="card ep-card">${secYear}${secDaysOff}</div>
+          <div class="card ep-card">${secYear}${secLeft}${secDaysOff}</div>
           ${secPayments ? `<div class="card ep-card">${secPayments}</div>` : ''}
           ${canManage ? `<div class="card ep-card">${secEvents}${secTeams}</div>` : ''}
         </div>
@@ -1477,28 +1481,33 @@ async function openEmployeeProfile(empId, opts = {}) {
           <div class="card ep-card">${secDocs}${secPayslips}</div>` : ''}
         </div>
       </div>`
-    : head + actions + secDetails + secYear + secWarnings + secContract + secDocs + secOnboarding + secPayslips + secPayments + secEvents + secTeams;
+    : head + actions + secDetails + secYear + secLeft + secWarnings + secContract + secDocs + secOnboarding + secPayslips + secPayments + secEvents + secTeams;
 
   // Figures that need their own calls; each fills its section when ready.
-  const [statsRes, payRes, recRes] = await Promise.all([
+  const [statsRes, payRes, recRes, owedRes] = await Promise.all([
     fetch(`/api/employees/${empId}/year-stats?year=${year}`).catch(() => null),
     isAdmin ? fetch(`/api/payments/${empId}`).catch(() => null) : null,
     asPage ? fetch(`/api/records/${empId}?from=${year}-01-01&to=${year}-12-31`).catch(() => null) : null,
+    isAdmin ? fetch(`/api/salary-overview/${empId}?year=${year}`).catch(() => null) : null,
   ]);
   if (_profileEmpId !== empId) return;
   const stats = statsRes && statsRes.ok ? await statsRes.json() : null;
   const pays = payRes && payRes.ok ? await payRes.json() : [];
   const records = recRes && recRes.ok ? await recRes.json() : [];
+  const owed = owedRes && owedRes.ok ? await owedRes.json() : null;
   if (_profileEmpId !== empId) return;
-  const paidYear = pays.filter(p => Number(p.payment_year) === year).reduce((a, p) => a + (parseFloat(p.amount) || 0), 0);
+  const paysYear = pays.filter(p => Number(p.payment_year) === year);
+  const paidYear = paysYear.reduce((a, p) => a + (parseFloat(p.amount) || 0), 0);
   const last = pays[0];
   const tile = (label, value, sub) => `<div class="ep-tile"><span>${label}</span><strong>${value}</strong>${sub ? `<small>${sub}</small>` : ''}</div>`;
   const tilesEl = document.getElementById('epTiles');
   if (tilesEl) tilesEl.innerHTML =
-    (isAdmin ? tile('Paid', fmtMoney(paidYear, emp.currency), `${pays.filter(p => Number(p.payment_year) === year).length} payments`) : '') +
+    (isAdmin ? tile('Paid', fmtMoney(paidYear, emp.currency), `${paysYear.length} payment${paysYear.length === 1 ? '' : 's'}`) : '') +
     (isAdmin ? tile('Last payment', last ? fmtMoney(last.amount, last.currency || emp.currency) : '—', last ? `${MONTHS[Number(last.payment_month)]} ${last.payment_year}` : 'None yet') : '') +
     (stats ? tile('Days off', `${stats.total_days_off} / ${stats.allowance_days}`, stats.excess_days > 0 ? `${stats.excess_days} over allowance` : `${stats.remaining_allowance} left`) : '') +
     (stats && isAdmin ? tile('Day-off deductions', stats.excess_deduction > 0 ? fmtMoney(stats.excess_deduction, emp.currency) : 'None', '') : '');
+  const leftEl = document.getElementById('epLeft');
+  if (leftEl) leftEl.innerHTML = empLeftToPayHtml(owed, year);
   const offEl = document.getElementById('epDaysOff');
   if (offEl) {
     const off = records.filter(r => r.is_day_off > 0);
@@ -1515,6 +1524,60 @@ async function openEmployeeProfile(empId, opts = {}) {
     loadEmpPortfolioRoles(empId, 'epPortfolio');
     loadEmpEvents(empId, 'epEvents');
   }
+}
+
+// "Left to pay" on a person's own page (admin only). `row` is their row of the Salary page
+// (/api/salary-overview/:id), so the figure is the one on their salary card; under it is
+// what it is made of: the months still to pay (payroll) or the year's pay less what was
+// paid (self-employed), then any deductions.
+function empLeftToPayHtml(row, year) {
+  const title = `<h3>Left to pay in ${year}</h3>`;
+  if (!row) return title + '<div class="ep-empty">Could not work out what is left to pay.</div>';
+  if (!(parseFloat(row.annual_salary) > 0)) return title + '<div class="ep-empty">No salary set yet. Add it in Edit details and this fills in.</div>';
+
+  const sym = currencySymbol(row.currency || 'GBP');
+  const money = v => sym + Math.abs(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const line = (label, value, note) => `<div class="ep-row"><span>${label}${note ? `<small>${note}</small>` : ''}</span><strong>${value}</strong></div>`;
+  const left = parseFloat(row.net_remaining) || 0;
+  const paid = parseFloat(row.total_paid) || 0, count = (row.payments || []).length;
+  const inYear = d => (d && String(d).startsWith(year + '-') ? { month: Number(String(d).slice(5, 7)), day: Number(String(d).slice(8, 10)) } : null);
+  const start = inYear(row.start_date), end = inYear(row.termination_date);
+
+  let summary, strip = '', rows, foot = '', figure = left > 0 ? money(left) : 'Nothing left';
+  if (Array.isArray(row.pay_months) && row.pay_months.length) {
+    // Payroll: one row for each month with no payment logged
+    const m = payrollCardMonths(row, year), toPay = row.pay_months.filter(x => !x.paid);
+    const now = new Date(), lateBefore = year < now.getFullYear() ? 13 : year === now.getFullYear() ? now.getMonth() + 1 : 0;
+    summary = [m.headline, m.count].filter(Boolean).join(' · ');
+    strip = `<div class="sc-mo-strip" role="img" aria-label="${summary}">${m.strip}</div>`;
+    rows = toPay.map(x => line(MONTHS[x.month], money(x.due), [
+      start && start.month === x.month && start.day > 1 ? `Part month: started ${fmtDateShort(row.start_date)}` : '',
+      end && end.month === x.month ? `Part month: left ${fmtDateShort(row.termination_date)}` : '',
+      x.month < lateBefore ? 'No payment logged for it' : '',
+    ].filter(Boolean).join(' · '))).join('');
+    if (!toPay.length) rows = line('Every month is paid', money(0));
+    else foot = `A whole month is ${money(parseFloat(row.monthly_pay) || 0)}: ${row.monthly_pay_from === 'payslip'
+      ? 'their latest payslip.' : 'the take-home worked out from their salary, until a whole month\'s payslip is logged.'}`;
+  } else {
+    // Self-employed: the year's pay, less what has been paid
+    const target = parseFloat(row.salary_target) || 0;
+    summary = `${parseFloat(row.pct_paid) || 0}% paid`;
+    rows = line(`Pay for ${year}`, money(target), row.is_terminated && end ? `Up to ${fmtDateShort(row.termination_date)}, when they left`
+        : start ? `From ${fmtDateShort(row.start_date)}, when they started` : '')
+      + line('Paid so far', (paid > 0 ? '−' : '') + money(paid), `${count} payment${count === 1 ? '' : 's'}`);
+    if (left < 0) figure = `Overpaid by ${money(left)}`;
+  }
+  const dayOff = parseFloat(row.excess_deduction) || 0, office = parseFloat(row.total_office_deductions) || 0;
+  if (dayOff > 0) rows += line('Day-off deductions', '−' + money(dayOff), `${parseFloat(row.excess_days) || 0} day${row.excess_days == 1 ? '' : 's'} over the allowance`);
+  if (office > 0) rows += line('Office deductions', '−' + money(office));
+
+  return `<div class="ep-left-head">
+      <div>${title}<p class="ep-sec-note">${summary}</p></div>
+      <strong class="ep-left-fig${left > 0 ? '' : ' is-none'}">${figure}</strong>
+    </div>
+    ${strip}
+    <div class="ep-list">${rows}</div>
+    ${foot ? `<p class="ep-left-foot">${foot}</p>` : ''}`;
 }
 
 // Starter forms, contracts and other PDFs kept on the profile (admin only).
