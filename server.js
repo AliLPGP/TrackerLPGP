@@ -80,6 +80,9 @@ async function runLateMigrations() {
        SELECT v.number, v.name FROM (VALUES ('12766341', 'LPGPCONNECT.COM LTD'), ('16488381', 'TAMIMI INTERNATIONAL CORP LTD'), ('17011880', 'BESPOKE HEATING AND COOLING LTD')) AS v(number, name)
        WHERE NOT EXISTS (SELECT 1 FROM company_seed WHERE id = 1) ON CONFLICT DO NOTHING`,
     `INSERT INTO company_seed (id) VALUES (1) ON CONFLICT DO NOTHING`,
+    // Reference numbers and codes for each company, and the owner's own personal code, kept encrypted
+    `ALTER TABLE companies ADD COLUMN IF NOT EXISTS details TEXT`,
+    `CREATE TABLE IF NOT EXISTS company_owner (id INTEGER PRIMARY KEY, personal_code TEXT)`,
     // Failed sign-ins, so repeated guessing of a password or PIN is locked out for a while
     `CREATE TABLE IF NOT EXISTS login_failures (id SERIAL PRIMARY KEY, account TEXT NOT NULL, ip TEXT, at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     `CREATE INDEX IF NOT EXISTS login_failures_account_at ON login_failures (account, at)`,
@@ -2288,13 +2291,28 @@ function requireFinance(req, res, next) {
 // rules and ticked off by hand (hmrc-deadlines.js).
 const { hmrcDeadlines, addMonths, addDays, VAT_MONTHS } = require('./hmrc-deadlines');
 const HMRC_KINDS = ['ct_pay', 'ct_return', 'vat'];
+
+// The numbers and codes needed to file for a company (UTR, VAT number, PAYE references,
+// Companies House authentication code, HMRC user ID, who files it). They are stored as one
+// encrypted value (id-crypto), so a copy of the database alone does not give them away.
+// The authentication code lets anyone file for the company, so it is never sent with the
+// list: the page gets `has_auth_code` and asks for the code when the admin clicks Show.
+// Passwords are not kept here at all.
+const idCrypto = require('./id-crypto');
+const DETAIL_FIELDS = ['utr', 'vat_number', 'paye_ref', 'accounts_office_ref', 'gateway_id', 'accountant', 'auth_code'];
+const sealText = text => idCrypto.seal(Buffer.from(String(text), 'utf8').toString('base64'));
+const openText = stored => { try { return stored ? idCrypto.open(stored).toString('utf8') : ''; } catch (e) { console.error('company details could not be opened:', e.message); return ''; } };
+const openDetails = stored => { try { return JSON.parse(openText(stored) || '{}'); } catch { return {}; } };
+const cleanDetails = b => Object.fromEntries(DETAIL_FIELDS.map(f => [f, String(b?.[f] ?? '').trim().slice(0, 120)]).filter(([, v]) => v));
 const { companyNumber, lookupCompany, companyUrl } = require('./companies-house');
 const CH_FIELDS = ['name', 'status', 'incorporated_on', 'accounts_made_up_to', 'accounts_due', 'last_accounts', 'statement_date', 'statement_due', 'last_statement'];
-const COMPANY_COLS = `id, company_number, name, status, notes, checked_at, vat, vat_since::TEXT AS vat_since, created_at::DATE::TEXT AS since, ${CH_FIELDS.slice(2).map(f => `${f}::TEXT AS ${f}`).join(', ')}`;
+const COMPANY_COLS = `id, company_number, name, status, notes, details, checked_at, vat, vat_since::TEXT AS vat_since, created_at::DATE::TEXT AS since, ${CH_FIELDS.slice(2).map(f => `${f}::TEXT AS ${f}`).join(', ')}`;
 // `done`: the "kind|due" marks of this company. The accounting year is the accounts year;
 // a company kept by hand only has the date its accounts are due, nine months after it.
 const companyOut = (r, done = new Set()) => {
-  const { since, vat_since, ...c } = r;
+  const { since, vat_since, details: sealed, ...c } = r;
+  const { auth_code, ...details } = openDetails(sealed);
+  c.details = details; c.has_auth_code = !!auth_code;
   const yearEnd = c.last_accounts || c.accounts_made_up_to || (c.accounts_due ? addMonths(c.accounts_due, -9) : null);
   // First accounts longer than twelve months: the first year's tax falls due on its own
   const firstYear = !c.last_accounts && c.incorporated_on ? addDays(addMonths(c.incorporated_on, 12), -1) : null;
@@ -2309,6 +2327,25 @@ app.get('/api/companies', requireAuth, requireAdmin, async (req, res) => {
   const { rows } = await q(`SELECT ${COMPANY_COLS} FROM companies ORDER BY name`);
   const { rows: marks } = await q('SELECT company_id, kind, due::TEXT AS due FROM company_deadlines_done');
   res.json(rows.map(c => companyOut(c, new Set(marks.filter(m => m.company_id === c.id).map(m => `${m.kind}|${m.due}`)))));
+});
+
+// The authentication code of one company, when the admin asks to see it
+app.get('/api/companies/:id/auth-code', requireAuth, requireAdmin, async (req, res) => {
+  const { rows } = await q('SELECT details FROM companies WHERE id = ?', [parseInt(req.params.id) || 0]);
+  if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+  res.json({ auth_code: openDetails(rows[0].details).auth_code || '' });
+});
+
+// The owner's Companies House personal code: one code for the person, used on every company
+app.get('/api/company-owner', requireAuth, requireAdmin, async (req, res) => {
+  const { rows } = await q('SELECT personal_code FROM company_owner WHERE id = 1');
+  const code = openText(rows[0]?.personal_code);
+  res.json(req.query.show === '1' ? { personal_code: code } : { has_personal_code: !!code });
+});
+app.put('/api/company-owner', requireAuth, requireAdmin, async (req, res) => {
+  const code = String(req.body?.personal_code ?? '').trim().slice(0, 40);
+  await q('INSERT INTO company_owner (id, personal_code) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET personal_code = EXCLUDED.personal_code', [code ? sealText(code) : null]);
+  res.json({ ok: true });
 });
 
 // Tick an HMRC deadline as paid or filed, so the next one shows. DELETE takes the last tick back.
@@ -2367,6 +2404,7 @@ app.put('/api/companies/:id', requireAuth, requireAdmin, async (req, res) => {
   const b = req.body || {};
   const { rows } = await q('SELECT id, company_number, name, vat FROM companies WHERE id = ?', [parseInt(req.params.id) || 0]);
   if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+  if (b.details && typeof b.details === 'object') await q('UPDATE companies SET details = ? WHERE id = ?', [sealText(JSON.stringify(cleanDetails(b.details))), rows[0].id]);
   // VAT is watched from the day its quarters are chosen: earlier returns are taken as dealt with
   if (b.vat !== undefined && vatChoice(b.vat) !== rows[0].vat) await q('UPDATE companies SET vat = ?, vat_since = CURRENT_DATE WHERE id = ?', [vatChoice(b.vat), rows[0].id]);
   if (rows[0].company_number) await q('UPDATE companies SET notes = ? WHERE id = ?', [companyNotes(b.notes), rows[0].id]);
