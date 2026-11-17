@@ -381,9 +381,12 @@ const coWhen = days => days < -1 ? `${-days} days overdue` : days === -1 ? '1 da
   : days <= 90 ? `In ${days} days` : `In about ${Math.round(days / 30.4)} months`;
 const coState = days => (days < 0 ? 'late' : days <= CO_SOON_DAYS ? 'soon' : 'ok');
 // Every deadline of every company, soonest first
+const CO_HMRC = { ct_pay: 'Pay corporation tax', ct_return: 'File tax return', vat: 'VAT return' };
+const CO_VAT = { '': 'Not VAT registered', 1: 'Quarters ending Mar, Jun, Sep, Dec', 2: 'Quarters ending Jan, Apr, Jul, Oct', 3: 'Quarters ending Feb, May, Aug, Nov', monthly: 'Every month' };
 const coDeadlines = list => list.flatMap(c => [
   c.statement_due && { company: c, what: 'Confirmation statement', due: c.statement_due },
   c.accounts_due && { company: c, what: 'Accounts', due: c.accounts_due },
+  ...(c.hmrc || []).map(h => ({ company: c, what: CO_HMRC[h.kind], due: h.due })),
 ].filter(Boolean)).map(d => ({ ...d, days: coDaysLeft(d.due) })).sort((a, b) => a.days - b.days);
 
 function coSetBadge(list) {
@@ -422,13 +425,21 @@ function renderCompanies() {
       ${date ? `<strong>${fmtDateShort(date)}</strong>${chip({ days: coDaysLeft(date) })}`
         : `<strong class="co-none">${c.company_number ? 'None shown' : 'Not set'}</strong>`}
     </div>`;
-  const worst = c => { const d = [c.statement_due, c.accounts_due].filter(Boolean).map(coDaysLeft); return d.length ? coState(Math.min(...d)) : 'none'; };
+  // An HMRC deadline has a tick: nobody can look up whether it was paid or filed
+  const hmrcRow = (c, h) => `<div class="co-due">
+      <span class="co-due-lbl">${CO_HMRC[h.kind]}<small>${h.kind === 'vat' ? 'Period' : 'Year'} to ${fmtDateShort(h.period_end)}</small></span>
+      <strong>${fmtDateShort(h.due)}</strong>${chip({ days: coDaysLeft(h.due) })}
+      <button class="co-tick" onclick="coDone(${c.id}, '${h.kind}', '${h.due}')" title="Tick when this is ${h.kind === 'ct_pay' ? 'paid' : 'filed'}: the next one then shows" aria-label="Mark ${CO_HMRC[h.kind]} due ${fmtDateShort(h.due)} as done">✓</button>
+    </div>`;
+  const allDue = c => [c.statement_due, c.accounts_due, ...(c.hmrc || []).map(h => h.due)].filter(Boolean).map(coDaysLeft);
+  const worst = c => { const d = allDue(c); return d.length ? coState(Math.min(...d)) : 'none'; };
   const card = c => c.id === _coEditId ? `
     <div class="co-item co-item--edit">
       ${c.company_number ? `<div class="co-name">${esc(c.name)}</div>` : `
       <label class="co-field">Company name<input class="form-control" id="coEditName" value="${esc(c.name)}" maxlength="160"></label>
       <label class="co-field">Confirmation statement due<input class="form-control" type="date" id="coEditStatement" value="${c.statement_due || ''}"></label>
       <label class="co-field">Accounts due<input class="form-control" type="date" id="coEditAccounts" value="${c.accounts_due || ''}"></label>`}
+      <label class="co-field co-field--wide">VAT returns<select class="form-control" id="coEditVat">${Object.entries(CO_VAT).map(([k, v]) => `<option value="${k}"${String(c.vat || '') === k ? ' selected' : ''}>${v}</option>`).join('')}</select></label>
       <label class="co-field co-field--wide">Note<input class="form-control" id="coEditNotes" value="${esc(c.notes || '')}" maxlength="500" placeholder="e.g. who files it, the authentication code is with the accountant"></label>
       <span class="sp-row-btns"><button class="btn btn-ghost btn-sm" onclick="coEdit(null)">Cancel</button><button class="btn btn-primary btn-sm" onclick="coSave(${c.id})">Save</button></span>
     </div>` : `
@@ -440,16 +451,18 @@ function renderCompanies() {
         ${due(c, 'Confirmation statement', c.statement_due, '')}
         ${due(c, 'Accounts', c.accounts_due, c.accounts_made_up_to ? `Year to ${fmtDateShort(c.accounts_made_up_to)}` : '')}
       </div>
+      ${(c.hmrc || []).length ? `<div class="co-group">HMRC <span>worked out from the year end; tick each when done</span></div>
+      <div class="co-dues co-dues--hmrc">${c.hmrc.map(h => hmrcRow(c, h)).join('')}</div>` : ''}
       ${c.notes ? `<p class="co-note">${esc(c.notes)}</p>` : ''}
       <div class="co-actions">
         ${c.url ? `<a class="co-link" href="${esc(c.url)}" target="_blank" rel="noopener" title="Open this company on Companies House, where the filings are made">Open on Companies House ↗</a>` : '<span></span>'}
-        <span class="sp-row-btns"><button class="btn btn-ghost btn-sm" onclick="coEdit(${c.id})">${c.company_number ? (c.notes ? 'Edit note' : 'Add note') : 'Edit'}</button>
+        <span class="sp-row-btns">${c.can_undo ? `<button class="btn btn-ghost btn-sm" onclick="coUndo(${c.id})" title="Take back the last tick on this company">Undo tick</button>` : ''}<button class="btn btn-ghost btn-sm" onclick="coEdit(${c.id})">Edit</button>
           <button class="btn btn-ghost btn-sm ep-danger" onclick="coDelete(${c.id}, ${esc(JSON.stringify(c.name))})" aria-label="Remove ${esc(c.name)}">×</button></span>
       </div>
     </div>`;
 
   // Companies in the order of their nearest deadline; one with no dates goes last
-  const nearest = c => Math.min(...[c.statement_due, c.accounts_due].filter(Boolean).map(coDaysLeft), Infinity);
+  const nearest = c => Math.min(...allDue(c), Infinity);
   const sorted = [...list].sort((a, b) => nearest(a) - nearest(b) || a.name.localeCompare(b.name));
   const checked = list.map(c => c.checked_at).filter(Boolean).sort()[0];
   const late = deadlines.filter(d => d.days < 0).length, soon = deadlines.filter(d => d.days >= 0 && d.days <= CO_SOON_DAYS).length;
@@ -481,7 +494,7 @@ function renderCompanies() {
         <input class="form-control" id="coNewNumber" maxlength="12" placeholder="Company number, e.g. 01234567" onkeydown="if(event.key==='Enter')coAdd()">
         <button class="btn btn-primary" id="coAddBtn" onclick="coAdd()">Add company</button>
       </div>`}
-      <p class="sp-foot">${_coByHand ? 'For a company that is not on Companies House.' : 'The dates come from Companies House and update by themselves after you file.'}
+      <p class="sp-foot">${_coByHand ? 'For a company that is not on Companies House.' : 'Companies House dates update by themselves after you file. HMRC dates are worked out, so tick them off yourself; turn on VAT with Edit.'}
         <button type="button" class="co-link" onclick="_coByHand = !_coByHand; renderCompanies()">${_coByHand ? 'Add by company number instead' : 'Add one by hand'}</button>${checked ? ` · Checked ${new Date(checked).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : ''} · Only admins see this page.</p>
     </section>`;
 }
@@ -502,8 +515,13 @@ async function coAdd() {
 function coEdit(id) { _coEditId = id; renderCompanies(); }
 async function coSave(id) {
   const val = elId => document.getElementById(elId)?.value.trim() || '';
-  if (await spSend('PUT', `/api/companies/${id}`, { name: val('coEditName'), statement_due: val('coEditStatement'), accounts_due: val('coEditAccounts'), notes: val('coEditNotes') })) { _coEditId = null; loadCompaniesPage(); }
+  if (await spSend('PUT', `/api/companies/${id}`, { name: val('coEditName'), statement_due: val('coEditStatement'), accounts_due: val('coEditAccounts'), notes: val('coEditNotes'), vat: val('coEditVat') })) { _coEditId = null; loadCompaniesPage(); }
 }
+async function coDone(id, kind, due) {
+  if (!await showConfirm(`${kind === 'ct_pay' ? 'Corporation tax' : kind === 'vat' ? 'VAT return' : 'Company tax return'} due ${fmtDateShort(due)}: mark it as ${kind === 'ct_pay' ? 'paid' : 'filed'}? The next one will show instead.`)) return;
+  if (await spSend('POST', `/api/companies/${id}/done`, { kind, due })) loadCompaniesPage();
+}
+async function coUndo(id) { if (await spSend('DELETE', `/api/companies/${id}/done`)) loadCompaniesPage(); }
 async function coDelete(id, name) {
   if (!await showConfirm(`Remove ${name} from your list? Nothing changes at Companies House.`)) return;
   if (await spSend('DELETE', `/api/companies/${id}`)) loadCompaniesPage();
