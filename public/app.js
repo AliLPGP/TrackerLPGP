@@ -153,11 +153,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadEmployees().catch(err => console.error('loadEmployees failed:', err));
   loadDashboard();
   refreshCalendarBadge();
+  refreshCompaniesBadge();
 
   // Deep-link / PWA shortcut support: /?page=salary opens that page directly
   try {
     const startPage = new URLSearchParams(window.location.search).get('page');
-    const validPages = ['dashboard','tracking','salary','employees','reports','calendar','admins','hotels','expenses','subscriptions','portfolio','deals','eventkit','spending'];
+    const validPages = ['dashboard','tracking','salary','employees','reports','calendar','admins','hotels','expenses','subscriptions','portfolio','deals','eventkit','spending','companies'];
     if (startPage && validPages.includes(startPage)) {
       navigate(startPage);
       // tidy the URL so a manual refresh doesn't re-trigger
@@ -259,7 +260,7 @@ const ACCOUNTS_PAGES = ['dashboard', 'calendar', 'deals', 'portfolio', 'expenses
 
 function navigate(page) {
   // Salary and Employees sections are admin-only
-  if (['salary', 'employees', 'spending'].includes(page) && currentUser?.role !== 'admin') return;
+  if (['salary', 'employees', 'spending', 'companies'].includes(page) && currentUser?.role !== 'admin') return;
   if (currentUser?.role === 'accounts' && !ACCOUNTS_PAGES.includes(page)) return;
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -270,7 +271,7 @@ function navigate(page) {
   if (page !== 'employee' && _profileMode === 'page') { _profileEmpId = null; const pb = document.getElementById('empPageBody'); if (pb) pb.innerHTML = ''; }
   document.querySelector(`.nav-item[data-page="${navPage}"]`)?.classList.add('active');
   document.querySelector(`.bottom-nav-item[data-page="${navPage}"]`)?.classList.add('active');
-  const titles = { dashboard:'Dashboard', tracking:'Daily Tracking', salary:'Salary Tracker', employees:'Employees', reports:'Reports', calendar:'Calendar', admins:'Admin Users', hotels:'Hotel Expenses', expenses:'Expenses', subscriptions:'Subscriptions', portfolio:'Portfolio', deals:'Deal Tracker', eventkit:'Event Kit', employee:'Employee', spending:'Spending' };
+  const titles = { dashboard:'Dashboard', tracking:'Daily Tracking', salary:'Salary Tracker', employees:'Employees', reports:'Reports', calendar:'Calendar', admins:'Admin Users', hotels:'Hotel Expenses', expenses:'Expenses', subscriptions:'Subscriptions', portfolio:'Portfolio', deals:'Deal Tracker', eventkit:'Event Kit', employee:'Employee', spending:'Spending', companies:'Companies' };
   document.getElementById('pageTitle').textContent = titles[page] || page;
   // Opening a page always fetches it fresh, so what colleagues changed shows up
   if (page !== 'employee' && PAGE_LOADERS[page]) PAGE_LOADERS[page]();
@@ -367,6 +368,158 @@ async function spDelete(id, name) {
   if (await spSend('DELETE', `/api/spending-items/${id}`)) loadSpendingPage();
 }
 
+// ─── COMPANIES (admin) ────────────────────────────────────────────────────────
+// The owner's companies and when each one's confirmation statement and accounts are due
+// at Companies House. The dates are read from Companies House by the server; this page
+// asks for a fresh read when what it holds is more than half a day old.
+let _companies = [], _coEditId = null, _coByHand = false, _coRefreshing = false;
+const CO_SOON_DAYS = 30;        // a deadline this close is flagged, on the page and on the menu
+const CO_STALE_MS = 12 * 3600 * 1000;
+
+const coDaysLeft = iso => Math.round((Date.parse(iso + 'T00:00:00Z') - Date.parse(new Date().toLocaleDateString('en-CA') + 'T00:00:00Z')) / 86400000);
+const coWhen = days => days < -1 ? `${-days} days overdue` : days === -1 ? '1 day overdue' : days === 0 ? 'Due today' : days === 1 ? 'Due tomorrow'
+  : days <= 90 ? `In ${days} days` : `In about ${Math.round(days / 30.4)} months`;
+const coState = days => (days < 0 ? 'late' : days <= CO_SOON_DAYS ? 'soon' : 'ok');
+// Every deadline of every company, soonest first
+const coDeadlines = list => list.flatMap(c => [
+  c.statement_due && { company: c, what: 'Confirmation statement', due: c.statement_due },
+  c.accounts_due && { company: c, what: 'Accounts', due: c.accounts_due },
+].filter(Boolean)).map(d => ({ ...d, days: coDaysLeft(d.due) })).sort((a, b) => a.days - b.days);
+
+function coSetBadge(list) {
+  const n = coDeadlines(list).filter(d => d.days <= CO_SOON_DAYS).length;
+  const el = document.getElementById('companiesNavBadge');
+  if (el) { el.textContent = n || ''; el.classList.toggle('hidden', !n); el.title = n ? `${n} filing${n > 1 ? 's' : ''} overdue or due within ${CO_SOON_DAYS} days` : ''; }
+}
+// On sign-in: the menu shows a count when a filing is close, without opening the page
+async function refreshCompaniesBadge() {
+  if (currentUser?.role !== 'admin') return;
+  const res = await fetch('/api/companies').catch(() => null);
+  if (res && res.ok) coSetBadge(await res.json());
+}
+
+async function loadCompaniesPage() {
+  const box = document.getElementById('companiesBody');
+  if (!box) return;
+  if (!box.innerHTML) box.innerHTML = '<div class="skeleton" style="height:320px;border-radius:16px"></div>';
+  const res = await fetch('/api/companies').catch(() => null);
+  if (!res || !res.ok) { box.innerHTML = '<div class="card co-card"><div class="ep-empty">Could not load your companies. Try again in a moment.</div></div>'; return; }
+  _companies = await res.json();
+  renderCompanies();
+  // Dates older than half a day are read again from Companies House, quietly
+  const stale = _companies.some(c => c.company_number && (!c.checked_at || Date.now() - Date.parse(c.checked_at) > CO_STALE_MS));
+  if (stale && !_coRefreshing) coRefresh(true);
+}
+
+function renderCompanies() {
+  const box = document.getElementById('companiesBody');
+  if (!box) return;
+  const list = _companies, deadlines = coDeadlines(list), next = deadlines[0];
+  coSetBadge(list);
+  const chip = d => `<span class="co-chip is-${coState(d.days)}">${coWhen(d.days)}</span>`;
+  const due = (c, label, date, basis) => `<div class="co-due">
+      <span class="co-due-lbl">${label}${basis ? `<small>${basis}</small>` : ''}</span>
+      ${date ? `<strong>${fmtDateShort(date)}</strong>${chip({ days: coDaysLeft(date) })}`
+        : `<strong class="co-none">${c.company_number ? 'None shown' : 'Not set'}</strong>`}
+    </div>`;
+  const worst = c => { const d = [c.statement_due, c.accounts_due].filter(Boolean).map(coDaysLeft); return d.length ? coState(Math.min(...d)) : 'none'; };
+  const card = c => c.id === _coEditId ? `
+    <div class="co-item co-item--edit">
+      ${c.company_number ? `<div class="co-name">${esc(c.name)}</div>` : `
+      <label class="co-field">Company name<input class="form-control" id="coEditName" value="${esc(c.name)}" maxlength="160"></label>
+      <label class="co-field">Confirmation statement due<input class="form-control" type="date" id="coEditStatement" value="${c.statement_due || ''}"></label>
+      <label class="co-field">Accounts due<input class="form-control" type="date" id="coEditAccounts" value="${c.accounts_due || ''}"></label>`}
+      <label class="co-field co-field--wide">Note<input class="form-control" id="coEditNotes" value="${esc(c.notes || '')}" maxlength="500" placeholder="e.g. who files it, the authentication code is with the accountant"></label>
+      <span class="sp-row-btns"><button class="btn btn-ghost btn-sm" onclick="coEdit(null)">Cancel</button><button class="btn btn-primary btn-sm" onclick="coSave(${c.id})">Save</button></span>
+    </div>` : `
+    <div class="co-item is-${worst(c)}">
+      <div class="co-name">${esc(c.name)}
+        <small>${c.company_number ? esc(c.company_number) : 'Kept by hand'}${c.status && !/^active$/i.test(c.status) ? ` · <span class="co-warn">${esc(c.status)}</span>` : ''}</small>
+      </div>
+      <div class="co-dues">
+        ${due(c, 'Confirmation statement', c.statement_due, '')}
+        ${due(c, 'Accounts', c.accounts_due, c.accounts_made_up_to ? `Year to ${fmtDateShort(c.accounts_made_up_to)}` : '')}
+      </div>
+      ${c.notes ? `<p class="co-note">${esc(c.notes)}</p>` : ''}
+      <div class="co-actions">
+        ${c.url ? `<a class="co-link" href="${esc(c.url)}" target="_blank" rel="noopener" title="Open this company on Companies House, where the filings are made">Open on Companies House ↗</a>` : '<span></span>'}
+        <span class="sp-row-btns"><button class="btn btn-ghost btn-sm" onclick="coEdit(${c.id})">${c.company_number ? (c.notes ? 'Edit note' : 'Add note') : 'Edit'}</button>
+          <button class="btn btn-ghost btn-sm ep-danger" onclick="coDelete(${c.id}, ${esc(JSON.stringify(c.name))})" aria-label="Remove ${esc(c.name)}">×</button></span>
+      </div>
+    </div>`;
+
+  // Companies in the order of their nearest deadline; one with no dates goes last
+  const nearest = c => Math.min(...[c.statement_due, c.accounts_due].filter(Boolean).map(coDaysLeft), Infinity);
+  const sorted = [...list].sort((a, b) => nearest(a) - nearest(b) || a.name.localeCompare(b.name));
+  const checked = list.map(c => c.checked_at).filter(Boolean).sort()[0];
+  const late = deadlines.filter(d => d.days < 0).length, soon = deadlines.filter(d => d.days >= 0 && d.days <= CO_SOON_DAYS).length;
+
+  box.innerHTML = `
+    <section class="card co-card">
+      <header class="sp-head">
+        <div>
+          <div class="sp-eyebrow">Next filing due</div>
+          ${next ? `<div class="co-next is-${coState(next.days)}">${fmtDateShort(next.due)}</div>
+          <div class="sp-sub">${esc(next.what)} for ${esc(next.company.name)} · ${coWhen(next.days).toLowerCase()}</div>`
+            : `<div class="co-next">Nothing yet</div><div class="sp-sub">${list.length ? 'None of your companies has a date' : 'Add your first company below'}</div>`}
+        </div>
+        <div class="co-head-side">
+          <div class="co-counts">${late ? `<span class="co-chip is-late">${late} overdue</span>` : ''}${soon ? `<span class="co-chip is-soon">${soon} due within ${CO_SOON_DAYS} days</span>` : ''}${list.length && !late && !soon ? '<span class="co-chip is-ok">Nothing due soon</span>' : ''}</div>
+          ${list.some(c => c.company_number) ? `<button class="btn btn-sm" onclick="coRefresh()" ${_coRefreshing ? 'disabled' : ''}>${_coRefreshing ? 'Checking…' : 'Check for updates'}</button>` : ''}
+        </div>
+      </header>
+
+      <h3 class="sp-title">Your companies <span class="co-n">${list.length || ''}</span></h3>
+      <div class="co-list">${sorted.map(card).join('') || '<div class="ep-empty">No companies yet. Add one by its company number and the dates fill in from Companies House.</div>'}</div>
+
+      ${_coByHand ? `<div class="co-add co-add--hand">
+        <input class="form-control" id="coNewName" maxlength="160" placeholder="Company name">
+        <label class="co-field">Confirmation statement due<input class="form-control" type="date" id="coNewStatement"></label>
+        <label class="co-field">Accounts due<input class="form-control" type="date" id="coNewAccounts"></label>
+        <button class="btn btn-primary" onclick="coAdd()">Add company</button>
+      </div>` : `<div class="co-add">
+        <input class="form-control" id="coNewNumber" maxlength="12" placeholder="Company number, e.g. 01234567" onkeydown="if(event.key==='Enter')coAdd()">
+        <button class="btn btn-primary" id="coAddBtn" onclick="coAdd()">Add company</button>
+      </div>`}
+      <p class="sp-foot">${_coByHand ? 'For a company that is not on Companies House.' : 'The dates come from Companies House and update by themselves after you file.'}
+        <button type="button" class="co-link" onclick="_coByHand = !_coByHand; renderCompanies()">${_coByHand ? 'Add by company number instead' : 'Add one by hand'}</button>${checked ? ` · Checked ${new Date(checked).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : ''} · Only admins see this page.</p>
+    </section>`;
+}
+
+async function coAdd() {
+  const val = id => document.getElementById(id)?.value.trim() || '';
+  const body = _coByHand ? { name: val('coNewName'), statement_due: val('coNewStatement'), accounts_due: val('coNewAccounts') } : { company_number: val('coNewNumber') };
+  if (!(_coByHand ? body.name : body.company_number)) { showToast(_coByHand ? 'Enter the company name' : 'Enter the company number', 'error'); return; }
+  const btn = document.getElementById('coAddBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Looking it up…'; }
+  const res = await fetch('/api/companies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null);
+  const out = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { showToast(out.error || 'Could not add the company', 'error'); if (btn) { btn.disabled = false; btn.textContent = 'Add company'; } return; }
+  showToast(`${out.name} added`, 'success');
+  _coByHand = false;
+  loadCompaniesPage();
+}
+function coEdit(id) { _coEditId = id; renderCompanies(); }
+async function coSave(id) {
+  const val = elId => document.getElementById(elId)?.value.trim() || '';
+  if (await spSend('PUT', `/api/companies/${id}`, { name: val('coEditName'), statement_due: val('coEditStatement'), accounts_due: val('coEditAccounts'), notes: val('coEditNotes') })) { _coEditId = null; loadCompaniesPage(); }
+}
+async function coDelete(id, name) {
+  if (!await showConfirm(`Remove ${name} from your list? Nothing changes at Companies House.`)) return;
+  if (await spSend('DELETE', `/api/companies/${id}`)) loadCompaniesPage();
+}
+// quiet: the page's own top-up, which says nothing unless it is asked to
+async function coRefresh(quiet) {
+  if (_coRefreshing) return;
+  _coRefreshing = true; if (!quiet) renderCompanies();
+  const res = await fetch('/api/companies/refresh', { method: 'POST' }).catch(() => null);
+  const out = res && res.ok ? await res.json().catch(() => null) : null;
+  _coRefreshing = false;
+  if (!quiet) showToast(!out ? 'Companies House could not be reached' : out.failed ? `${out.updated} updated, ${out.failed} could not be read` : 'Dates are up to date', out && !out.failed ? 'success' : 'error');
+  const list = await fetch('/api/companies').catch(() => null);
+  if (list && list.ok) { _companies = await list.json(); if (_coEditId === null) renderCompanies(); else coSetBadge(_companies); }
+}
+
 // What each page fetches to show itself. Used when it is opened and to keep it up to date.
 const PAGE_LOADERS = {
   dashboard: () => loadDashboard(),
@@ -382,6 +535,7 @@ const PAGE_LOADERS = {
   deals: () => loadDeals(),
   eventkit: () => loadEventKitPage(),
   spending: () => loadSpendingPage(),
+  companies: () => loadCompaniesPage(),
   employee: () => { if (_profileEmpId) openEmployeeProfile(_profileEmpId); },
 };
 
@@ -1557,7 +1711,7 @@ function empLeftToPayHtml(row, year) {
     ].filter(Boolean).join(' · '))).join('');
     if (!toPay.length) rows = line('Every month is paid', money(0));
     else foot = `A whole month is ${money(parseFloat(row.monthly_pay) || 0)}: ${row.monthly_pay_from === 'payslip'
-      ? 'their latest payslip.' : 'the take-home worked out from their salary, until a whole month\'s payslip is logged.'}`;
+      ? 'their usual payslip, leaving out one-off extras such as a bonus or a refund.' : 'the take-home worked out from their salary, until a whole month\'s payslip is logged.'}`;
   } else {
     // Self-employed: the year's pay, less what has been paid
     const target = parseFloat(row.salary_target) || 0;
@@ -3272,7 +3426,7 @@ async function loadSalaryPage() {
       const cur             = emp.currency || 'GBP';
       const sym             = currencySymbol(cur);
       const paye            = emp.paye_breakdown || null;
-      // Payroll is counted in months, at what a whole month really pays (the latest payslip, else the estimate)
+      // Payroll is counted in months, at what a whole month really pays (the usual payslip, else the estimate)
       const byMonth         = Array.isArray(emp.pay_months) && emp.pay_months.length ? payrollCardMonths(emp, year) : null;
       const monthlyPay      = parseFloat(emp.monthly_pay) || 0;
       const fromPayslip     = emp.monthly_pay_from === 'payslip';
@@ -3455,7 +3609,7 @@ async function loadSalaryPage() {
                 <span class="sc-paye-footer-lbl">Estimated take-home</span>
                 <span class="sc-paye-footer-val">${sym}${paye.net_monthly.toLocaleString('en-GB',{minimumFractionDigits:2})}</span>
               </div>
-              ${fromPayslip ? `<div class="sc-hist-hint">This is the tracker's own tax estimate. Their latest payslip was ${sym}${monthlyPay.toLocaleString('en-GB',{minimumFractionDigits:2})}, and that is the monthly pay used for the months still to pay.</div>` : ''}
+              ${fromPayslip ? `<div class="sc-hist-hint">This is the tracker's own tax estimate. Their usual payslip is ${sym}${monthlyPay.toLocaleString('en-GB',{minimumFractionDigits:2})}, and that is the monthly pay used for the months still to pay.</div>` : ''}
             </div>
           </div>` : ''}
 
@@ -3567,7 +3721,7 @@ async function loadSalaryPage() {
                 <span>${money(m.paid ? m.logged : m.due)}</span>
                 <span class="db-tag ${m.paid ? '' : 'is-warn'}">${m.paid ? 'Paid' : 'To pay'}</span>
               </div>`).join('')}
-              <div class="sc-hist-hint">A month is paid once a payment is logged for it. The months still to pay are at ${fromPayslip ? 'their latest payslip' : 'the estimated take-home, until a payslip is logged'}${ded > 0 ? `, and ${money(ded)} of deductions comes off what is left` : ''}.</div>
+              <div class="sc-hist-hint">A month is paid once a payment is logged for it. The months still to pay are at ${fromPayslip ? 'their usual payslip (a month with a bonus or refund on top does not change it)' : 'the estimated take-home, until a payslip is logged'}${ded > 0 ? `, and ${money(ded)} of deductions comes off what is left` : ''}.</div>
             </div>
           </div>`; })() : ''}
 
@@ -8136,7 +8290,7 @@ async function loadEmployeeDashboard(user) {
       const s = sal;
       const sSym = s.currency === 'GBP' ? '£' : s.currency === 'USD' ? '$' : (s.currency + ' ');
       const paye = s.paye_breakdown;
-      // Payroll: the latest payslip when one is logged, else the tax estimate
+      // Payroll: the usual payslip when one is logged, else the tax estimate
       const fromPayslip = s.monthly_pay_from === 'payslip';
       const monthlyVal = fromPayslip ? s.monthly_pay : paye ? paye.net_monthly : s.annual_salary / 12;
       const monthlyLbl = paye ? 'Take-home / mo' : 'Monthly pay';

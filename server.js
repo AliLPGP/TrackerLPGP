@@ -64,6 +64,10 @@ async function runLateMigrations() {
     `ALTER TABLE portfolio_events ADD COLUMN IF NOT EXISTS revenue_target NUMERIC(14,2)`,
     // Yearly costs the admin enters for the spending summary (rent, cars, taxes...)
     `CREATE TABLE IF NOT EXISTS spending_items (id SERIAL PRIMARY KEY, name TEXT NOT NULL, annual_amount NUMERIC(14,2) NOT NULL DEFAULT 0, notes TEXT NOT NULL DEFAULT '', sort_order INT NOT NULL DEFAULT 0, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+    // The owner's companies and their Companies House filing deadlines (admin only)
+    `CREATE TABLE IF NOT EXISTS companies (id SERIAL PRIMARY KEY, company_number TEXT UNIQUE, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT '',
+       incorporated_on DATE, accounts_made_up_to DATE, accounts_due DATE, last_accounts DATE, statement_date DATE, statement_due DATE, last_statement DATE,
+       notes TEXT NOT NULL DEFAULT '', checked_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     // Failed sign-ins, so repeated guessing of a password or PIN is locked out for a while
     `CREATE TABLE IF NOT EXISTS login_failures (id SERIAL PRIMARY KEY, account TEXT NOT NULL, ip TEXT, at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     `CREATE INDEX IF NOT EXISTS login_failures_account_at ON login_failures (account, at)`,
@@ -1524,7 +1528,7 @@ async function salaryOverviewRow(emp, year) {
     pension_rate:        parseFloat(emp.pension_rate) || 0,
     paye_breakdown:      ukPay,
     net_monthly:         netMonthly,
-    // Payroll: what a whole month really pays (the latest payslip, else the estimate above)
+    // Payroll: what a whole month really pays (the usual payslip, else the estimate above)
     monthly_pay:         owedYear.monthlyPay ?? null,
     monthly_pay_from:    owedYear.months ? (owedYear.fromPayslip ? 'payslip' : 'estimate') : null,
     salary_target:       netSalaryTarget,
@@ -2259,6 +2263,82 @@ function requireFinance(req, res, next) {
   if (r !== 'admin' && r !== 'manager' && r !== 'accounts') return res.status(403).json({ error: 'Access restricted' });
   next();
 }
+
+// ─── COMPANIES (admin) ────────────────────────────────────────────────────────
+// The owner's companies and when each one's confirmation statement and accounts are due
+// at Companies House. A company is added by its number and the dates are read off its
+// public Companies House page (companies-house.js), then re-read whenever the page is
+// opened, so a filing made there shows up here by itself. One with no number is kept by
+// hand. Admin only: nobody else needs to know what the owner holds.
+const { companyNumber, lookupCompany, companyUrl } = require('./companies-house');
+const CH_FIELDS = ['name', 'status', 'incorporated_on', 'accounts_made_up_to', 'accounts_due', 'last_accounts', 'statement_date', 'statement_due', 'last_statement'];
+const COMPANY_COLS = `id, company_number, name, status, notes, checked_at, ${CH_FIELDS.slice(2).map(f => `${f}::TEXT AS ${f}`).join(', ')}`;
+const companyOut = r => ({ ...r, url: r.company_number ? companyUrl(r.company_number) : null });
+const dateOrNull = v => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null);
+const companyNotes = v => String(v || '').trim().slice(0, 500);
+
+app.get('/api/companies', requireAuth, requireAdmin, async (req, res) => {
+  const { rows } = await q(`SELECT ${COMPANY_COLS} FROM companies ORDER BY name`);
+  res.json(rows.map(companyOut));
+});
+
+// Add by number (looked up at Companies House), or by hand with a name and the two dates
+app.post('/api/companies', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const b = req.body || {};
+    if (String(b.company_number || '').trim()) {
+      const number = companyNumber(b.company_number);
+      if (!number) return res.status(400).json({ error: 'That does not look like a company number. It is 8 characters, such as 01234567.' });
+      if ((await q('SELECT 1 FROM companies WHERE company_number = ?', [number])).rows.length) return res.status(409).json({ error: 'That company is already on the list' });
+      let found;
+      try { found = await lookupCompany(number); }
+      catch (e) { console.error('Companies House lookup failed:', e.message); return res.status(502).json({ error: 'Companies House could not be reached just now. Try again, or add the company by hand.' }); }
+      if (!found) return res.status(404).json({ error: `Companies House has no company numbered ${number}` });
+      const { rows } = await q(`INSERT INTO companies (company_number, ${CH_FIELDS.join(', ')}, notes, checked_at) VALUES (?, ${CH_FIELDS.map(() => '?').join(', ')}, ?, NOW()) RETURNING id`,
+        [number, ...CH_FIELDS.map(f => found[f]), companyNotes(b.notes)]);
+      return res.json({ id: rows[0].id, name: found.name });
+    }
+    const name = String(b.name || '').trim().slice(0, 160);
+    if (!name) return res.status(400).json({ error: 'Enter the company number, or its name to add it by hand' });
+    const { rows } = await q('INSERT INTO companies (name, statement_due, accounts_due, notes) VALUES (?, ?, ?, ?) RETURNING id',
+      [name, dateOrNull(b.statement_due), dateOrNull(b.accounts_due), companyNotes(b.notes)]);
+    res.json({ id: rows[0].id, name });
+  } catch (e) { console.error('/api/companies error:', e); res.status(500).json({ error: e.message }); }
+});
+
+// Re-read every numbered company from Companies House. One that fails keeps its last dates.
+app.post('/api/companies/refresh', requireAuth, requireAdmin, async (req, res) => {
+  const { rows } = await q('SELECT id, company_number FROM companies WHERE company_number IS NOT NULL');
+  const results = await Promise.all(rows.map(async c => {
+    try {
+      const found = await lookupCompany(c.company_number);
+      if (!found) return false;
+      await q(`UPDATE companies SET ${CH_FIELDS.map(f => `${f} = ?`).join(', ')}, checked_at = NOW() WHERE id = ?`, [...CH_FIELDS.map(f => found[f]), c.id]);
+      return true;
+    } catch (e) { console.error(`Companies House refresh failed for ${c.company_number}:`, e.message); return false; }
+  }));
+  res.json({ updated: results.filter(Boolean).length, failed: results.filter(r => !r).length });
+});
+
+// Notes on any company; the name and dates only on one kept by hand
+app.put('/api/companies/:id', requireAuth, requireAdmin, async (req, res) => {
+  const b = req.body || {};
+  const { rows } = await q('SELECT id, company_number, name FROM companies WHERE id = ?', [parseInt(req.params.id) || 0]);
+  if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+  if (rows[0].company_number) await q('UPDATE companies SET notes = ? WHERE id = ?', [companyNotes(b.notes), rows[0].id]);
+  else {
+    const name = String(b.name || '').trim().slice(0, 160);
+    if (!name) return res.status(400).json({ error: 'Give the company a name' });
+    await q('UPDATE companies SET name = ?, statement_due = ?, accounts_due = ?, notes = ? WHERE id = ?',
+      [name, dateOrNull(b.statement_due), dateOrNull(b.accounts_due), companyNotes(b.notes), rows[0].id]);
+  }
+  res.json({ ok: true });
+});
+
+app.delete('/api/companies/:id', requireAuth, requireAdmin, async (req, res) => {
+  await q('DELETE FROM companies WHERE id = ?', [parseInt(req.params.id) || 0]);
+  res.json({ ok: true });
+});
 
 // ─── SUBSCRIPTIONS ────────────────────────────────────────────────────────────
 // ─── SPENDING SUMMARY (admin) ─────────────────────────────────────────────────

@@ -62,6 +62,28 @@ y = payrollYear({ months: flat, payments: [pay(1, 1900), pay(2, 500), pay(3, 440
 assert.strictEqual(y.rate, 0.95, 'the advance and the bonus month are passed over');
 assert.deepStrictEqual(y.months.slice(0, 4).map(m => m.paid), [true, true, true, false], 'but each still counts as a paid month');
 
+// A month that pays extra (a bonus, a tax refund) is a one-off: the usual payslip is the
+// amount that repeats, so the months still to pay stay at 1,900
+y = payrollYear({ months: flat, payments: [...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(m => pay(m, 1900)), pay(10, 2150)] });
+assert.strictEqual(y.rate, 0.95, 'a bonus in the latest month does not become the monthly pay');
+assert.deepStrictEqual(y.months.filter(m => !m.paid).map(m => [m.month, m.due]), [[11, 1900], [12, 1900]]);
+assert.strictEqual(y.remaining, 3800); assert.strictEqual(y.totalPaid, 19250, 'the extra is still counted as paid');
+y = payrollYear({ months: flat, payments: [pay(1, 1900), pay(2, 1900), pay(3, 1936.4), pay(4, 1900), pay(5, 2300)] });
+assert.strictEqual(y.rate, 0.95, 'nor does a small refund, or two different extras');
+y = payrollYear({ months: flat, payments: [pay(1, 1900), pay(2, 2150)] });
+assert.strictEqual(y.rate, 0.95, 'two payslips that differ: the lower one, as extras are extra');
+y = payrollYear({ months: flat, payments: [pay(1, 1900), pay(2, 2150), pay(3, 1760)] });
+assert.strictEqual(y.rate, 0.95, 'three that all differ: the middle one');
+// A real change (a new tax code, a pension starting) shows from its second month
+y = payrollYear({ months: flat, payments: [...[1, 2, 3, 4, 5, 6].map(m => pay(m, 1900)), pay(7, 1960)] });
+assert.strictEqual(y.rate, 0.95, 'one month at a new amount could be a one-off');
+y = payrollYear({ months: flat, payments: [...[1, 2, 3, 4, 5, 6].map(m => pay(m, 1900)), pay(7, 1960), pay(8, 1960)] });
+assert.strictEqual(y.rate, 0.98, 'two months at it and it is the monthly pay');
+assert.strictEqual(y.months.find(m => m.month === 9).due, 1960);
+// A January bonus does not set the new year: last year's payslips still say what is usual
+y = payrollYear({ months: flat, payments: [pay(1, 2400)], lastYear: { months: flat, payments: flat.map(m => pay(m.month, 1900)) } });
+assert.strictEqual(y.rate, 0.95); assert.strictEqual(y.remaining, 11 * 1900);
+
 // A month missed in the middle is still owed
 y = payrollYear({ months: flat, payments: [1, 3, 4].map(m => pay(m, 2000)) });
 assert.deepStrictEqual(y.months.filter(m => !m.paid).map(m => m.month), [2, 5, 6, 7, 8, 9, 10, 11, 12]);

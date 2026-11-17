@@ -343,11 +343,11 @@ const ANSWER = {
     return q.people.map(p => {
       const r = rows.find(x => x.employee_id === p.id), cur = p.currency || 'GBP', annual = num(p.annual_salary);
       if (!(annual > 0)) return `${p.name} has no salary set yet.`;
-      // Payroll take-home: their latest payslip when one is logged, else our tax estimate
+      // Payroll take-home: their usual payslip when one is logged, else our tax estimate
       const takeHome = r && (r.monthly_pay || r.net_monthly);
       return p.employment_type === 'payroll'
         ? `${p.name} is on ${money(annual, cur)} a year (payroll). ${!takeHome ? `That is ${money(annual / 12, cur)} a month before tax.`
-          : r.monthly_pay_from === 'payslip' ? `They take home ${money(takeHome, cur)} a month, going by their latest payslip.` : `Take-home is about ${money(takeHome, cur)} a month after tax.`}`
+          : r.monthly_pay_from === 'payslip' ? `They take home ${money(takeHome, cur)} a month, going by their payslips.` : `Take-home is about ${money(takeHome, cur)} a month after tax.`}`
         : `${p.name} is paid ${money(annual, cur)} a year (self-employed), which is ${money(annual / 12, cur)} a month${cur !== 'GBP' ? `, about ${pounds(gbpOf(annual, cur))} a year in pounds` : ''}.`;
     }).join('\n');
   },
