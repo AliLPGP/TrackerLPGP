@@ -68,6 +68,18 @@ async function runLateMigrations() {
     `CREATE TABLE IF NOT EXISTS companies (id SERIAL PRIMARY KEY, company_number TEXT UNIQUE, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT '',
        incorporated_on DATE, accounts_made_up_to DATE, accounts_due DATE, last_accounts DATE, statement_date DATE, statement_due DATE, last_statement DATE,
        notes TEXT NOT NULL DEFAULT '', checked_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+    // HMRC deadlines: which VAT quarters a company has, and the deadlines ticked as paid or filed
+    `ALTER TABLE companies ADD COLUMN IF NOT EXISTS vat TEXT NOT NULL DEFAULT ''`,
+    `ALTER TABLE companies ADD COLUMN IF NOT EXISTS vat_since DATE`,
+    `CREATE TABLE IF NOT EXISTS company_deadlines_done (id SERIAL PRIMARY KEY, company_id INTEGER NOT NULL, kind TEXT NOT NULL, due DATE NOT NULL,
+       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE (company_id, kind, due))`,
+    // The owner's three companies, put on the list once (company_seed remembers, so one
+    // removed later stays removed). Their dates fill in from Companies House on first view.
+    `CREATE TABLE IF NOT EXISTS company_seed (id INTEGER PRIMARY KEY)`,
+    `INSERT INTO companies (company_number, name)
+       SELECT v.number, v.name FROM (VALUES ('12766341', 'LPGPCONNECT.COM LTD'), ('16488381', 'TAMIMI INTERNATIONAL CORP LTD'), ('17011880', 'BESPOKE HEATING AND COOLING LTD')) AS v(number, name)
+       WHERE NOT EXISTS (SELECT 1 FROM company_seed WHERE id = 1) ON CONFLICT DO NOTHING`,
+    `INSERT INTO company_seed (id) VALUES (1) ON CONFLICT DO NOTHING`,
     // Failed sign-ins, so repeated guessing of a password or PIN is locked out for a while
     `CREATE TABLE IF NOT EXISTS login_failures (id SERIAL PRIMARY KEY, account TEXT NOT NULL, ip TEXT, at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
     `CREATE INDEX IF NOT EXISTS login_failures_account_at ON login_failures (account, at)`,
@@ -2270,16 +2282,46 @@ function requireFinance(req, res, next) {
 // public Companies House page (companies-house.js), then re-read whenever the page is
 // opened, so a filing made there shows up here by itself. One with no number is kept by
 // hand. Admin only: nobody else needs to know what the owner holds.
+//
+// Each company also carries its HMRC deadlines (corporation tax, and VAT once the admin
+// says which quarters it has). HMRC publishes nothing, so those are worked out from the
+// rules and ticked off by hand (hmrc-deadlines.js).
+const { hmrcDeadlines, addMonths, addDays, VAT_MONTHS } = require('./hmrc-deadlines');
+const HMRC_KINDS = ['ct_pay', 'ct_return', 'vat'];
 const { companyNumber, lookupCompany, companyUrl } = require('./companies-house');
 const CH_FIELDS = ['name', 'status', 'incorporated_on', 'accounts_made_up_to', 'accounts_due', 'last_accounts', 'statement_date', 'statement_due', 'last_statement'];
-const COMPANY_COLS = `id, company_number, name, status, notes, checked_at, ${CH_FIELDS.slice(2).map(f => `${f}::TEXT AS ${f}`).join(', ')}`;
-const companyOut = r => ({ ...r, url: r.company_number ? companyUrl(r.company_number) : null });
+const COMPANY_COLS = `id, company_number, name, status, notes, checked_at, vat, vat_since::TEXT AS vat_since, created_at::DATE::TEXT AS since, ${CH_FIELDS.slice(2).map(f => `${f}::TEXT AS ${f}`).join(', ')}`;
+// `done`: the "kind|due" marks of this company. The accounting year is the accounts year;
+// a company kept by hand only has the date its accounts are due, nine months after it.
+const companyOut = (r, done = new Set()) => {
+  const { since, vat_since, ...c } = r;
+  const yearEnd = c.last_accounts || c.accounts_made_up_to || (c.accounts_due ? addMonths(c.accounts_due, -9) : null);
+  // First accounts longer than twelve months: the first year's tax falls due on its own
+  const firstYear = !c.last_accounts && c.incorporated_on ? addDays(addMonths(c.incorporated_on, 12), -1) : null;
+  return { ...c, url: c.company_number ? companyUrl(c.company_number) : null, can_undo: done.size > 0,
+    hmrc: hmrcDeadlines({ yearEnd, isFirstYear: !!c.company_number && !c.last_accounts, firstYearEnd: firstYear && yearEnd && firstYear < yearEnd ? firstYear : null, vat: c.vat, vatSince: vat_since, since, done }) };
+};
+const vatChoice = v => (Object.keys(VAT_MONTHS).includes(String(v)) ? String(v) : '');
 const dateOrNull = v => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null);
 const companyNotes = v => String(v || '').trim().slice(0, 500);
 
 app.get('/api/companies', requireAuth, requireAdmin, async (req, res) => {
   const { rows } = await q(`SELECT ${COMPANY_COLS} FROM companies ORDER BY name`);
-  res.json(rows.map(companyOut));
+  const { rows: marks } = await q('SELECT company_id, kind, due::TEXT AS due FROM company_deadlines_done');
+  res.json(rows.map(c => companyOut(c, new Set(marks.filter(m => m.company_id === c.id).map(m => `${m.kind}|${m.due}`)))));
+});
+
+// Tick an HMRC deadline as paid or filed, so the next one shows. DELETE takes the last tick back.
+app.post('/api/companies/:id/done', requireAuth, requireAdmin, async (req, res) => {
+  const id = parseInt(req.params.id) || 0, kind = String(req.body?.kind || ''), due = dateOrNull(req.body?.due);
+  if (!HMRC_KINDS.includes(kind) || !due) return res.status(400).json({ error: 'Which deadline?' });
+  if (!(await q('SELECT 1 FROM companies WHERE id = ?', [id])).rows.length) return res.status(404).json({ error: 'Not found' });
+  await q('INSERT INTO company_deadlines_done (company_id, kind, due) VALUES (?, ?, ?) ON CONFLICT DO NOTHING', [id, kind, due]);
+  res.json({ ok: true });
+});
+app.delete('/api/companies/:id/done', requireAuth, requireAdmin, async (req, res) => {
+  await q('DELETE FROM company_deadlines_done WHERE id = (SELECT id FROM company_deadlines_done WHERE company_id = ? ORDER BY created_at DESC, id DESC LIMIT 1)', [parseInt(req.params.id) || 0]);
+  res.json({ ok: true });
 });
 
 // Add by number (looked up at Companies House), or by hand with a name and the two dates
@@ -2320,11 +2362,13 @@ app.post('/api/companies/refresh', requireAuth, requireAdmin, async (req, res) =
   res.json({ updated: results.filter(Boolean).length, failed: results.filter(r => !r).length });
 });
 
-// Notes on any company; the name and dates only on one kept by hand
+// Notes and VAT quarters on any company; the name and dates only on one kept by hand
 app.put('/api/companies/:id', requireAuth, requireAdmin, async (req, res) => {
   const b = req.body || {};
-  const { rows } = await q('SELECT id, company_number, name FROM companies WHERE id = ?', [parseInt(req.params.id) || 0]);
+  const { rows } = await q('SELECT id, company_number, name, vat FROM companies WHERE id = ?', [parseInt(req.params.id) || 0]);
   if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+  // VAT is watched from the day its quarters are chosen: earlier returns are taken as dealt with
+  if (b.vat !== undefined && vatChoice(b.vat) !== rows[0].vat) await q('UPDATE companies SET vat = ?, vat_since = CURRENT_DATE WHERE id = ?', [vatChoice(b.vat), rows[0].id]);
   if (rows[0].company_number) await q('UPDATE companies SET notes = ? WHERE id = ?', [companyNotes(b.notes), rows[0].id]);
   else {
     const name = String(b.name || '').trim().slice(0, 160);
@@ -2336,6 +2380,7 @@ app.put('/api/companies/:id', requireAuth, requireAdmin, async (req, res) => {
 });
 
 app.delete('/api/companies/:id', requireAuth, requireAdmin, async (req, res) => {
+  await q('DELETE FROM company_deadlines_done WHERE company_id = ?', [parseInt(req.params.id) || 0]);
   await q('DELETE FROM companies WHERE id = ?', [parseInt(req.params.id) || 0]);
   res.json({ ok: true });
 });
