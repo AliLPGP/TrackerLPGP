@@ -417,11 +417,12 @@ function renderCompanies() {
   const list = _companies, deadlines = coDeadlines(list), next = deadlines[0];
   coSetBadge(list);
   const chip = d => `<span class="co-chip is-${coState(d.days)}">${coWhen(d.days)}</span>`;
-  const due = (c, label, date, basis) => `<div class="co-due${date ? ' is-' + coState(coDaysLeft(date)) : ''}">
-      <span class="co-due-lbl">${label}</span>
-      ${date ? `<strong>${fmtDateShort(date)}</strong>${chip({ days: coDaysLeft(date) })}${basis ? `<small>${basis}</small>` : ''}`
-        : `<strong class="co-none">No date</strong><small>${c.company_number ? 'Companies House shows none' : 'Add it with Edit'}</small>`}
+  const due = (c, label, date, basis) => `<div class="co-due">
+      <span class="co-due-lbl">${label}${basis ? `<small>${basis}</small>` : ''}</span>
+      ${date ? `<strong>${fmtDateShort(date)}</strong>${chip({ days: coDaysLeft(date) })}`
+        : `<strong class="co-none">${c.company_number ? 'None shown' : 'Not set'}</strong>`}
     </div>`;
+  const worst = c => { const d = [c.statement_due, c.accounts_due].filter(Boolean).map(coDaysLeft); return d.length ? coState(Math.min(...d)) : 'none'; };
   const card = c => c.id === _coEditId ? `
     <div class="co-item co-item--edit">
       ${c.company_number ? `<div class="co-name">${esc(c.name)}</div>` : `
@@ -431,22 +432,20 @@ function renderCompanies() {
       <label class="co-field co-field--wide">Note<input class="form-control" id="coEditNotes" value="${esc(c.notes || '')}" maxlength="500" placeholder="e.g. who files it, the authentication code is with the accountant"></label>
       <span class="sp-row-btns"><button class="btn btn-ghost btn-sm" onclick="coEdit(null)">Cancel</button><button class="btn btn-primary btn-sm" onclick="coSave(${c.id})">Save</button></span>
     </div>` : `
-    <div class="co-item">
-      <div class="co-item-head">
-        <div class="co-name">${esc(c.name)}
-          <small>${c.company_number ? `Company number ${esc(c.company_number)}` : 'Kept by hand'}${c.status ? ` · <span class="${/^active$/i.test(c.status) ? '' : 'co-warn'}">${esc(c.status)}</span>` : ''}${c.incorporated_on ? ` · since ${fmtDateShort(c.incorporated_on)}` : ''}</small>
-        </div>
-        <span class="sp-row-btns">
-          ${c.url ? `<a class="btn btn-ghost btn-sm" href="${esc(c.url)}" target="_blank" rel="noopener" title="Open this company on Companies House, where the filings are made">Companies House ↗</a>` : ''}
-          <button class="btn btn-ghost btn-sm" onclick="coEdit(${c.id})">${c.company_number ? (c.notes ? 'Edit note' : 'Add note') : 'Edit'}</button>
-          <button class="btn btn-ghost btn-sm ep-danger" onclick="coDelete(${c.id}, ${esc(JSON.stringify(c.name))})" aria-label="Remove ${esc(c.name)}">×</button>
-        </span>
+    <div class="co-item is-${worst(c)}">
+      <div class="co-name">${esc(c.name)}
+        <small>${c.company_number ? esc(c.company_number) : 'Kept by hand'}${c.status && !/^active$/i.test(c.status) ? ` · <span class="co-warn">${esc(c.status)}</span>` : ''}</small>
       </div>
       <div class="co-dues">
-        ${due(c, 'Confirmation statement due', c.statement_due, c.statement_date ? `Statement date ${fmtDateShort(c.statement_date)}${c.last_statement ? ` · last filed to ${fmtDateShort(c.last_statement)}` : ''}` : '')}
-        ${due(c, 'Accounts due', c.accounts_due, c.accounts_made_up_to ? `For the year to ${fmtDateShort(c.accounts_made_up_to)}${c.last_accounts ? ` · last filed to ${fmtDateShort(c.last_accounts)}` : ''}` : '')}
+        ${due(c, 'Confirmation statement', c.statement_due, '')}
+        ${due(c, 'Accounts', c.accounts_due, c.accounts_made_up_to ? `Year to ${fmtDateShort(c.accounts_made_up_to)}` : '')}
       </div>
       ${c.notes ? `<p class="co-note">${esc(c.notes)}</p>` : ''}
+      <div class="co-actions">
+        ${c.url ? `<a class="co-link" href="${esc(c.url)}" target="_blank" rel="noopener" title="Open this company on Companies House, where the filings are made">Open on Companies House ↗</a>` : '<span></span>'}
+        <span class="sp-row-btns"><button class="btn btn-ghost btn-sm" onclick="coEdit(${c.id})">${c.company_number ? (c.notes ? 'Edit note' : 'Add note') : 'Edit'}</button>
+          <button class="btn btn-ghost btn-sm ep-danger" onclick="coDelete(${c.id}, ${esc(JSON.stringify(c.name))})" aria-label="Remove ${esc(c.name)}">×</button></span>
+      </div>
     </div>`;
 
   // Companies in the order of their nearest deadline; one with no dates goes last
@@ -466,16 +465,9 @@ function renderCompanies() {
         </div>
         <div class="co-head-side">
           <div class="co-counts">${late ? `<span class="co-chip is-late">${late} overdue</span>` : ''}${soon ? `<span class="co-chip is-soon">${soon} due within ${CO_SOON_DAYS} days</span>` : ''}${list.length && !late && !soon ? '<span class="co-chip is-ok">Nothing due soon</span>' : ''}</div>
-          ${list.some(c => c.company_number) ? `<button class="btn btn-sm" onclick="coRefresh()" ${_coRefreshing ? 'disabled' : ''}>${_coRefreshing ? 'Checking Companies House…' : 'Check Companies House now'}</button>` : ''}
+          ${list.some(c => c.company_number) ? `<button class="btn btn-sm" onclick="coRefresh()" ${_coRefreshing ? 'disabled' : ''}>${_coRefreshing ? 'Checking…' : 'Check for updates'}</button>` : ''}
         </div>
       </header>
-
-      ${deadlines.length ? `<h3 class="sp-title">Coming up</h3>
-      <div class="co-timeline">${deadlines.map(d => `<div class="co-tl is-${coState(d.days)}">
-          <span class="co-tl-date">${fmtDateShort(d.due)}</span>
-          <span class="co-tl-what">${esc(d.what)}<small>${esc(d.company.name)}</small></span>
-          ${chip(d)}
-        </div>`).join('')}</div>` : ''}
 
       <h3 class="sp-title">Your companies <span class="co-n">${list.length || ''}</span></h3>
       <div class="co-list">${sorted.map(card).join('') || '<div class="ep-empty">No companies yet. Add one by its company number and the dates fill in from Companies House.</div>'}</div>
@@ -489,9 +481,8 @@ function renderCompanies() {
         <input class="form-control" id="coNewNumber" maxlength="12" placeholder="Company number, e.g. 01234567" onkeydown="if(event.key==='Enter')coAdd()">
         <button class="btn btn-primary" id="coAddBtn" onclick="coAdd()">Add company</button>
       </div>`}
-      <p class="sp-foot">${_coByHand ? 'For a company that is not on Companies House. ' : 'The name and dates are read from Companies House, and checked again each time you open this page, so a filing you make there shows here by itself. '}
-        <button type="button" class="co-link" onclick="_coByHand = !_coByHand; renderCompanies()">${_coByHand ? 'Add by company number instead' : 'Add one by hand instead'}</button>${checked ? ` · Last checked ${new Date(checked).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : ''}
-        <br>Only admins can see this page. It covers Companies House filings; tax deadlines with HMRC are not shown.</p>
+      <p class="sp-foot">${_coByHand ? 'For a company that is not on Companies House.' : 'The dates come from Companies House and update by themselves after you file.'}
+        <button type="button" class="co-link" onclick="_coByHand = !_coByHand; renderCompanies()">${_coByHand ? 'Add by company number instead' : 'Add one by hand'}</button>${checked ? ` · Checked ${new Date(checked).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : ''} · Only admins see this page.</p>
     </section>`;
 }
 
