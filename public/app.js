@@ -373,6 +373,17 @@ async function spDelete(id, name) {
 // at Companies House. The dates are read from Companies House by the server; this page
 // asks for a fresh read when what it holds is more than half a day old.
 let _companies = [], _coEditId = null, _coByHand = false, _coRefreshing = false;
+let _coEditCode = '', _coShown = {}, _coOwner = { has: false, shown: null, editing: false };
+// The numbers and codes kept on each company. The authentication code stays hidden until asked for.
+const CO_DETAILS = [
+  ['utr', 'Corporation Tax UTR', '10 digits, on HMRC letters'],
+  ['vat_number', 'VAT number', 'If VAT registered'],
+  ['paye_ref', 'PAYE reference', 'If it runs payroll, e.g. 123/AB45678'],
+  ['accounts_office_ref', 'Accounts Office reference', 'For paying PAYE to HMRC'],
+  ['gateway_id', 'HMRC user ID', 'Government Gateway ID, never the password'],
+  ['accountant', 'Who files it', 'Accountant or person'],
+];
+const coCopy = (text, what) => navigator.clipboard?.writeText(text).then(() => showToast(`${what} copied`, 'success')).catch(() => {});
 const CO_SOON_DAYS = 30;        // a deadline this close is flagged, on the page and on the menu
 const CO_STALE_MS = 12 * 3600 * 1000;
 
@@ -408,6 +419,8 @@ async function loadCompaniesPage() {
   const res = await fetch('/api/companies').catch(() => null);
   if (!res || !res.ok) { box.innerHTML = '<div class="card co-card"><div class="ep-empty">Could not load your companies. Try again in a moment.</div></div>'; return; }
   _companies = await res.json();
+  const own = await fetch('/api/company-owner').catch(() => null);
+  if (own && own.ok) _coOwner.has = (await own.json()).has_personal_code;
   renderCompanies();
   // Dates older than half a day are read again from Companies House, quietly
   const stale = _companies.some(c => c.company_number && (!c.checked_at || Date.now() - Date.parse(c.checked_at) > CO_STALE_MS));
@@ -431,6 +444,19 @@ function renderCompanies() {
       <strong>${fmtDateShort(h.due)}</strong>${chip({ days: coDaysLeft(h.due) })}
       <button class="co-tick" onclick="coDone(${c.id}, '${h.kind}', '${h.due}')" title="Tick when this is ${h.kind === 'ct_pay' ? 'paid' : 'filed'}: the next one then shows" aria-label="Mark ${CO_HMRC[h.kind]} due ${fmtDateShort(h.due)} as done">✓</button>
     </div>`;
+  // Reference numbers, folded away until wanted. Click a value to copy it.
+  const refs = c => {
+    const have = CO_DETAILS.filter(([k]) => (c.details || {})[k]), n = have.length + (c.has_auth_code ? 1 : 0);
+    if (!n) return `<button type="button" class="co-refs-add" onclick="coEdit(${c.id})">+ Add UTR, VAT number and codes</button>`;
+    const code = _coShown[c.id];
+    return `<details class="co-refs"${_coShown[c.id] !== undefined || _coRefsOpen[c.id] ? ' open' : ''} ontoggle="_coRefsOpen[${c.id}] = this.open">
+      <summary>Numbers and codes <span>${n}</span></summary>
+      ${have.map(([k, label]) => `<div class="co-ref"><span>${label}</span><button type="button" class="co-ref-val" title="Copy" onclick="coCopy(${esc(JSON.stringify(c.details[k]))}, ${esc(JSON.stringify(label))})">${esc(c.details[k])}</button></div>`).join('')}
+      ${c.has_auth_code ? `<div class="co-ref"><span>Authentication code</span>${code !== undefined
+        ? `<span><button type="button" class="co-ref-val" title="Copy" onclick="coCopy(${esc(JSON.stringify(code))}, 'Authentication code')">${esc(code)}</button> <button type="button" class="co-link" onclick="delete _coShown[${c.id}]; renderCompanies()">Hide</button></span>`
+        : `<span>•••••• <button type="button" class="co-link" onclick="coShowCode(${c.id})">Show</button></span>`}</div>` : ''}
+    </details>`;
+  };
   const allDue = c => [c.statement_due, c.accounts_due, ...(c.hmrc || []).map(h => h.due)].filter(Boolean).map(coDaysLeft);
   const worst = c => { const d = allDue(c); return d.length ? coState(Math.min(...d)) : 'none'; };
   const card = c => c.id === _coEditId ? `
@@ -440,7 +466,9 @@ function renderCompanies() {
       <label class="co-field">Confirmation statement due<input class="form-control" type="date" id="coEditStatement" value="${c.statement_due || ''}"></label>
       <label class="co-field">Accounts due<input class="form-control" type="date" id="coEditAccounts" value="${c.accounts_due || ''}"></label>`}
       <label class="co-field co-field--wide">VAT returns<select class="form-control" id="coEditVat">${Object.entries(CO_VAT).map(([k, v]) => `<option value="${k}"${String(c.vat || '') === k ? ' selected' : ''}>${v}</option>`).join('')}</select></label>
-      <label class="co-field co-field--wide">Note<input class="form-control" id="coEditNotes" value="${esc(c.notes || '')}" maxlength="500" placeholder="e.g. who files it, the authentication code is with the accountant"></label>
+      ${CO_DETAILS.map(([k, label, hint]) => `<label class="co-field">${label}<input class="form-control" id="coEdit_${k}" value="${esc((c.details || {})[k] || '')}" maxlength="120" placeholder="${hint}" autocomplete="off"></label>`).join('')}
+      <label class="co-field">Companies House authentication code<input class="form-control" id="coEdit_auth_code" value="${esc(_coEditCode)}" maxlength="20" placeholder="6 characters, for filing at Companies House" autocomplete="off"></label>
+      <label class="co-field co-field--wide">Note<input class="form-control" id="coEditNotes" value="${esc(c.notes || '')}" maxlength="500" placeholder="Anything else worth remembering"></label>
       <span class="sp-row-btns"><button class="btn btn-ghost btn-sm" onclick="coEdit(null)">Cancel</button><button class="btn btn-primary btn-sm" onclick="coSave(${c.id})">Save</button></span>
     </div>` : `
     <div class="co-item is-${worst(c)}">
@@ -453,6 +481,7 @@ function renderCompanies() {
       </div>
       ${(c.hmrc || []).length ? `<div class="co-group">HMRC <span>worked out from the year end; tick each when done</span></div>
       <div class="co-dues co-dues--hmrc">${c.hmrc.map(h => hmrcRow(c, h)).join('')}</div>` : ''}
+      ${refs(c)}
       ${c.notes ? `<p class="co-note">${esc(c.notes)}</p>` : ''}
       <div class="co-actions">
         ${c.url ? `<a class="co-link" href="${esc(c.url)}" target="_blank" rel="noopener" title="Open this company on Companies House, where the filings are made">Open on Companies House ↗</a>` : '<span></span>'}
@@ -482,6 +511,15 @@ function renderCompanies() {
         </div>
       </header>
 
+      <div class="co-owner">
+        <span class="co-owner-lbl">Your Companies House personal code<small>The same for every company you are a director of</small></span>
+        ${_coOwner.editing ? `<input class="form-control" id="coOwnerCode" value="${esc(_coOwner.shown || '')}" maxlength="40" placeholder="11 characters" autocomplete="off">
+          <span class="sp-row-btns"><button class="btn btn-ghost btn-sm" onclick="_coOwner.editing = false; renderCompanies()">Cancel</button><button class="btn btn-primary btn-sm" onclick="coOwnerSave()">Save</button></span>`
+          : !_coOwner.has ? `<button class="btn btn-sm" onclick="coOwnerEdit()">Add it</button>`
+          : _coOwner.shown ? `<span class="co-owner-val"><button type="button" class="co-ref-val" title="Copy" onclick="coCopy(${esc(JSON.stringify(_coOwner.shown))}, 'Personal code')">${esc(_coOwner.shown)}</button> <button type="button" class="co-link" onclick="_coOwner.shown = null; renderCompanies()">Hide</button> · <button type="button" class="co-link" onclick="coOwnerEdit()">Change</button></span>`
+          : `<span class="co-owner-val">••••••••••• <button type="button" class="co-link" onclick="coOwnerShow()">Show</button></span>`}
+      </div>
+
       <h3 class="sp-title">Your companies <span class="co-n">${list.length || ''}</span></h3>
       <div class="co-list">${sorted.map(card).join('') || '<div class="ep-empty">No companies yet. Add one by its company number and the dates fill in from Companies House.</div>'}</div>
 
@@ -494,7 +532,7 @@ function renderCompanies() {
         <input class="form-control" id="coNewNumber" maxlength="12" placeholder="Company number, e.g. 01234567" onkeydown="if(event.key==='Enter')coAdd()">
         <button class="btn btn-primary" id="coAddBtn" onclick="coAdd()">Add company</button>
       </div>`}
-      <p class="sp-foot">${_coByHand ? 'For a company that is not on Companies House.' : 'Companies House dates update by themselves after you file. HMRC dates are worked out, so tick them off yourself; turn on VAT with Edit.'}
+      <p class="sp-foot">${_coByHand ? 'For a company that is not on Companies House.' : 'Companies House dates update by themselves after you file. HMRC dates are worked out, so tick them off yourself; turn on VAT with Edit. Numbers and codes are stored encrypted; keep passwords in a password manager, not here.'}
         <button type="button" class="co-link" onclick="_coByHand = !_coByHand; renderCompanies()">${_coByHand ? 'Add by company number instead' : 'Add one by hand'}</button>${checked ? ` · Checked ${new Date(checked).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : ''} · Only admins see this page.</p>
     </section>`;
 }
@@ -512,10 +550,28 @@ async function coAdd() {
   _coByHand = false;
   loadCompaniesPage();
 }
-function coEdit(id) { _coEditId = id; renderCompanies(); }
+let _coRefsOpen = {};
+const coSecret = async url => { const res = await fetch(url).catch(() => null); if (!res || !res.ok) { showToast('Could not fetch it', 'error'); return null; } return res.json(); };
+// Edit opens with the authentication code filled in, so saving without touching it keeps it
+async function coEdit(id) {
+  const c = _companies.find(x => x.id === id);
+  _coEditCode = c && c.has_auth_code ? ((await coSecret(`/api/companies/${id}/auth-code`)) || {}).auth_code || '' : '';
+  _coEditId = id; renderCompanies();
+}
+async function coShowCode(id) { const out = await coSecret(`/api/companies/${id}/auth-code`); if (out) { _coShown[id] = out.auth_code; renderCompanies(); } }
+async function coOwnerShow() { const out = await coSecret('/api/company-owner?show=1'); if (out) { _coOwner.shown = out.personal_code; renderCompanies(); } }
+async function coOwnerEdit() {
+  if (_coOwner.has && !_coOwner.shown) { const out = await coSecret('/api/company-owner?show=1'); if (!out) return; _coOwner.shown = out.personal_code; }
+  _coOwner.editing = true; renderCompanies();
+}
+async function coOwnerSave() {
+  const code = document.getElementById('coOwnerCode').value.trim();
+  if (await spSend('PUT', '/api/company-owner', { personal_code: code })) { _coOwner = { has: !!code, shown: null, editing: false }; renderCompanies(); showToast(code ? 'Personal code saved' : 'Personal code removed', 'success'); }
+}
 async function coSave(id) {
   const val = elId => document.getElementById(elId)?.value.trim() || '';
-  if (await spSend('PUT', `/api/companies/${id}`, { name: val('coEditName'), statement_due: val('coEditStatement'), accounts_due: val('coEditAccounts'), notes: val('coEditNotes'), vat: val('coEditVat') })) { _coEditId = null; loadCompaniesPage(); }
+  if (await spSend('PUT', `/api/companies/${id}`, { name: val('coEditName'), statement_due: val('coEditStatement'), accounts_due: val('coEditAccounts'), notes: val('coEditNotes'), vat: val('coEditVat'),
+    details: Object.fromEntries([...CO_DETAILS.map(([k]) => k), 'auth_code'].map(k => [k, val('coEdit_' + k)])) })) { _coEditId = null; _coEditCode = ''; delete _coShown[id]; loadCompaniesPage(); }
 }
 async function coDone(id, kind, due) {
   if (!await showConfirm(`${kind === 'ct_pay' ? 'Corporation tax' : kind === 'vat' ? 'VAT return' : 'Company tax return'} due ${fmtDateShort(due)}: mark it as ${kind === 'ct_pay' ? 'paid' : 'filed'}? The next one will show instead.`)) return;
