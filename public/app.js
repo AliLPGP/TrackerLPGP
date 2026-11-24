@@ -3646,7 +3646,7 @@ async function loadSalaryPage() {
                 <div class="sc-item">
                   <span class="sc-item-date">${MONTHS[p.payment_month]?.slice(0,3)||p.payment_month} ${p.payment_year}</span>
                   <span class="sc-item-amt pos">+${sym}${parseFloat(p.amount||0).toLocaleString('en-GB',{minimumFractionDigits:2})}</span>
-                  <span class="sc-item-note">${esc(p.notes||'')}</span>
+                  <span class="sc-item-note">${esc(p.notes||'')}${p.created_at ? `<span class="sc-item-logged">entered ${new Date(p.created_at).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</span>` : ''}</span>
                   <button class="btn btn-danger btn-sm" onclick="deleteSalaryPayment(${p.id})">×</button>
                 </div>`).join('') : `<div class="sc-empty">No payments logged yet.</div>`}
             </div>

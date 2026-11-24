@@ -8352,3 +8352,5 @@ body:has(.modal-overlay.open) .wm-launcher, body:has(.modal-overlay.active) .wm-
   .co-list, .co-add, .co-add--hand { grid-template-columns: 1fr; }
   .co-due .co-chip { min-width: 0; }
 }
+
+.sc-item-logged { display: block; font-size: 11px; color: var(--muted); opacity: .8; margin-top: 2px; }
