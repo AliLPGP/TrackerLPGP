@@ -280,12 +280,15 @@ function payLeftLine(r, year) {
   if (left <= 0.5) return num(r.total_paid) > 0 ? `${who}${gone} is fully paid for ${year}: ${money(r.total_paid, cur)} in total.` : `${who}${gone} was not due any pay in ${year}.`;
   // Payroll is counted in months: the ones with no payment logged
   const months = (r.pay_months || []).filter(m => !m.paid);
+  const short = (r.pay_months || []).filter(m => m.short > 0);
+  const topUp = short.length ? ` ${listOf(short.map(m => MONTHS[m.month - 1]))} ${short.length > 1 ? 'were' : 'was'} paid at the amount from before the pay rise, so ${money(short.reduce((a, m) => a + m.short, 0), cur)} of that is a top-up.` : '';
+  if (!months.length && short.length) return `${who}${gone} has ${money(left, cur)} left to be paid in ${year}.${topUp} Paid so far: ${money(r.total_paid, cur)}.`;
   if (months.length) {
     const sameDue = months.every(m => Math.abs(m.due - months[0].due) < 0.01);
     const what = sameDue ? `${listOf(months.map(m => MONTHS[m.month - 1]))} at ${money(months[0].due, cur)}${months.length > 1 ? ' each' : ''}`
       : listOf(months.map(m => `${MONTHS[m.month - 1]} (${money(m.due, cur)})`));
     const ded = num(r.excess_deduction) + num(r.total_office_deductions);
-    return `${who}${gone} has ${money(left, cur)} left to be paid in ${year}. That is ${what}${ded > 0 ? `, less ${money(ded, cur)} in deductions` : ''}. Paid so far: ${money(r.total_paid, cur)}.`;
+    return `${who}${gone} has ${money(left, cur)} left to be paid in ${year}. That is ${what}${ded > 0 ? `, less ${money(ded, cur)} in deductions` : ''}.${topUp} Paid so far: ${money(r.total_paid, cur)}.`;
   }
   return `${who}${gone} has ${money(left, cur)} left to be paid in ${year}, out of ${money(num(r.total_paid) + left, cur)} for the year. Paid so far: ${money(r.total_paid, cur)} (${r.pct_paid}%).`;
 }

@@ -1783,7 +1783,9 @@ function empLeftToPayHtml(row, year) {
       end && end.month === x.month ? `Part month: left ${fmtDateShort(row.termination_date)}` : '',
       x.month < lateBefore ? 'No payment logged for it' : '',
     ].filter(Boolean).join(' · '))).join('');
-    if (!toPay.length) rows = line('Every month is paid', money(0));
+    rows += row.pay_months.filter(x => x.short > 0).map(x => line(`${MONTHS[x.month]} top-up`, money(x.short),
+      `Paid ${money(x.logged)}, the amount before the pay rise. It should have been ${money(x.due)}`)).join('');
+    if (!rows) rows = line('Every month is paid', money(0));
     else foot = `A whole month is ${money(parseFloat(row.monthly_pay) || 0)}: ${row.monthly_pay_from === 'payslip'
       ? 'their usual payslip, leaving out one-off extras such as a bonus or a refund.' : 'the take-home worked out from their salary, until a whole month\'s payslip is logged.'}`;
   } else {
@@ -3125,11 +3127,13 @@ function payrollCardMonths(emp, year) {
   const lateBefore = y < now.getFullYear() ? 13 : y === now.getFullYear() ? now.getMonth() + 1 : 0;
   const headline = !paid.length ? 'No months paid yet' : !toPay.length ? `Paid for all of ${year}`
     : `Paid to ${MONTHS[lastPaid]}${missed.length ? `, except ${missed.map(m => MONTHS[m.month].slice(0, 3)).join(', ')}` : ''}`;
-  const count = toPay.length ? `${toPay.length} month${toPay.length > 1 ? 's' : ''} to pay` : '';
+  const shortMonths = months.filter(m => m.short > 0), shortSum = shortMonths.reduce((a, m) => a + m.short, 0);
+  const count = [toPay.length ? `${toPay.length} month${toPay.length > 1 ? 's' : ''} to pay` : '',
+    shortMonths.length ? `${shortMonths.map(m => MONTHS[m.month].slice(0, 3)).join(', ')} ${money(shortSum)} short` : ''].filter(Boolean).join(' · ');
   const strip = MONTHS.slice(1).map((name, i) => {
     const m = months.find(x => x.month === i + 1);
-    const state = !m ? 'off' : m.paid ? 'paid' : m.month < lateBefore ? 'late' : 'due';
-    const tip = !m ? `${name}: not on the payroll` : m.paid ? `${name}: ${money(m.logged)} paid` : `${name}: ${money(m.due)} to pay${state === 'late' ? ', overdue' : ''}`;
+    const state = !m ? 'off' : m.short > 0 ? 'late' : m.paid ? 'paid' : m.month < lateBefore ? 'late' : 'due';
+    const tip = !m ? `${name}: not on the payroll` : m.short > 0 ? `${name}: ${money(m.logged)} paid, ${money(m.short)} short after the pay rise` : m.paid ? `${name}: ${money(m.logged)} paid` : `${name}: ${money(m.due)} to pay${state === 'late' ? ', overdue' : ''}`;
     return `<span class="sc-mo is-${state}" title="${tip}">${name[0]}</span>`;
   }).join('');
 
@@ -3139,7 +3143,8 @@ function payrollCardMonths(emp, year) {
   const sum = !toPay.length ? (ded > 0 ? `${money(ded)} of deductions not taken off` : 'Every month is paid')
     : (toPay.length === 1 ? `${MONTHS[toPay[0].month]} at ${money(toPay[0].due)}` : sameDue ? `${toPay.length} months × ${money(toPay[0].due)}` : `${toPay.length} months`)
       + (ded > 0 ? `, less ${money(ded)} deductions` : '');
-  return { headline, count, strip, sum, left: left > 0 ? money(left) : 'Nothing left', owing: left > 0 };
+  const sumAll = shortMonths.length ? `${toPay.length ? sum.replace(/, less .*$/, '') + ', plus ' : ''}${money(shortSum)} short for ${shortMonths.map(m => MONTHS[m.month]).join(', ')}${toPay.length && ded > 0 ? `, less ${money(ded)} deductions` : ''}` : sum;
+  return { headline, count, strip, sum: sumAll, left: left > 0 ? money(left) : 'Nothing left', owing: left > 0 };
 }
 
 async function loadSalaryPage() {
@@ -3781,21 +3786,21 @@ async function loadSalaryPage() {
 
           <!-- Payroll: each month of the year, paid (what was logged) or still to pay (what is due) -->
           ${byMonth ? (() => {
-            const toPay = emp.pay_months.filter(m => !m.paid).length;
+            const toPay = emp.pay_months.filter(m => !m.paid).length, short = emp.pay_months.filter(m => m.short > 0);
             const money = v => sym + v.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
             const ded = excessDeduction + officeTotal;
             return `<div class="sc-section">
             <button class="sc-sec-toggle" onclick="toggleSection(this)">
-              <span class="sc-sec-title">Month by month — ${emp.pay_months.length - toPay} paid, ${toPay} to pay</span>
+              <span class="sc-sec-title">Month by month — ${emp.pay_months.length - toPay} paid, ${toPay} to pay${short.length ? `, ${short.length} short` : ''}</span>
               <span class="sc-chevron">›</span>
             </button>
             <div class="sc-sec-body">
               ${emp.pay_months.map(m => `<div class="sc-month${m.paid ? ' is-paid' : ''}">
                 <span>${MONTHS[m.month]} ${year}</span>
                 <span>${money(m.paid ? m.logged : m.due)}</span>
-                <span class="db-tag ${m.paid ? '' : 'is-warn'}">${m.paid ? 'Paid' : 'To pay'}</span>
+                <span class="db-tag ${m.paid && !(m.short > 0) ? '' : 'is-warn'}">${m.short > 0 ? `${money(m.short)} short` : m.paid ? 'Paid' : 'To pay'}</span>
               </div>`).join('')}
-              <div class="sc-hist-hint">A month is paid once a payment is logged for it. The months still to pay are at ${fromPayslip ? 'their usual payslip (a month with a bonus or refund on top does not change it)' : 'the estimated take-home, until a payslip is logged'}${ded > 0 ? `, and ${money(ded)} of deductions comes off what is left` : ''}.</div>
+              <div class="sc-hist-hint">${short.length ? `${short.map(m => MONTHS[m.month]).join(' and ')} ${short.length > 1 ? 'were' : 'was'} paid at the amount from before the pay rise, so the difference (${money(short.reduce((a, m) => a + m.short, 0))}) is still owed. ` : ''}A month is paid once a payment is logged for it. The months still to pay are at ${fromPayslip ? 'their usual payslip (a month with a bonus or refund on top does not change it)' : 'the estimated take-home, until a payslip is logged'}${ded > 0 ? `, and ${money(ded)} of deductions comes off what is left` : ''}.</div>
             </div>
           </div>`; })() : ''}
 

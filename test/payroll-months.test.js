@@ -1,6 +1,7 @@
 'use strict';
 // Payroll: each month owed in full at the salary in force; months not paid are what is left
 const assert = require('assert');
+const round2 = v => Math.round(v * 100) / 100;
 const { payrollMonths, payrollYear } = require('../salary-periods');
 
 const net = a => a / 12; // keep the arithmetic readable: take-home = gross / 12
@@ -97,5 +98,23 @@ assert.strictEqual(y.months.find(m => m.month === 7).due, 2375, '2,500 estimated
 // Everything paid, with a deduction never taken off a payslip: paid ahead by that much
 y = payrollYear({ months: flat, payments: flat.map(m => pay(m.month, 2000)), deductions: 100 });
 assert.strictEqual(y.remaining, -100); assert.strictEqual(y.pct, 100);
+
+// A pay rise from 1 November, but November was still paid at the old amount: the difference is owed
+{
+  const hist = [{ id: 1, effective_from: '2026-08-15', annual_salary: 18000 }, { id: 2, effective_from: '2026-11-01', annual_salary: 28000 }];
+  const ms = payrollMonths({ history: hist, year: 2026, startDate: '2026-08-15', endDate: null, annual: 28000, netMonthly: a => a / 15 });
+  const pay = (m, amount) => ({ payment_month: m, amount });
+  const old = payrollYear({ months: ms, payments: [pay(8, 600), pay(9, 1200), pay(10, 1200), pay(11, 1200)] });
+  const nov = old.months.find(m => m.month === 11);
+  assert.strictEqual(nov.paid, true);
+  assert.strictEqual(nov.short, round2(28000 / 15 - 1200));
+  assert.strictEqual(old.remaining, round2(nov.short + 28000 / 15));
+  // Paid at the new amount: nothing short
+  const fine = payrollYear({ months: ms, payments: [pay(9, 1200), pay(10, 1200), pay(11, 1866.67)] });
+  assert.strictEqual(fine.months.find(m => m.month === 11).short, 0);
+  // No rise: a low payment is still just a paid month
+  const flatMs = payrollMonths({ history: [], year: 2026, startDate: '2025-01-01', endDate: null, annual: 18000, netMonthly: a => a / 15 });
+  assert.strictEqual(payrollYear({ months: flatMs, payments: [pay(1, 900)] }).months[0].short, 0);
+}
 
 console.log('payroll months tests passed');
