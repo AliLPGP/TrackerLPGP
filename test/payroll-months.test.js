@@ -141,6 +141,23 @@ assert.strictEqual(y.remaining, -100); assert.strictEqual(y.pct, 100);
   // ...but a payment logged for a month set aside wins
   const paidAnyway = payrollYear({ months: ms, payments: [pay(12, 2010.24)], exact, skips: { 12: 'none' } });
   assert.deepStrictEqual([paidAnyway.months.find(r => r.month === 12).status, paidAnyway.months.find(r => r.month === 12).skip], ['paid', null]);
+
+  // A day off over the allowance in November costs 115.38. Paying November's payslip less
+  // that is the deduction being taken: nothing is short, and it is not taken off December too
+  const toOct = [...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(m => pay(m, 2010.44)), pay(10, 2010.24)];
+  const taken = payrollYear({ months: ms, payments: [...toOct, pay(11, 1895.06)], exact, deductions: 115.38, deductionsByMonth: { 11: 115.38 } });
+  const nov = taken.months.find(r => r.month === 11);
+  assert.deepStrictEqual([nov.status, nov.short, nov.taken, nov.left], ['paid', 0, 115.38, 0]);
+  assert.strictEqual(taken.remaining, 2010.24);
+  // Paying less than that again is short by the difference
+  const less = payrollYear({ months: ms, payments: [...toOct, pay(11, 1800)], exact, deductions: 115.38, deductionsByMonth: { 11: 115.38 } });
+  assert.deepStrictEqual([less.months.find(r => r.month === 11).status, less.months.find(r => r.month === 11).short, less.remaining], ['short', 95.06, round2(95.06 + 2010.24)]);
+  // Paid in full, the deduction is still to come off what is left
+  const inFull = payrollYear({ months: ms, payments: [...toOct, pay(11, 2010.44)], exact, deductions: 115.38, deductionsByMonth: { 11: 115.38 } });
+  assert.deepStrictEqual([inFull.months.find(r => r.month === 11).taken, inFull.remaining], [0, round2(2010.24 - 115.38)]);
+  // A deduction in another month does not excuse a short payment in this one
+  const elsewhere = payrollYear({ months: ms, payments: [...toOct, pay(11, 1895.06)], exact, deductions: 115.38, deductionsByMonth: { 3: 115.38 } });
+  assert.deepStrictEqual([elsewhere.months.find(r => r.month === 11).status, elsewhere.months.find(r => r.month === 11).short], ['short', 115.38]);
 }
 
 console.log('payroll months tests passed');

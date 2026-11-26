@@ -203,6 +203,13 @@ const slip = (over = {}) => ({
   assert.deepStrictEqual(P.payFromPayslips({ slips: [], grossFor, months }), {});
   assert.deepStrictEqual(P.payFromPayslips({ slips: [slip({ tax_code: '' })], grossFor, months }), {});
 
+  // Pay the caller is only guessing at is never passed on as exact; and a payslip the
+  // calculator cannot arrive at is marked, so the caller can go by what was paid instead
+  const guess = P.payFromPayslips({ slips: [s], grossFor: () => ({ gross: 2500, basic: 2500, sure: false }), months: [{ year: 2026, month: 12 }] })['2026-12'];
+  assert.deepStrictEqual([guess.payment, guess.exact, guess.explained], [2010.24, false, true]);
+  const unexplained = P.payFromPayslips({ slips: [slip({ payment: 1950.44 })], grossFor, months: [{ year: 2026, month: 11 }, { year: 2026, month: 12 }, { year: 2027, month: 4 }, { year: 2026, month: 10 }] });
+  assert.deepStrictEqual(['2026-11', '2026-12', '2027-04', '2026-10'].map(k => unexplained[k].explained), [true, false, false, false]);
+
   // Two payslips: the later one speaks for the months after it
   const dec = slip({ period: { year: 2026, month: 12, end: '2026-12-31' }, tax: 290.4, payment: 2010.24, ytd: { gross: 22500, tax: 2613 } });
   const two = P.payFromPayslips({ slips: [s, dec], grossFor, months: [{ year: 2027, month: 1 }, { year: 2026, month: 12 }] });
@@ -238,10 +245,71 @@ const slip = (over = {}) => ({
   // (January then has two months of tax-free pay to set against one month's pay: 80.80 of tax, not 290.40)
   assert.strictEqual(skipped.dues['2027-01'].figures.tax, 80.8);
 
-  // A payslip the calculator cannot reproduce still gives a figure, marked as an estimate
+  // A payslip the calculator cannot arrive at (something on it is not understood: here 60.00
+  // more came off than the lines explain) keeps its own figure, but no later month is worked
+  // out from it. Working forward would leave the 60.00 out every month, so those months are
+  // left to the usual amount paid.
   const odd = payslipDues({ slips: [slip({ payment: 1950.44 })], gross, history, annual, months });
-  assert.deepStrictEqual([odd.dues['2026-11'].source, odd.dues['2026-12'].source], ['payslip', 'rough']);
+  assert.strictEqual(odd.dues['2026-11'].source, 'payslip');
+  assert.strictEqual(odd.dues['2026-12'], undefined);
   assert.deepStrictEqual(payslipDues({ slips: [], gross, history, annual, months }), { dues: {}, differs: null });
+
+  // ── What a regular month pays: the salary on record, or the payslips? ──
+  // A made-up payslip the calculator arrives at by construction, for someone on the same
+  // settings as slip() who has had 2,500.00 every month of the tax year before it
+  const made = (year, month, over = {}) => {
+    const settings = P.settingsFrom(slip()), grossPay = over.gross != null ? over.gross : 2500, basic = over.basic != null ? over.basic : grossPay;
+    const monthsBefore = P.taxMonthOf(month) - 1, payBefore = 2500 * monthsBefore;
+    const taxBefore = monthsBefore ? P.taxToDate('1257L', payBefore, monthsBefore, P.taxYearOf(year, month)) : 0;
+    const f = P.monthFigures({ settings, year, month, gross: grossPay, basic, payBefore, taxBefore });
+    const made = slip({ period: { year, month, end: null }, basic, gross: grossPay, taxable_gross: f.taxable, tax: f.tax, ni: f.ni, student_loan: f.student_loan || null, pension: f.pension || null,
+      payment: f.payment, ytd: { gross: payBefore + f.taxable, tax: Math.round((taxBefore + f.tax) * 100) / 100 },
+      additions: [{ label: 'Monthly pay', amount: basic, kind: 'basic' }, ...(over.extras || []).map(([label, amount]) => ({ label, amount, kind: 'extra' }))] });
+    assert.strictEqual(P.reproduces(made), true, `the made-up payslip for ${month}/${year} is one the calculator arrives at`);
+    return made;
+  };
+  const due = (res, key) => [res.dues[key].figures.gross, res.dues[key].source];
+  const grossAt = (salary, hist = []) => trackerGross({ history: hist, annual: salary, startDate: '2024-03-01', endDate: null, years: [2026, 2027] });
+
+  // One payslip against the salary on record is believed, but only as an estimate. Two
+  // running that agree with each other are believed outright.
+  assert.deepStrictEqual(due(other, '2026-12'), [2500, 'rough']);
+  const twoAgree = payslipDues({ slips: [made(2026, 10), made(2026, 11)], gross: grossAt(31200), history, annual: 31200, months });
+  assert.deepStrictEqual(due(twoAgree, '2026-12'), [2500, 'worked']);
+  assert.deepStrictEqual(twoAgree.differs, { payslip: 2500, tracker: 2600, year: 2026, month: 11 });
+
+  // A rise entered after October's payslip and dated back to 1 October: that payslip is
+  // still at the old pay, so the salary on record speaks for the months after it. An
+  // estimate, because the next payslip will carry the arrears as well.
+  const backdated = [{ id: 1, effective_from: '2024-03-01', annual_salary: 30000 }, { id: 2, effective_from: '2026-10-01', annual_salary: 36000 }];
+  const late = payslipDues({ slips: [made(2026, 9), made(2026, 10)], gross: grossAt(36000, backdated), history: backdated, annual: 36000, months });
+  assert.deepStrictEqual([due(late, '2026-11'), due(late, '2026-12'), late.differs], [[3000, 'rough'], [3000, 'rough'], null]);
+
+  // One odd month (two unpaid days in September) among ordinary ones is not the new pay
+  const oddMonth = payslipDues({ slips: [made(2026, 8), made(2026, 9, { gross: 2269.23 })], gross: grossAt(30000), history, annual,
+    months: [{ year: 2026, month: 10 }] });
+  assert.deepStrictEqual([due(oddMonth, '2026-10'), oddMonth.differs], [[2500, 'rough'], null]);
+
+  // An allowance on the last two payslips running comes every month; a bonus on the
+  // latest one only is a one-off; and one payslip cannot say which it is
+  const car = [['Car allowance', 300]];
+  const allowance = payslipDues({ slips: [made(2026, 10, { gross: 2800, basic: 2500, extras: car }), made(2026, 11, { gross: 2800, basic: 2500, extras: car })], gross: grossAt(30000), history, annual, months });
+  assert.deepStrictEqual([due(allowance, '2026-12'), allowance.differs, allowance.dues['2026-11'].regular], [[2800, 'worked'], null, true]);
+  // (the salary on record may already have the allowance in it: then it is not added twice)
+  const counted = payslipDues({ slips: [made(2026, 10, { gross: 2800, basic: 2500, extras: car }), made(2026, 11, { gross: 2800, basic: 2500, extras: car })], gross: grossAt(33600), history, annual: 33600, months });
+  assert.deepStrictEqual([due(counted, '2026-12'), counted.differs], [[2800, 'worked'], null]);
+  const bonus = payslipDues({ slips: [made(2026, 10), made(2026, 11, { gross: 3500, basic: 2500, extras: [['Bonus', 1000]] })], gross: grossAt(30000), history, annual, months });
+  assert.deepStrictEqual([due(bonus, '2026-12'), bonus.dues['2026-11'].regular, bonus.dues['2026-12'].regular], [[2500, 'worked'], false, true]);
+  const lone = payslipDues({ slips: [made(2026, 11, { gross: 3500, basic: 2500, extras: [['Bonus', 1000]] })], gross: grossAt(30000), history, annual, months });
+  assert.deepStrictEqual(due(lone, '2026-12'), [2500, 'rough']);
+
+  // A tax year this file has no tables for yet: the first month is an estimate, but once a
+  // payslip from that year comes out right on the latest tables the months after it are exact
+  const beyond = P.LATEST_YEAR + 1;
+  const newYear = payslipDues({ slips: [made(beyond, 5)], gross: trackerGross({ history, annual, startDate: '2024-03-01', endDate: null, years: [beyond] }), history, annual,
+    months: [{ year: beyond, month: 6 }, { year: beyond, month: 7 }] });
+  assert.strictEqual(P.hasTables(beyond), false);
+  assert.deepStrictEqual([newYear.dues[`${beyond}-06`].source, newYear.dues[`${beyond}-07`].source], ['worked', 'worked']);
 
   // A part month is paid by the working day at a 260th of the salary: 26,000 a year, starting Thursday 15 October 2026 (12 working days)
   const part = trackerGross({ history: [], annual: 26000, startDate: '2026-10-15', endDate: null, years: [2026] });
@@ -250,6 +318,15 @@ const slip = (over = {}) => ({
   assert.strictEqual(part['2026-09'], undefined);
   // ...never more than the whole month
   assert.strictEqual(trackerGross({ history: [], annual: 26000, startDate: '2026-12-02', endDate: null, years: [2026] })['2026-12'].gross, 2166.67);
+  // With every working day of the month worked it is a whole month's pay: starting Monday
+  // 2 November 2026 (the 1st is a Sunday), leaving Friday 29 May 2026 (the 30th and 31st are a weekend)
+  assert.deepStrictEqual(trackerGross({ history: [], annual: 30000, startDate: '2026-11-02', endDate: null, years: [2026] })['2026-11'], { gross: 2500, full: 2500, whole: false });
+  assert.strictEqual(trackerGross({ history: [], annual: 30000, startDate: '2024-03-01', endDate: '2026-05-29', years: [2026] })['2026-05'].gross, 2500);
+  // How the payroll software prices a part month is not known for certain, so a month the
+  // person leaves in is only ever an estimate: leaving Friday 18 December 2026 (14 working days)
+  const leaving = payslipDues({ slips: [slip()], gross: trackerGross({ history: [], annual: 30000, startDate: '2024-03-01', endDate: '2026-12-18', years: [2026] }), history: [], annual: 30000,
+    months: [{ year: 2026, month: 12 }] });
+  assert.deepStrictEqual([leaving.dues['2026-12'].figures.gross, leaving.dues['2026-12'].source], [1615.38, 'rough']);
 }
 
 // ── Self-employed: the year as a running balance ──
@@ -277,8 +354,36 @@ const slip = (over = {}) => ({
   assert.deepStrictEqual([aside[1].left, aside[2].left, aside[2].due, aside[3].left], [8000, 0, 0, 8000]);
   // A deduction taken off a payment does not leave the month looking unpaid
   const off = contractorMonths({ months: months.slice(0, 2), payments: [pay(1, 7800)], deductions: { 1: 200 } });
-  assert.deepStrictEqual([off[0].paid, off[0].deduction, off[1].left], [true, 200, 8000]);
+  assert.deepStrictEqual([off[0].paid, off[0].status, off[0].deduction, off[1].left], [true, 'paid', 200, 8000]);
+  // (an unpaid month's figure is before its deduction, which the page offers to take off)
+  assert.strictEqual(contractorMonths({ months: months.slice(0, 2), payments: [], deductions: { 1: 200 } })[0].left, 8000);
   assert.deepStrictEqual(contractorMonths({ months: [], payments: [] }), []);
+
+  // Paid in part and never made up: the month is short by what is still owing, and says so
+  const partPaid = contractorMonths({ months, payments: [pay(1, 8000), pay(2, 3000), pay(3, 8000)] });
+  assert.deepStrictEqual(partPaid.map(r => r.status), ['paid', 'short', 'paid', 'due', 'due', 'due']);
+  assert.deepStrictEqual([partPaid[1].paid, partPaid[1].short, partPaid[1].left], [true, 5000, 5000]);
+  // ...made up the month after: settled
+  assert.deepStrictEqual(contractorMonths({ months, payments: [pay(1, 8000), pay(2, 3000), pay(3, 13000)] }).map(r => r.status).slice(0, 3), ['paid', 'paid', 'paid']);
+  // ...made up in part: short by the rest
+  assert.strictEqual(contractorMonths({ months, payments: [pay(1, 8000), pay(2, 3000), pay(3, 10000)] })[1].short, 3000);
+  // A later payment that goes part of the way towards a missed month leaves the rest owing on it
+  const partWay = contractorMonths({ months, payments: [pay(1, 8000), pay(3, 12000)] });
+  assert.deepStrictEqual([partWay[1].status, partWay[1].left, partWay[2].status], ['due', 4000, 'paid']);
+  // Paid ahead, then a smaller payment: nothing is short, and the smaller one counts towards the next month
+  const aheadThenLess = contractorMonths({ months, payments: [pay(1, 16000), pay(2, 3000)] });
+  assert.deepStrictEqual([aheadThenLess[1].status, aheadThenLess[1].short, aheadThenLess[2].status, aheadThenLess[2].left], ['paid', 0, 'due', 5000]);
+  // What is owing across the months is never more than the year is behind by
+  for (const paid of [[pay(2, 3000), pay(4, 12000)], [pay(1, 500), pay(2, 500), pay(6, 20000)], [pay(3, 30000)], [pay(1, 8000), pay(2, 8000), pay(3, 8000), pay(4, 8000), pay(5, 8000), pay(6, 8000)]]) {
+    const total = paid.reduce((a, x) => a + x.amount, 0), rowsNow = contractorMonths({ months, payments: paid });
+    assert.strictEqual(rowsNow.reduce((a, r) => a + r.left, 0), Math.max(0, 48000 - total), JSON.stringify(paid));
+  }
+  // Someone who left in March, paid for March in April: March is settled
+  const leaver = contractorMonths({ months: months.slice(0, 3), payments: [pay(1, 8000), pay(2, 8000), pay(4, 8000)] });
+  assert.deepStrictEqual([leaver.map(r => r.status), leaver[2].covered], [['paid', 'paid', 'paid'], true]);
+  // Paid before they started (an advance on January, logged in last... a month they were not working in)
+  const early = contractorMonths({ months: months.slice(2), payments: [pay(2, 8000)] });
+  assert.deepStrictEqual([early[0].status, early[0].covered, early[1].status], ['paid', true, 'due']);
 }
 
 console.log('pay calculator tests passed');

@@ -3322,9 +3322,9 @@ function payAttentionHtml(all) {
     const { row, m, year } = it, cur = payCur(row), when = `${MONTHS[m.month]}${year !== _pay.year ? ' ' + year : ''}`, id = Number(row.employee_id);
     let text, btns;
     if (it.kind === 'short') {
-      text = m.payslip && m.source === 'payslip'
-        ? `${when}: paid ${payMoney(m.logged, cur)}, the payslip says ${payMoney(m.due, cur)}`
-        : `${when}: paid ${payMoney(m.logged, cur)} at the amount from before the pay rise`;
+      text = m.payslip && m.source === 'payslip' ? `${when}: paid ${payMoney(m.logged, cur)}, the payslip says ${payMoney(m.due, cur)}`
+        : !payIsPayroll(row) ? `${when}: paid ${payMoney(m.logged, cur)} of ${payMoney(m.due, cur)}`
+          : `${when}: paid ${payMoney(m.logged, cur)} at the amount from before the pay rise`;
       btns = `<button class="btn btn-primary btn-sm" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${m.month}, topUp: true })">Pay the rest</button>
         <button class="btn btn-ghost btn-sm" onclick="payFixShort(${id}, ${year}, ${m.month})" title="The full amount did go out: correct what was logged">It was paid in full</button>`;
     } else {
@@ -3384,11 +3384,12 @@ function payRowHtml(row, m, year, month) {
     if (m.covered) { fig = '—'; chip = '<span class="co-chip is-ok">Covered</span>'; notes.push('Covered by a payment logged in another month'); state = 'paid'; }
     else if (m.short > 0.005) {
       chip = `<span class="co-chip is-late">${payMoney(m.short, cur)} short</span>`;
-      notes.push(m.source === 'payslip' ? `The payslip says ${payMoney(m.due, cur)}` : 'Paid at the amount from before the pay rise');
+      notes.push(m.source === 'payslip' ? `The payslip says ${payMoney(m.due, cur)}` : !payroll ? `Their pay for the month is ${payMoney(m.due, cur)}` : 'Paid at the amount from before the pay rise');
       btns = `<button class="btn btn-primary btn-sm" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${month}, topUp: true })">Pay the rest</button>`;
     } else {
       chip = '<span class="co-chip is-ok">Paid</span>';
       if (m.over > 0.005) notes.push(`${payMoney(m.over, cur)} more than the payslip says`);
+      if (m.taken > 0.005) notes.push(`${payMoney(m.taken, cur)} taken off for days off or deductions`);
     }
     const count = (row.payments || []).filter(p => Number(p.payment_month) === month).length;
     if (count > 1) notes.push(`${count} payments this month`);

@@ -525,7 +525,7 @@ const payFor = (req, row) => (req.admin && req.admin.role === 'admin' ? row : wi
 // `skips` is { month: 'later' | 'none' } for months set aside on the Salary page; a month
 // marked 'none' is owed nothing. `monthRows` is a row per month for either kind of person.
 function yearOwed({ emp, year, history, annualSal, salaryTarget, startDateStr, terminationDateStr, payments, lastYearPayments, deductions,
-  slips = [], skips = {}, deductionsByMonth = {} }) {
+  slips = [], skips = {}, deductionsByMonth = {}, noneBefore = [] }) {
   const pad2 = n => String(n).padStart(2, '0');
   if (emp.employment_type === 'payroll' && annualSal > 0) {
     const takeHome = a => calcUKNetPay(a, parseFloat(emp.pension_rate) || 0).net_monthly;
@@ -534,18 +534,22 @@ function yearOwed({ emp, year, history, annualSal, salaryTarget, startDateStr, t
     let exact = null, differs = null;
     if (slips.length) {
       const gross = trackerGross({ history, annual: annualSal, startDate: startDateStr, endDate: terminationDateStr, years: [year - 1, year, year + 1] });
-      const none = Object.keys(skips).filter(m => skips[m] === 'none').map(m => `${year}-${pad2(m)}`);
+      // Months no pay went through payroll for. Last year's count too: tax is worked out
+      // on the year so far, so January to March follow from what December paid.
+      const none = [...noneBefore, ...Object.keys(skips).filter(m => skips[m] === 'none').map(m => `${year}-${pad2(m)}`)];
       const worked = payslipDues({ slips, gross, history, annual: annualSal, none, months: months.map(m => ({ year, month: m.month })) });
       exact = {};
       for (const m of months) { const d = worked.dues[`${year}-${pad2(m.month)}`]; if (d) exact[m.month] = d; }
       differs = worked.differs;
     }
-    const owed = payrollYear({ months, payments, deductions, exact, skips,
+    const owed = payrollYear({ months, payments, deductions, exact, skips, deductionsByMonth,
       lastYear: lastYearPayments && lastYearPayments.length ? { months: monthsOf(year - 1), payments: lastYearPayments } : null });
-    // What a whole month pays now: the figure worked out from the payslips for this month
-    // (or the last month of a year gone by), else the usual payslip, else the estimate
+    // What a whole month pays now: the figure worked out from the payslips for an ordinary
+    // month near this one (or near the end of a year gone by), else the usual payslip, else
+    // the estimate. A month whose payslip carries a bonus is not what a month pays.
     const now = new Date(), refMonth = year === now.getFullYear() ? now.getMonth() + 1 : 12;
-    const ref = exact && months.filter(m => m.whole && exact[m.month]).sort((a, b) => Math.abs(a.month - refMonth) - Math.abs(b.month - refMonth))[0];
+    const nearest = pick => exact && months.filter(m => m.whole && exact[m.month] && pick(exact[m.month])).sort((a, b) => Math.abs(a.month - refMonth) - Math.abs(b.month - refMonth))[0];
+    const ref = nearest(d => d.regular !== false && d.source !== 'rough') || nearest(d => d.regular !== false);
     const sure = !!ref && exact[ref.month].source !== 'rough';
     const monthRows = owed.months.map(r => ({ ...r, deduction: round2(deductionsByMonth[r.month] || 0), figures: exact && exact[r.month] ? exact[r.month].figures : null }));
     return { ...owed, monthRows, differs, fromPayslip: owed.fromPayslip || !!ref, exactPay: sure,
@@ -568,15 +572,16 @@ const lastYearPayroll = async (emp, year) => (emp.employment_type !== 'payroll' 
 const round2 = v => Math.round(v * 100) / 100;
 
 // The payslips on file as read from their PDFs (never the files), for the years around
-// `year`, and the months set aside on the Salary page. One query each for everybody, or
-// for one person when `empId` is given. Returned as maps by employee id.
+// `year`, and the months set aside on the Salary page (`skips`, with last year's
+// nothing-owed months as 'YYYY-MM' in `noneBefore`). One query each for everybody, or for
+// one person when `empId` is given. Returned as maps by employee id.
 async function payslipsAndSkips(year, empId = null) {
   const who = empId ? ' AND employee_id = ?' : '', args = empId ? [empId] : [];
   const [{ rows: slipRows }, { rows: skipRows }] = await Promise.all([
     q(`SELECT id, employee_id, pay_year, pay_month, file_name, payment_amount, figures FROM employee_payslips WHERE pay_year BETWEEN ? AND ?${who}`, [year - 1, year + 1, ...args]),
-    q(`SELECT id, employee_id, pay_month, kind, note FROM pay_skips WHERE pay_year = ?${who}`, [year, ...args]),
+    q(`SELECT id, employee_id, pay_year, pay_month, kind, note FROM pay_skips WHERE (pay_year = ? OR (pay_year = ? AND kind = 'none'))${who}`, [year, year - 1, ...args]),
   ]);
-  const slips = new Map(), skips = new Map();
+  const slips = new Map(), skips = new Map(), noneBefore = new Map();
   for (const r of slipRows) {
     let figures = null;
     try { figures = r.figures ? JSON.parse(r.figures) : null; } catch { figures = null; }
@@ -587,10 +592,13 @@ async function payslipsAndSkips(year, empId = null) {
       amount: r.payment_amount == null ? null : parseFloat(r.payment_amount), figures });
   }
   for (const r of skipRows) {
-    if (!skips.has(r.employee_id)) skips.set(r.employee_id, []);
-    skips.get(r.employee_id).push({ id: r.id, month: r.pay_month, kind: r.kind, note: r.note || '' });
+    // (last year's nothing-owed months only matter to the sums: see yearOwed)
+    const into = Number(r.pay_year) === Number(year) ? skips : noneBefore;
+    if (!into.has(r.employee_id)) into.set(r.employee_id, []);
+    if (into === skips) into.get(r.employee_id).push({ id: r.id, month: r.pay_month, kind: r.kind, note: r.note || '' });
+    else into.get(r.employee_id).push(`${r.pay_year}-${String(r.pay_month).padStart(2, '0')}`);
   }
-  return { slips, skips };
+  return { slips, skips, noneBefore };
 }
 
 // Money taken off for days off and office deductions, by the month it falls in
@@ -1306,6 +1314,7 @@ app.get('/api/employee/salary', requireAuth, async (req, res) => {
       deductions: dayCalc.excess_deduction + totalOffice,
       slips: (onFile.slips.get(empId) || []).map(x => x.figures).filter(Boolean),
       skips: Object.fromEntries((onFile.skips.get(empId) || []).map(r => [r.month, r.kind])),
+      noneBefore: onFile.noneBefore.get(empId) || [],
       deductionsByMonth: deductionsByMonth(year, dayCalc.breakdown, officeRows) });
     const netSalaryTarget = owedYear.target, netRemaining = owedYear.remaining, pctPaid = owedYear.pct, totalPaid = owedYear.totalPaid;
 
@@ -1769,7 +1778,7 @@ async function salaryOverview(year) {
 // One person's pay figures for a year: the row behind their card on the Salary page,
 // and the "Left to pay" panel on their own page, so the two can never disagree.
 async function salaryOverviewRow(emp, year, onFile = null) {
-  const { slips: slipMap, skips: skipMap } = onFile || await payslipsAndSkips(year, emp.id);
+  const { slips: slipMap, skips: skipMap, noneBefore } = onFile || await payslipsAndSkips(year, emp.id);
   const slipsOnFile = slipMap.get(emp.id) || [], skipRows = skipMap.get(emp.id) || [];
   const skips = Object.fromEntries(skipRows.map(r => [r.month, r.kind]));
   const { rows: payments } = await q(
@@ -1811,7 +1820,8 @@ async function salaryOverviewRow(emp, year, onFile = null) {
   const totalOffice   = sumForYear(officeRows, 'deduction_date', year);
   const owedYear = yearOwed({ emp, year, history: salaryHistory, annualSal, salaryTarget, startDateStr, terminationDateStr,
     payments, lastYearPayments: await lastYearPayroll(emp, year), deductions: dayCalc.excess_deduction + totalOffice,
-    slips: slipsOnFile.map(s => s.figures).filter(Boolean), skips, deductionsByMonth: deductionsByMonth(year, dayCalc.breakdown, officeRows) });
+    slips: slipsOnFile.map(s => s.figures).filter(Boolean), skips, noneBefore: noneBefore.get(emp.id) || [],
+    deductionsByMonth: deductionsByMonth(year, dayCalc.breakdown, officeRows) });
   const netSalaryTarget = owedYear.target, netRemaining = owedYear.remaining, pctPaid = owedYear.pct, totalPaid = owedYear.totalPaid;
   // A row per month, for the Salary page: what the month pays, what was paid, its payslip
   const slipOf = m => { const sl = slipsOnFile.find(x => x.year === year && x.month === m); return sl ? { id: sl.id, amount: sl.amount, name: sl.name, read: !!sl.figures } : null; };

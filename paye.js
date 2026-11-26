@@ -324,14 +324,20 @@ const unkey = k => ({ year: Math.floor(k / 12), month: (k % 12) + 1 });
  *   months     [{ year, month }] the months wanted
  *
  * Returns { 'YYYY-MM': { payment, gross, tax, ni, student_loan, postgrad_loan, pension,
- *   source, exact } } where `exact` says the figure should match the payroll software to the
- *   penny (see reproduces()), and source is
+ *   source, exact, explained } } where source is
  *     'payslip'  the payslip for that very month is on file: these are its figures
  *     'worked'   worked out forward from the latest earlier payslip in the same tax year,
- *                or from the start of a new tax year on the same settings: exact as long
- *                as nothing changes (pay, tax code, pension)
+ *                or from the start of a new tax year on the same settings
  *     'back'     a month before the first payslip on file: worked out on that payslip's
  *                settings, assuming regular pay in between
+ *   `explained` says the calculator can arrive at the payslip the month is worked out from
+ *   (see reproduces()). When it cannot, something about that person's pay is not understood
+ *   and the figure leaves it out: the caller should prefer what was actually paid.
+ *   `exact` says the figure should match the payroll software to the penny: worked forward
+ *   within a tax year from a payslip that is explained, on pay that is not in doubt
+ *   (grossFor may return `sure: false` for a month whose pay it is guessing at). That holds
+ *   in a tax year this file has no tables for, too: a payslip from that same year that
+ *   comes out right on the latest tables shows they still apply to this person.
  * and nothing at all for a person with no readable payslip (the caller estimates instead).
  */
 function payFromPayslips({ slips, grossFor, months }) {
@@ -348,28 +354,28 @@ function payFromPayslips({ slips, grossFor, months }) {
     const k = key(want.year, want.month), own = byMonth.get(k);
     if (own) {
       out[label(k)] = { payment: own.payment, gross: own.gross, tax: own.tax, ni: own.ni, student_loan: own.student_loan, postgrad_loan: own.postgrad_loan_amount,
-        pension: own.pension, source: 'payslip', exact: true };
+        pension: own.pension, source: 'payslip', exact: true, explained: true };
       continue;
     }
     if (!regular(k)) continue;
     const start = yearStart(k);
     const before = usable.filter(([sk]) => sk < k), after = usable.filter(([sk]) => sk > k);
-    let settings, payBefore = 0, taxBefore = 0, from, source, exact = false;
+    let settings, payBefore = 0, taxBefore = 0, from, source, exact = false, explained;
     const anchor = before.length ? before[before.length - 1] : null;
     if (anchor && anchor[0] >= start && anchor[1].ytd && anchor[1].ytd.gross != null && anchor[1].ytd.tax != null) {
       // Forward from the latest payslip of this tax year: its year-to-date figures are the truth
       settings = settingsFrom(anchor[1]); payBefore = anchor[1].ytd.gross; taxBefore = anchor[1].ytd.tax; from = anchor[0] + 1; source = 'worked';
-      exact = reproduces(anchor[1]);
+      exact = explained = reproduces(anchor[1]);
     } else if (anchor) {
       // A new tax year (or a payslip without year-to-date figures): the same settings, starting
       // from nothing in April. A month-1 marker is not carried into a new tax year.
       settings = { ...settingsFrom(anchor[1]) };
       if (anchor[0] < start) settings.month1 = false;
-      from = start; source = 'worked';
+      from = start; source = 'worked'; explained = reproduces(anchor[1]);
     } else {
       // Before the first payslip on file: its settings, and the pay it says came before it
       const first = after[0];
-      settings = settingsFrom(first[1]); source = 'back';
+      settings = settingsFrom(first[1]); source = 'back'; explained = reproduces(first[1]);
       if (first[0] >= start && yearStart(first[0]) === start && first[1].ytd && first[1].ytd.gross != null) {
         let earlier = first[1].ytd.gross - (first[1].taxable_gross != null ? first[1].taxable_gross : first[1].gross || 0);
         for (let j = k; j < first[0]; j++) { const s = byMonth.get(j), g = s ? { gross: s.gross } : regular(j); if (g) earlier -= g.gross; }
@@ -380,17 +386,18 @@ function payFromPayslips({ slips, grossFor, months }) {
       } else from = start;
     }
     // Walk month by month up to the one wanted, carrying pay and tax to date
-    let figures = null;
+    let figures = null, sure = true;
     for (let j = from; j <= k; j++) {
       const s = byMonth.get(j), g = s ? { gross: s.gross, basic: s.basic } : regular(j);
       if (!g) continue;
+      if (g.sure === false) sure = false;
       const { year, month } = unkey(j);
       figures = s && j !== k && s.tax != null
         ? { taxable: s.taxable_gross != null ? s.taxable_gross : s.gross, tax: s.tax }
         : monthFigures({ settings, year, month, gross: g.gross, basic: g.basic, payBefore, taxBefore });
       payBefore = round2(payBefore + figures.taxable); taxBefore = round2(taxBefore + figures.tax);
     }
-    if (figures && figures.payment != null) out[label(k)] = { ...figures, source, exact: exact && figures.published };
+    if (figures && figures.payment != null) out[label(k)] = { ...figures, source, exact: exact && sure, explained };
   }
   return out;
 }
