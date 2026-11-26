@@ -217,12 +217,14 @@ function payslipDues({ slips, gross, history, annual, months, none = [] }) {
  * with no working day of theirs in it, is worth nothing.
  *
  * Pay logged by hand is seldom to the penny (a bank fee, a rounded figure). A month left
- * within half a percent of its pay (never less than 1.00) is not called short: it is
+ * within half a percent of a month's pay (never less than 1.00) is not called short: it is
  * settled, and the pounds or pence go on to the next month, which asks for them with its
- * own pay. Nothing is dropped on the way: a little paid over is carried forward like any
- * other money, so somebody paid 2,090 a month against 2,083.33 and squared up in December
- * comes out level. Only what is still waiting at the very end of the year, which can be no
- * more than that half a percent of one month, is let go (`rounding`).
+ * own pay. That holds whenever the month comes to be within that much: when it is first
+ * paid, or when a later payment makes it up. Nothing is dropped on the way: a little paid
+ * over is carried forward like any other money, so somebody paid 2,090 a month against
+ * 2,083.33 and squared up in December comes out level. Only what is still waiting at the
+ * very end of the year is let go (`rounding`), and only when it is no more than that half a
+ * percent of one month; more than that is owed, on the last month.
  *
  * Returns { months, left, credit, remaining, rounding }:
  *   left        what is still owed across the months
@@ -254,7 +256,9 @@ function contractorYear({ months, payments, deductions = {}, skips = {} }) {
   (payments || []).forEach(p => { const m = Number(p.payment_month); logged[m] = (logged[m] || 0) + (parseFloat(p.amount) || 0); });
   const paidIn = m => Math.max(0, round2(logged[m] || 0)), offIn = m => Math.max(0, round2(parseFloat(deductions[m]) || 0));
   const first = months.length ? months[0].month : 13, last = months.length ? months[months.length - 1].month : 0;
-  const near = due => Math.max(1, round2(due * 0.005));
+  // How little counts as settled: half a percent of a whole month's pay (the largest month, so
+  // that a part month passes on what a whole one handed it)
+  const near = Math.max(1, round2(months.reduce((a, m) => Math.max(a, m.due || 0), 0) * 0.005));
   const rows = [], credit = [];   // credit: [{ month, amount }], oldest first
   let debt = 0, debtFrom = [];    // small shortfalls passed on, waiting for the next month with pay of its own
   const carried = () => round2(credit.reduce((a, c) => a + c.amount, 0));
@@ -271,6 +275,12 @@ function contractorYear({ months, payments, deductions = {}, skips = {} }) {
     }
     return { used, from };
   };
+  // A month within the pounds or pence that count as settled: it is settled, and they wait
+  // for the next month with pay of its own
+  const settle = r => {
+    debtFrom = r.owing <= r.brought && !debt ? r.broughtFrom : [...new Set([...debtFrom, ...r.broughtFrom, r.month])];
+    debt = round2(debt + r.owing); r.passed = round2(r.passed + r.owing); r.owing = 0;
+  };
   // What a month did not need, paid or deducted in month `by`: towards the oldest months
   // still owing, then any small shortfall still waiting, and the rest carried forward.
   // { back: what went to older months, to: which ones, on: what was carried forward }
@@ -284,6 +294,8 @@ function contractorYear({ months, payments, deductions = {}, skips = {} }) {
       r.owing = round2(r.owing - use); r.later = round2(r.later + use); spare = round2(spare - use); back = round2(back + use);
       if (!r.laterIn.includes(by)) r.laterIn.push(by);
       to.push(r.month);
+      // (made up to within the pounds or pence that count as settled: they go on like any other)
+      if (r.owing > 0.004 && r.owing <= near && r.due > 0) settle(r);
     }
     if (spare > 0.004 && debt > 0.004) { const use = Math.min(spare, debt); debt = round2(debt - use); spare = round2(spare - use); if (debt <= 0.004) { debt = 0; debtFrom = []; } }
     const on = spare > 0.004 ? round2(spare) : 0;
@@ -311,15 +323,24 @@ function contractorYear({ months, payments, deductions = {}, skips = {} }) {
     const spare = passOn(row.month, round2(got - own + off - r.taken));
     r.back = spare.back; r.backTo = spare.to; r.ahead = spare.on;
     // Within half a percent of settled is settled: the pounds or pence go on to the next month
-    if (due > 0 && r.owing > 0.004 && r.owing <= near(due)) {
-      debtFrom = r.owing <= r.brought ? r.broughtFrom : [...r.broughtFrom, row.month];
-      debt = r.owing; r.passed = r.owing; r.owing = 0;
-    }
+    if (due > 0 && r.owing > 0.004 && r.owing <= near) settle(r);
     rows.push(r);
     r.balance = round2(carried() - owingSoFar() - debt);
   }
   // (with no months at all, everything was carried forward above, and nothing is owed for it)
   if (months.length) for (let m = last + 1; m <= 12; m++) passOn(m, round2(paidIn(m) + offIn(m)));
+  // What is still waiting at the end is let go only while it is that little; any more is owed,
+  // on the last month with pay of its own
+  if (debt > near + 0.004) {
+    const r = [...rows].reverse().find(x => x.due > 0);
+    if (r) {
+      // (what that month passed on itself comes back to it; the rest is brought to it from the others)
+      const own = Math.min(r.passed, debt);
+      r.passed = round2(r.passed - own); r.brought = round2(r.brought + debt - own); r.owing = round2(r.owing + debt);
+      r.broughtFrom = [...new Set([...r.broughtFrom, ...debtFrom.filter(m => m !== r.month)])];
+      debt = 0; debtFrom = [];
+    }
+  }
 
   const out = rows.map(r => {
     const settled = r.owing <= 0.004;

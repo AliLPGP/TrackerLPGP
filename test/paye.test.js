@@ -417,6 +417,8 @@ const slip = (over = {}) => ({
 // What must hold for any year, whatever was paid and deducted
 function checkAccount(y, say) {
   const p2 = v => Math.round(v * 100) / 100;
+  const tolerance = Math.max(1, p2(y.months.reduce((a, r) => Math.max(a, r.due), 0) * 0.005));
+  assert.ok(y.rounding >= 0 && y.rounding <= tolerance + 0.005, `let go ${y.rounding}, more than ${tolerance}: ` + say);
   assert.strictEqual(y.left, p2(y.months.reduce((a, r) => a + r.left, 0)), say);
   assert.strictEqual(y.remaining, p2(y.left - y.credit), say);
   assert.ok(!(y.left > 0 && y.credit > 0), 'nothing is carried past a month still owing: ' + say);
@@ -427,7 +429,8 @@ function checkAccount(y, say) {
     const asked = p2(r.due + r.brought), own = Math.min(r.logged, asked);
     assert.ok(r.left >= 0 && r.left <= asked + 0.005 && r.taken <= r.deduction + 0.005 && r.advance >= 0 && r.made_up >= 0 && r.passed >= 0 && r.back >= 0 && r.ahead >= 0, say);
     assert.ok(Math.abs(own + r.taken + r.advance + r.made_up + r.passed + r.left - asked) < 0.006, `month ${r.month} does not add up: ` + say);
-    assert.ok(r.passed <= Math.max(1, r.due * 0.005) + 0.005, say);
+    assert.ok(r.passed <= tolerance + 0.005, say);
+    assert.ok(r.left === 0 || r.left > tolerance, `month ${r.month} is left owing a sum small enough to be settled: ` + say);
     assert.strictEqual(r.status === 'short', r.logged > 0 && r.left > 0, say);
     assert.strictEqual(r.short, r.status === 'short' ? r.left : 0, say);
     if (r.status === 'none') assert.deepStrictEqual([r.left, r.paid], [0, false], say);
@@ -493,6 +496,26 @@ function checkAccount(y, say) {
   // The pence wait through a month marked nothing owed for the next month with pay of its own
   const through = contractorYear({ months: year(2083.33).slice(0, 3), payments: pays([2080]), skips: { 2: 'none' } });
   assert.deepStrictEqual(through.months.map(r => [r.status, r.left, r.brought_from.join()]), [['paid', 0, ''], ['none', 0, ''], ['due', 2086.66, '1']]);
+  // Two months paid at once in round pounds come out the same paid behind as paid ahead: the
+  // pence left on the month that was made up go on like any others, and no month reads unpaid
+  const rest = Array(10).fill(2083.33);
+  const behind = contractorYear({ months: year(2083.33), payments: pays([0, 4166, ...rest]) });
+  const aheadOf = contractorYear({ months: year(2083.33), payments: pays([4166, 0, ...rest]) });
+  assert.deepStrictEqual([behind.remaining, behind.rounding, behind.months[0].status, behind.months[0].covered, behind.months[0].left, behind.months[0].passed], [0, 0.66, 'paid', true, 0, 0.66]);
+  assert.deepStrictEqual([aheadOf.remaining, aheadOf.rounding, aheadOf.months[1].status, aheadOf.months[1].passed], [0, 0.66, 'paid', 0.66]);
+  // ...nor short, when part of it was paid in its own month
+  const partThen = contractorYear({ months: year(2083.33), payments: pays([1000, 3166, ...rest]) });
+  assert.deepStrictEqual([partThen.months[0].status, partThen.months[0].short, partThen.remaining, partThen.rounding], ['paid', 0, 0, 0.66]);
+  // ...and the same in pesos: 99,990 in February for January and February
+  const pesos = contractorYear({ months: year(50000), payments: pays([0, 99990, ...Array(10).fill(50000)]) });
+  assert.deepStrictEqual([pesos.months[0].status, pesos.months[0].left, pesos.remaining, pesos.rounding], ['paid', 0, 0, 10]);
+  // What is let go at the end is never more than half a percent of a month: any more is owed,
+  // on the last month (January made up in April to within 3, on top of March's 4 short)
+  const two = contractorYear({ months: year(1000).slice(0, 3), payments: pays([0, 1000, 996, 997]) });
+  assert.deepStrictEqual([two.rounding, two.remaining, two.months[0].status, two.months[2].status, two.months[2].short, two.months[2].brought, two.months[2].brought_from, two.months[2].passed], [0, 7, 'paid', 'short', 7, 3, [1], 0]);
+  // A part month passes on what a whole month handed it (half a percent of a whole month's pay, not of its own)
+  const partMonth = contractorYear({ months: [...year(2000).slice(0, 2), { month: 3, due: 400, whole: false }], payments: pays([1992, 2000, 400]) });
+  assert.deepStrictEqual([partMonth.months.map(r => r.status).join(), partMonth.remaining, partMonth.rounding], ['paid,paid,paid', 0, 8]);
   // A month with no working day of theirs in it (they started on Saturday the 31st) is worth nothing, not unpaid
   const weekend = contractorYear({ months: [{ month: 1, due: 0, whole: false }, { month: 2, due: 2000, whole: true }], payments: [] });
   assert.deepStrictEqual(weekend.months.map(r => [r.status, r.paid, r.left]), [['none', false, 0], ['due', false, 2000]]);
@@ -557,7 +580,6 @@ function checkAccount(y, say) {
     const p2 = v => Math.round(v * 100) / 100, say = JSON.stringify({ months, payments, deductions, skips });
     const worth = y.months.reduce((a, r) => a + r.due, 0), paid = payments.reduce((a, p) => a + p.amount, 0), off = Object.values(deductions).reduce((a, b) => a + b, 0);
     assert.ok(Math.abs(y.remaining - p2(worth - paid - off - y.rounding)) < 0.011, `remaining ${y.remaining} against ${p2(worth - paid - off)} less ${y.rounding}: ` + say);
-    assert.ok(y.rounding >= 0 && y.rounding <= Math.max(1, pay * 0.005) + 0.005, say);
     checkAccount(y, say);
   }
 }
