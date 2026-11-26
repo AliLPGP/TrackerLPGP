@@ -531,7 +531,7 @@ function yearOwed({ emp, year, history, annualSal, salaryTarget, startDateStr, t
     const takeHome = a => calcUKNetPay(a, parseFloat(emp.pension_rate) || 0).net_monthly;
     const monthsOf = y => payrollMonths({ history, year: y, startDate: startDateStr, endDate: terminationDateStr, annual: annualSal, netMonthly: takeHome });
     const months = monthsOf(year);
-    let exact = null, differs = null;
+    let exact = null, differs = null, behind = null;
     if (slips.length) {
       const gross = trackerGross({ history, annual: annualSal, startDate: startDateStr, endDate: terminationDateStr, years: [year - 1, year, year + 1] });
       // Months no pay went through payroll for. Last year's count too: tax is worked out
@@ -540,7 +540,7 @@ function yearOwed({ emp, year, history, annualSal, salaryTarget, startDateStr, t
       const worked = payslipDues({ slips, gross, history, annual: annualSal, none, months: months.map(m => ({ year, month: m.month })) });
       exact = {};
       for (const m of months) { const d = worked.dues[`${year}-${pad2(m.month)}`]; if (d) exact[m.month] = d; }
-      differs = worked.differs;
+      differs = worked.differs; behind = worked.behind;
     }
     const owed = payrollYear({ months, payments, deductions, exact, skips, deductionsByMonth,
       lastYear: lastYearPayments && lastYearPayments.length ? { months: monthsOf(year - 1), payments: lastYearPayments } : null });
@@ -552,7 +552,7 @@ function yearOwed({ emp, year, history, annualSal, salaryTarget, startDateStr, t
     const ref = nearest(d => d.regular !== false && d.source !== 'rough') || nearest(d => d.regular !== false);
     const sure = !!ref && exact[ref.month].source !== 'rough';
     const monthRows = owed.months.map(r => ({ ...r, deduction: round2(deductionsByMonth[r.month] || 0), figures: exact && exact[r.month] ? exact[r.month].figures : null }));
-    return { ...owed, monthRows, differs, fromPayslip: owed.fromPayslip || !!ref, exactPay: sure,
+    return { ...owed, monthRows, differs, behind, fromPayslip: owed.fromPayslip || !!ref, exactPay: sure,
       monthlyPay: ref ? exact[ref.month].due : round2(takeHome(annualSal) * owed.rate) };
   }
   const totalPaid = payments.reduce((a, b) => a + (parseFloat(b.amount) || 0), 0);
@@ -1922,6 +1922,8 @@ async function salaryOverviewRow(emp, year, onFile = null) {
     // payslip's monthly pay when it is not what the salary on record gives
     pay_exact:           !!owedYear.exactPay,
     pay_differs:         owedYear.differs || null,
+    // ...and the latest payslip when it was run at the pay from before a rise that covers it
+    pay_behind:          owedYear.behind || null,
     has_pin:             !!emp.portal_pin
   };
 }

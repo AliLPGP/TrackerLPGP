@@ -3428,9 +3428,14 @@ function payNoSalaryHtml(year) {
 
 // A payslip whose monthly pay is not what the salary on record gives: worth a look
 function payDiffersHtml(year) {
-  return payRows(year).filter(r => r.pay_differs && !r.is_terminated).map(r => {
-    const d = r.pay_differs, cur = payCur(r);
-    return `<p class="sp-foot">${esc(r.name || '')}’s ${MONTHS[d.month]} payslip pays ${payMoney(d.payslip, cur)} a month before tax, but the salary on record gives ${payMoney(d.tracker, cur)}. The payslip is used. <button class="co-link" onclick="openPayPerson(${Number(r.employee_id)}, ${year})">Take a look</button></p>`;
+  return payRows(year).filter(r => (r.pay_differs || r.pay_behind) && !r.is_terminated).map(r => {
+    const cur = payCur(r), look = `<button class="co-link" onclick="openPayPerson(${Number(r.employee_id)}, ${year})">Take a look</button>`;
+    if (r.pay_behind) {
+      const d = r.pay_behind;
+      return `<p class="sp-foot">${esc(r.name || '')}’s ${MONTHS[d.month]} payslip is at ${payMoney(d.payslip, cur)} a month, the pay from before their rise. On the salary on record ${MONTHS[d.month]} should have been ${payMoney(d.tracker, cur)}, so ${payMoney(d.tracker - d.payslip, cur)} before tax is still owed for it. Payroll usually adds it to the next payslip. ${look}</p>`;
+    }
+    const d = r.pay_differs;
+    return `<p class="sp-foot">${esc(r.name || '')}’s ${MONTHS[d.month]} payslip pays ${payMoney(d.payslip, cur)} a month before tax, but the salary on record gives ${payMoney(d.tracker, cur)}. The payslip is used. ${look}</p>`;
   }).join('');
 }
 

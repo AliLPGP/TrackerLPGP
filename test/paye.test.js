@@ -252,7 +252,7 @@ const slip = (over = {}) => ({
   const odd = payslipDues({ slips: [slip({ payment: 1950.44 })], gross, history, annual, months });
   assert.strictEqual(odd.dues['2026-11'].source, 'payslip');
   assert.strictEqual(odd.dues['2026-12'], undefined);
-  assert.deepStrictEqual(payslipDues({ slips: [], gross, history, annual, months }), { dues: {}, differs: null });
+  assert.deepStrictEqual(payslipDues({ slips: [], gross, history, annual, months }), { dues: {}, differs: null, behind: null });
 
   // ── What a regular month pays: the salary on record, or the payslips? ──
   // A made-up payslip the calculator arrives at by construction, for someone on the same
@@ -284,6 +284,9 @@ const slip = (over = {}) => ({
   const backdated = [{ id: 1, effective_from: '2024-03-01', annual_salary: 30000 }, { id: 2, effective_from: '2026-10-01', annual_salary: 36000 }];
   const late = payslipDues({ slips: [made(2026, 9), made(2026, 10)], gross: grossAt(36000, backdated), history: backdated, annual: 36000, months });
   assert.deepStrictEqual([due(late, '2026-11'), due(late, '2026-12'), late.differs], [[3000, 'rough'], [3000, 'rough'], null]);
+  // ...and October's payslip is said to be behind: 500.00 before tax is still owed for it
+  assert.deepStrictEqual(late.behind, { payslip: 2500, tracker: 3000, year: 2026, month: 10 });
+  assert.strictEqual(twoAgree.behind, null);
 
   // One odd month (two unpaid days in September) among ordinary ones is not the new pay
   const oddMonth = payslipDues({ slips: [made(2026, 8), made(2026, 9, { gross: 2269.23 })], gross: grossAt(30000), history, annual,
