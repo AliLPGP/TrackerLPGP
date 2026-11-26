@@ -113,7 +113,7 @@ const TOPICS = [
 const HOWTO = [
   [/\b(add|create|new) (an? |the )?(new )?(employee|staff|person|team member)/, 'Go to Employees and press "+ Add employee" at the top right.'],
   [/\b(delete|remove) (an? |the )?(employee|staff|person)/, 'Open their profile from Employees and press the red Delete button. If they have left the company, use Terminate instead, which keeps their history.'],
-  [/\b(log|record|add|make) (a |the )?(salary )?payment|\bpay (someone|an employee|staff|them|him|her)\b/, 'On the Salary page, find their card and press "+ Pay". To pay everyone on pesos at once, use "Pay all PHP self-employed".'],
+  [/\b(log|record|add|make) (a |the )?(salary )?payment|\bpay (someone|an employee|staff|them|him|her)\b/, 'On the Salary page, press "Pay" beside their name. If you have their payslip, drop the PDF on the page instead and it is logged for you. To pay a whole group without payslips at once, use "Pay all" above the group.'],
   [/\b(add|create|new|log) (a |the )?(new )?deal/, 'Deal Tracker, then "+ Add deal" at the top right.'],
   [/\b(set|add|change|edit) (a |the )?target/, 'Portfolio, in Revenue by series: open a series and press "Set target" on the event.'],
   [/\b(add|log|record) (an? |the )?(new )?(expense|cost|bill)/, 'Use the Expenses page for one-off bills, or the Spending page for yearly costs such as rent and cars.'],
@@ -279,9 +279,10 @@ function payLeftLine(r, year) {
   if (left < -0.5) return `${who}${gone} has nothing left to be paid in ${year}. They are ${money(-left, cur)} ahead of what the year adds up to.`;
   if (left <= 0.5) return num(r.total_paid) > 0 ? `${who}${gone} is fully paid for ${year}: ${money(r.total_paid, cur)} in total.` : `${who}${gone} was not due any pay in ${year}.`;
   // Payroll is counted in months: the ones with no payment logged
-  const months = (r.pay_months || []).filter(m => !m.paid);
+  const months = (r.pay_months || []).filter(m => !m.paid && m.status !== 'none');
   const short = (r.pay_months || []).filter(m => m.short > 0);
-  const topUp = short.length ? ` ${listOf(short.map(m => MONTHS[m.month - 1]))} ${short.length > 1 ? 'were' : 'was'} paid at the amount from before the pay rise, so ${money(short.reduce((a, m) => a + m.short, 0), cur)} of that is a top-up.` : '';
+  const why = short.length && short.every(m => m.source === 'payslip') ? `paid less than ${short.length > 1 ? 'the payslips say' : 'the payslip says'}` : 'paid at the amount from before the pay rise';
+  const topUp = short.length ? ` ${listOf(short.map(m => MONTHS[m.month - 1]))} ${short.length > 1 ? 'were' : 'was'} ${why}, so ${money(short.reduce((a, m) => a + m.short, 0), cur)} of that is a top-up.` : '';
   if (!months.length && short.length) return `${who}${gone} has ${money(left, cur)} left to be paid in ${year}.${topUp} Paid so far: ${money(r.total_paid, cur)}.`;
   if (months.length) {
     const sameDue = months.every(m => Math.abs(m.due - months[0].due) < 0.01);
@@ -316,12 +317,16 @@ const ANSWER = {
     const now = d.today, month = q.month || Number(now.slice(5, 7)), year = q.year;
     const rows = narrow(activeRows(await d.overview(year)), q).filter(r => num(r.annual_salary) > 0
       && !(r.start_date && r.start_date.slice(0, 7) > `${year}-${String(month).padStart(2, '0')}`));
-    const due = r => { const pm = (r.pay_months || []).find(m => m.month === month); return pm ? pm.due : num(r.annual_salary) / 12; };
-    const none = rows.filter(r => !(r.payments || []).some(p => Number(p.payment_month) === month));
+    // The month's own row says what is due and whether it was set aside (as the Salary page shows it)
+    const row = r => (r.months || r.pay_months || []).find(m => m.month === month);
+    const due = r => { const pm = row(r); return pm ? (pm.left != null && !pm.paid ? pm.left : pm.due) : num(r.annual_salary) / 12; };
+    const none = rows.filter(r => { const pm = Array.isArray(r.months) ? row(r) : null;
+      return pm ? !pm.paid && pm.status !== 'none' : !Array.isArray(r.months) && !(r.payments || []).some(p => Number(p.payment_month) === month); });
+    const later = r => { const pm = row(r); return pm && pm.status === 'later' ? ' (set aside to pay later)' : ''; };
     const mName = `${MONTHS[month - 1]}${year !== Number(now.slice(0, 4)) ? ' ' + year : ''}`;
     if (!none.length) return `Everyone has been paid for ${mName}.` + say.quip('allPaid', 0.8);
     const total = none.reduce((a, r) => a + gbpOf(due(r), r.currency), 0);
-    return `${plural(none.length, 'person has', 'people have')} not been paid for ${mName} yet, about ${pounds(total)} in pounds:\n` + none.slice(0, 40).map(r => `${r.name}: ${money(due(r), r.currency)}`).join('\n')
+    return `${plural(none.length, 'person has', 'people have')} not been paid for ${mName} yet, about ${pounds(total)} in pounds:\n` + none.slice(0, 40).map(r => `${r.name}: ${money(due(r), r.currency)}${later(r)}`).join('\n')
       + (none.length > 40 ? `\nand ${none.length - 40} more on the Salary page.` : '') + (none.length > 3 ? say.quip('unpaid') : '');
   },
 

@@ -9,6 +9,7 @@ const { renderContractPdf } = require('./contract-pdf');
 const { STARTER_FORM, checkAnswers, starterDefaults } = require('./starter-form');
 const { renderStarterPdf } = require('./starter-pdf');
 const idCrypto = require('./id-crypto');
+const { readPayslip, figuresToKeep } = require('./payslip-read');
 
 /**
  * Everything the staff portal needs beyond the original day-off buttons.
@@ -1016,7 +1017,7 @@ ${row.nda_signature ? `<img alt="Signature" src="${row.nda_signature}">` : ''}
   router.get('/employees/:id/payslips', requireAuth, requireAdmin, async (req, res) => {
     try {
       const { rows } = await q(
-        `SELECT id, pay_year, pay_month, file_name, file_size, uploaded_by, created_at
+        `SELECT id, pay_year, pay_month, file_name, file_size, uploaded_by, created_at, payment_amount
          FROM employee_payslips WHERE employee_id = ? ORDER BY pay_year DESC, pay_month DESC`, [req.params.id]);
       res.json(rows);
     } catch (e) { fail(res, e); }
@@ -1035,13 +1036,16 @@ ${row.nda_signature ? `<img alt="Signature" src="${row.nda_signature}">` : ''}
       const emp = await getEmployee(req.params.id);
       if (!emp) return res.status(404).json({ error: 'Employee not found' });
       if (emp.employment_type !== 'payroll') return res.status(400).json({ error: 'Payslips are only for payroll staff' });
+      // The figures on it are read and kept beside the file, so the Salary page can work out the months to come
+      const slip = readPayslip(Buffer.from(file_data, 'base64'), file_name), figures = figuresToKeep(slip, year, month);
       const { rows } = await q(
-        `INSERT INTO employee_payslips (employee_id, pay_year, pay_month, file_name, file_data, file_size, uploaded_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO employee_payslips (employee_id, pay_year, pay_month, file_name, file_data, file_size, uploaded_by, figures, payment_amount)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (employee_id, pay_year, pay_month) DO UPDATE SET file_name = EXCLUDED.file_name,
-           file_data = EXCLUDED.file_data, file_size = EXCLUDED.file_size, uploaded_by = EXCLUDED.uploaded_by, created_at = NOW()
-         RETURNING id, pay_year, pay_month, file_name, file_size, uploaded_by, created_at`,
-        [emp.id, year, month, safeName(file_name, 'payslip.pdf'), file_data, size, req.admin.username || null]);
+           file_data = EXCLUDED.file_data, file_size = EXCLUDED.file_size, uploaded_by = EXCLUDED.uploaded_by,
+           figures = EXCLUDED.figures, payment_amount = EXCLUDED.payment_amount, created_at = NOW()
+         RETURNING id, pay_year, pay_month, file_name, file_size, uploaded_by, created_at, payment_amount`,
+        [emp.id, year, month, safeName(file_name, 'payslip.pdf'), file_data, size, req.admin.username || null, figures ? JSON.stringify(figures) : null, slip.payment]);
       await q('INSERT INTO emp_notifications (employee_id, message, type) VALUES (?, ?, ?)',
         [emp.id, `Your payslip for ${MONTH_NAMES[month - 1]} ${year} is now available in Payslips.`, 'info']);
       res.json(rows[0]);
@@ -1050,7 +1054,10 @@ ${row.nda_signature ? `<img alt="Signature" src="${row.nda_signature}">` : ''}
 
   router.delete('/payslips/:id', requireAuth, requireAdmin, async (req, res) => {
     try {
-      await q('DELETE FROM employee_payslips WHERE id = ?', [req.params.id]);
+      const { rows } = await q('DELETE FROM employee_payslips WHERE id = ? RETURNING employee_id, pay_year, pay_month', [req.params.id]);
+      // The notice telling them it was there goes too (it may have been filed against the wrong person)
+      if (rows[0]) await q('DELETE FROM emp_notifications WHERE employee_id = ? AND message = ?',
+        [rows[0].employee_id, `Your payslip for ${MONTH_NAMES[rows[0].pay_month - 1]} ${rows[0].pay_year} is now available in Payslips.`]).catch(() => {});
       res.json({ success: true });
     } catch (e) { fail(res, e); }
   });

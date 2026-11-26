@@ -276,48 +276,8 @@
 
       <!-- ══ SALARY ══ -->
       <div class="page" id="page-salary">
-        <!-- Controls row -->
-        <div class="filter-bar" style="align-items:center">
-          <div class="form-group" style="margin:0">
-            <label>Year</label>
-            <select id="salaryYear" onchange="loadSalaryPage()"></select>
-          </div>
-          <div class="form-group" style="margin:0;min-width:180px">
-            <label>Employee</label>
-            <select id="salaryEmpFilter" onchange="loadSalaryPage()">
-              <option value="">All Employees</option>
-            </select>
-          </div>
-          <div class="form-group" style="margin:0;min-width:160px">
-            <label>Search</label>
-            <input type="search" id="salarySearch" placeholder="Filter by name…"
-              oninput="loadSalaryPage()" autocomplete="off" />
-          </div>
-          <div style="display:flex;gap:8px;margin-left:auto">
-            <button class="btn btn-ghost btn-sm" onclick="exportPayrollCSV()" title="Export payroll data as CSV">⬇ Export CSV</button>
-            <button class="btn btn-ghost" onclick="openBulkPayModal('self_employed','PHP')" title="Log this month's usual pay for every self-employed PHP team member in one go">Pay all PHP self-employed</button>
-            <button class="btn btn-primary" onclick="openSalaryPaymentModal()">+ Log Payment</button>
-          </div>
-        </div>
-
-        <!-- Overview: what is still to pay, per group. Deliberately above the
-             detail table and deliberately not filtered by the type tabs. -->
-        <div id="salaryOverview" style="margin-bottom:20px"></div>
-
-        <!-- Totals strip -->
-        <div id="salaryTotals" style="margin-bottom:24px"></div>
-
-        <!-- Type tabs -->
-        <div class="salary-tabs">
-          <button class="salary-tab active" data-tab="all"     onclick="setSalaryTab(this)">All</button>
-          <button class="salary-tab"         data-tab="payroll"        onclick="setSalaryTab(this)">Payroll</button>
-          <button class="salary-tab"         data-tab="self_employed"  onclick="setSalaryTab(this)">Self-Employed</button>
-          <button class="salary-tab"         data-tab="terminated"     onclick="setSalaryTab(this)">Terminated</button>
-        </div>
-
-        <!-- Per-employee cards -->
-        <div id="salaryBoard"></div>
-        <div id="salaryCards"></div>
+        <!-- Drawn by loadSalaryPage (app.js): the month's pay run, payslip upload, what needs attention -->
+        <div id="salaryBody"></div>
       </div>
 
       <!-- ══ EMPLOYEES ══ -->
@@ -1231,61 +1191,6 @@
     <div style="display:flex;gap:10px;justify-content:flex-end">
       <button class="btn btn-ghost" onclick="closeModal('bonusModal')">Cancel</button>
       <button class="btn btn-primary" style="background:#d97706;border-color:#d97706" onclick="saveBonusRecord()">Save Bonus</button>
-    </div>
-  </div>
-</div>
-
-<!-- ══ MODAL: Salary Payment ══ -->
-<div class="modal-overlay" id="salaryPayModal">
-  <div class="modal">
-    <div class="modal-header">
-      <h2 id="salaryPayModalTitle">Log Payment</h2>
-      <button class="modal-close" onclick="closeModal('salaryPayModal')">✕</button>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Employee</label>
-        <select id="spEmpId"></select>
-      </div>
-      <div class="form-group">
-        <label>Year</label>
-        <input type="number" id="spYear" min="2020" max="2099">
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Month</label>
-        <select id="spMonth">
-          <option value="1">January</option><option value="2">February</option>
-          <option value="3">March</option><option value="4">April</option>
-          <option value="5">May</option><option value="6">June</option>
-          <option value="7">July</option><option value="8">August</option>
-          <option value="9">September</option><option value="10">October</option>
-          <option value="11">November</option><option value="12">December</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Currency</label>
-        <select id="spCurrency">
-          <option value="GBP">£ GBP</option>
-          <option value="AED">AED</option>
-          <option value="PHP">₱ PHP</option>
-        </select>
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>Amount</label>
-        <input type="number" id="spAmount" min="0" step="0.01" placeholder="e.g. 3000">
-      </div>
-    </div>
-    <div class="form-group" style="margin-bottom:20px">
-      <label>Notes (optional)</label>
-      <input type="text" id="spNotes" placeholder="e.g. January salary payment">
-    </div>
-    <div style="display:flex;gap:10px;justify-content:flex-end">
-      <button class="btn btn-ghost" onclick="closeModal('salaryPayModal')">Cancel</button>
-      <button class="btn btn-primary" onclick="saveSalaryPayment()">Save Payment</button>
     </div>
   </div>
 </div>

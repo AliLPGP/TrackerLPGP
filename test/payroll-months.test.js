@@ -117,4 +117,30 @@ assert.strictEqual(y.remaining, -100); assert.strictEqual(y.pct, 100);
   assert.strictEqual(payrollYear({ months: flatMs, payments: [pay(1, 900)] }).months[0].short, 0);
 }
 
+// Payslips on file give the months their figures, and a month can be set aside
+{
+  const ms = payrollMonths({ history: [], year: 2026, startDate: '2025-01-01', endDate: null, annual: 30000, netMonthly: a => a / 15 });   // 2,000 a month by the estimate
+  const pay = (m, amount) => ({ payment_month: m, amount });
+  const exact = { 10: { due: 2010.24, source: 'payslip' }, 11: { due: 2010.44, source: 'payslip' }, 12: { due: 2010.24, source: 'worked' } };
+  const y = payrollYear({ months: ms, payments: [...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(m => pay(m, 2010.44)), pay(10, 2010.24), pay(11, 1900)], exact,
+    skips: { 12: 'later' } });
+  const row = m => y.months.find(r => r.month === m);
+  // October was paid what its payslip says; November less than its payslip says; December is worked out, and set aside to pay later
+  assert.deepStrictEqual([row(10).status, row(10).short, row(10).source], ['paid', 0, 'payslip']);
+  assert.deepStrictEqual([row(11).status, row(11).short, row(11).left, row(11).due], ['short', 110.44, 110.44, 2010.44]);
+  assert.deepStrictEqual([row(12).status, row(12).due, row(12).left, row(12).source, row(12).skip], ['later', 2010.24, 2010.24, 'worked', 'later']);
+  assert.strictEqual(y.remaining, round2(110.44 + 2010.24));
+  // A month without a figure from the payslips falls back to the usual amount paid
+  assert.strictEqual(row(9).source, 'usual');
+  // More than the payslip says is noted, never owed
+  const over = payrollYear({ months: ms, payments: [pay(11, 2100)], exact });
+  assert.deepStrictEqual([over.months.find(r => r.month === 11).over, over.months.find(r => r.month === 11).short], [89.56, 0]);
+  // Nothing owed for a month: it is worth nothing and nothing is left on it
+  const none = payrollYear({ months: ms, payments: [], exact, skips: { 12: 'none' } });
+  assert.deepStrictEqual([none.months.find(r => r.month === 12).status, none.months.find(r => r.month === 12).due, none.months.find(r => r.month === 12).left], ['none', 0, 0]);
+  // ...but a payment logged for a month set aside wins
+  const paidAnyway = payrollYear({ months: ms, payments: [pay(12, 2010.24)], exact, skips: { 12: 'none' } });
+  assert.deepStrictEqual([paidAnyway.months.find(r => r.month === 12).status, paidAnyway.months.find(r => r.month === 12).skip], ['paid', null]);
+}
+
 console.log('payroll months tests passed');

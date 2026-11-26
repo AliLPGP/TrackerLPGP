@@ -139,7 +139,7 @@ SELECT only. No INSERT/UPDATE/DELETE. A LIMIT is added automatically if omitted.
   },
   {
     name: 'get_salary_overview',
-    description: 'Get the fully-computed salary summary for all employees for a given year. Includes: net_remaining (what is genuinely still owed this year, after PAYE, day-off deductions, and office deductions), pct_paid, net_monthly (estimated take-home), monthly_pay (payroll: what a whole month really pays, from the usual payslip logged, ignoring one-off extras such as a bonus or refund), pay_months[] (payroll is counted in months: each one paid or still due), payments[], office_deductions[], bonuses[]. More accurate than raw SQL for salary questions because it applies UK PAYE and pro-rating automatically.',
+    description: 'Get the fully-computed salary summary for all employees for a given year. Includes: net_remaining (what is genuinely still owed this year, after PAYE, day-off deductions, and office deductions), pct_paid, net_monthly (estimated take-home), monthly_pay (payroll: what a whole month pays now, worked out from the payslips on file the way payroll software does it, else from the usual amount paid), pay_months[] (payroll is counted in months; each has due, logged, paid, short (paid less than the payslip or the new pay), and status: paid, due, short, later (set aside to pay later, still owed) or none (nothing owed that month)), payments[], office_deductions[], bonuses[]. More accurate than raw SQL for salary questions because it applies UK PAYE and pro-rating automatically.',
     input_schema: {
       type: 'object',
       properties: { year: { type: 'integer', description: 'Year (defaults to current year)' } }
@@ -210,6 +210,8 @@ const OVERVIEW_FIELDS = ['employee_id', 'name', 'job_title', 'department', 'empl
   'total_days_off', 'allowance_days', 'excess_days', 'excess_deduction', 'total_office_deductions', 'total_bonuses', 'pay_months'];
 const compactOverview = rows => rows.map(r => ({
   ...Object.fromEntries(OVERVIEW_FIELDS.map(k => [k, r[k]])),
+  // (each month cut down to what a question needs, so a large team still fits)
+  pay_months: Array.isArray(r.pay_months) ? r.pay_months.map(m => ({ month: m.month, due: m.due, logged: m.logged, paid: m.paid, short: m.short, status: m.status })) : r.pay_months,
   payments: (r.payments || []).map(p => ({ month: p.payment_month, amount: p.amount })),
 }));
 
