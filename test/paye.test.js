@@ -422,6 +422,8 @@ function checkAccount(y, say) {
   assert.strictEqual(y.left, p2(y.months.reduce((a, r) => a + r.left, 0)), say);
   assert.strictEqual(y.remaining, p2(y.left - y.credit), say);
   assert.ok(!(y.left > 0 && y.credit > 0), 'nothing is carried past a month still owing: ' + say);
+  // Every small shortfall passed on was either asked for by a later month or let go at the end
+  assert.strictEqual(p2(y.months.reduce((a, r) => a + r.passed - r.brought, 0)) || 0, y.rounding, 'passed on, less brought in, is what was let go: ' + say);
   for (const r of y.months) {
     // Every month's pay (and any small shortfall asked for with it) is accounted for: its own
     // payment, its deduction, what was carried forward, what came later, what went on to the
@@ -513,6 +515,13 @@ function checkAccount(y, say) {
   // on the last month (January made up in April to within 3, on top of March's 4 short)
   const two = contractorYear({ months: year(1000).slice(0, 3), payments: pays([0, 1000, 996, 997]) });
   assert.deepStrictEqual([two.rounding, two.remaining, two.months[0].status, two.months[2].status, two.months[2].short, two.months[2].brought, two.months[2].brought_from, two.months[2].passed], [0, 7, 'paid', 'short', 7, 3, [1], 0]);
+  // A leaver's last month paid 5 under and topped up the month after: June was made up in
+  // July, nothing is let go, and nothing is left
+  const topped = contractorYear({ months: year(2000).slice(0, 6), payments: pays([2000, 2000, 2000, 2000, 2000, 1995, 5]) });
+  assert.deepStrictEqual([topped.months[5].status, topped.months[5].passed, topped.months[5].made_up, topped.months[5].made_up_in, topped.rounding, topped.remaining], ['paid', 0, 5, [7], 0, 0]);
+  // ...and a few pence deducted after the only month counts towards what that month was under
+  const oneMonth = contractorYear({ months: [{ month: 5, due: 1430.95, whole: true }], payments: [{ payment_month: 5, amount: 353.5 }, { payment_month: 5, amount: 359.75 }, { payment_month: 5, amount: 357.74 }], deductions: { 4: 357.74, 9: 0.82 } });
+  assert.deepStrictEqual([oneMonth.months[0].passed, oneMonth.months[0].made_up, oneMonth.months[0].made_up_in, oneMonth.rounding, oneMonth.remaining], [1.4, 0.82, [9], 1.4, 0]);
   // A part month passes on what a whole month handed it (half a percent of a whole month's pay, not of its own)
   const partMonth = contractorYear({ months: [...year(2000).slice(0, 2), { month: 3, due: 400, whole: false }], payments: pays([1992, 2000, 400]) });
   assert.deepStrictEqual([partMonth.months.map(r => r.status).join(), partMonth.remaining, partMonth.rounding], ['paid,paid,paid', 0, 8]);

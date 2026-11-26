@@ -3236,7 +3236,8 @@ function payMonthStory(row, m, cur, full) {
   const out = [];
   if (!m || m.status === 'none') return out;
   const open = m.left > 0.005, name = MONTHS[m.month], p2 = v => Math.round(v * 100) / 100;
-  const all = (row && row.months) || [], last = all.length > 0 && all[all.length - 1].month === m.month;   // (nothing follows their last month)
+  // (nothing follows their last month with pay: a month after it that is worth nothing asks for nothing)
+  const paying = ((row && row.months) || []).filter(x => x.status !== 'none' && x.due > 0.005), last = paying.length > 0 && paying[paying.length - 1].month === m.month;
   const small = v => !full && !open && v <= Math.max(1, (m.due || 0) * 0.005);
   // Pounds or pence still owed from earlier months: said where they are asked for or picked
   // up, not on every month they merely pass through
@@ -3254,8 +3255,11 @@ function payMonthStory(row, m, cur, full) {
   if (m.advance > 0.005 && !small(m.advance)) out.push(`${payMoney(m.advance, cur)} ${open ? 'already ' : ''}covered from ${payMonthNames(m.from, 'earlier months')}`);
   if (m.made_up > 0.005 && !small(m.made_up)) out.push(`${payMoney(m.made_up, cur)} made up in ${payMonthNames(m.made_up_in, 'later months')}`);
   if (moneySpare > 0.005 && (where || beyond) && !small(moneySpare)) out.push(`${payMoney(moneySpare, cur)} more than ${name} needed${where ? ` went towards ${where}` : ''}${beyond ? `${where ? ', and the rest is' : ', and'} ${beyond}` : ''}`);
-  if (full && last && passed > 0.005) out.push(`${payMoney(passed, cur)} under, let go as a rounding difference`);
-  else if (full && passed - brought > 0.005) out.push(`${payMoney(passed - brought, cur)} under, asked for with a later month`);
+  // Pounds or pence under: the month's own are asked for with a later month. After the last
+  // month there is none, and they are let go, whether its own or brought to it from earlier.
+  const own = Math.max(0, p2(passed - brought)), theirs = p2(passed - own);
+  if (full && last && theirs > 0.005) out.push(`${payMoney(theirs, cur)} still owed from ${payMonthNames(m.brought_from, 'earlier months')}, let go as a rounding difference`);
+  if (full && own > 0.005) out.push(`${payMoney(own, cur)} under, ${last ? 'let go as a rounding difference' : 'asked for with a later month'}`);
   return out;
 }
 

@@ -260,7 +260,10 @@ function contractorYear({ months, payments, deductions = {}, skips = {} }) {
   // that a part month passes on what a whole one handed it)
   const near = Math.max(1, round2(months.reduce((a, m) => Math.max(a, m.due || 0), 0) * 0.005));
   const rows = [], credit = [];   // credit: [{ month, amount }], oldest first
-  let debt = 0, debtFrom = [];    // small shortfalls passed on, waiting for the next month with pay of its own
+  // Small shortfalls passed on, waiting for the next month with pay of its own:
+  // [{ row: the month that passed it on, amount, from: the months it arose in }]
+  let waiting = [];
+  const debtOf = () => round2(waiting.reduce((a, w) => a + w.amount, 0));
   const carried = () => round2(credit.reduce((a, c) => a + c.amount, 0));
   const carry = (month, amount) => { if (amount > 0.004) credit.push({ month, amount: round2(amount) }); };
   // Take up to `want` from what was carried forward, oldest first
@@ -278,8 +281,9 @@ function contractorYear({ months, payments, deductions = {}, skips = {} }) {
   // A month within the pounds or pence that count as settled: it is settled, and they wait
   // for the next month with pay of its own
   const settle = r => {
-    debtFrom = r.owing <= r.brought && !debt ? r.broughtFrom : [...new Set([...debtFrom, ...r.broughtFrom, r.month])];
-    debt = round2(debt + r.owing); r.passed = round2(r.passed + r.owing); r.owing = 0;
+    // (when the month's own pay was met, what is left is what it was brought, from where that arose)
+    waiting.push({ row: r, amount: r.owing, from: r.owing <= r.brought ? r.broughtFrom : [...new Set([...r.broughtFrom, r.month])] });
+    r.passed = round2(r.passed + r.owing); r.owing = 0;
   };
   // What a month did not need, paid or deducted in month `by`: towards the oldest months
   // still owing, then any small shortfall still waiting, and the rest carried forward.
@@ -297,7 +301,16 @@ function contractorYear({ months, payments, deductions = {}, skips = {} }) {
       // (made up to within the pounds or pence that count as settled: they go on like any other)
       if (r.owing > 0.004 && r.owing <= near && r.due > 0) settle(r);
     }
-    if (spare > 0.004 && debt > 0.004) { const use = Math.min(spare, debt); debt = round2(debt - use); spare = round2(spare - use); if (debt <= 0.004) { debt = 0; debtFrom = []; } }
+    // (a small shortfall still waiting is paid after all: the month it waits from was made up)
+    for (const w of waiting) {
+      if (spare <= 0.004) break;
+      const use = Math.min(spare, w.amount), r = w.row;
+      w.amount = round2(w.amount - use); spare = round2(spare - use); back = round2(back + use);
+      r.passed = round2(r.passed - use); r.later = round2(r.later + use);
+      if (!r.laterIn.includes(by)) r.laterIn.push(by);
+      if (!to.includes(r.month)) to.push(r.month);
+    }
+    waiting = waiting.filter(w => w.amount > 0.004);
     const on = spare > 0.004 ? round2(spare) : 0;
     carry(by, on);
     return { back, to, on };
@@ -311,7 +324,7 @@ function contractorYear({ months, payments, deductions = {}, skips = {} }) {
     const due = skip === 'none' ? 0 : round2(row.due);
     const r = { month: row.month, due, got, off, skip, later: 0, laterIn: [], brought: 0, broughtFrom: [], passed: 0 };
     // (a small shortfall passed on by the months before is asked for with this month's pay)
-    if (due > 0 && debt > 0.004) { r.brought = debt; r.broughtFrom = debtFrom; debt = 0; debtFrom = []; }
+    if (due > 0 && waiting.length) { r.brought = debtOf(); r.broughtFrom = [...new Set(waiting.flatMap(w => w.from))].sort((a, b) => a - b); waiting = []; }
     r.owing = round2(due + r.brought);
     const own = Math.min(got, r.owing);
     r.owing = round2(r.owing - own);
@@ -325,22 +338,23 @@ function contractorYear({ months, payments, deductions = {}, skips = {} }) {
     // Within half a percent of settled is settled: the pounds or pence go on to the next month
     if (due > 0 && r.owing > 0.004 && r.owing <= near) settle(r);
     rows.push(r);
-    r.balance = round2(carried() - owingSoFar() - debt);
+    r.balance = round2(carried() - owingSoFar() - debtOf());
   }
   // (with no months at all, everything was carried forward above, and nothing is owed for it)
   if (months.length) for (let m = last + 1; m <= 12; m++) passOn(m, round2(paidIn(m) + offIn(m)));
   // What is still waiting at the end is let go only while it is that little; any more is owed,
   // on the last month with pay of its own
-  if (debt > near + 0.004) {
-    const r = [...rows].reverse().find(x => x.due > 0);
-    if (r) {
+  const lastPaying = [...rows].reverse().find(x => x.due > 0);
+  if (debtOf() > near + 0.004 && lastPaying) {
+    for (const w of waiting) {
       // (what that month passed on itself comes back to it; the rest is brought to it from the others)
-      const own = Math.min(r.passed, debt);
-      r.passed = round2(r.passed - own); r.brought = round2(r.brought + debt - own); r.owing = round2(r.owing + debt);
-      r.broughtFrom = [...new Set([...r.broughtFrom, ...debtFrom.filter(m => m !== r.month)])];
-      debt = 0; debtFrom = [];
+      if (w.row === lastPaying) lastPaying.passed = round2(lastPaying.passed - w.amount);
+      else { lastPaying.brought = round2(lastPaying.brought + w.amount); lastPaying.broughtFrom = [...new Set([...lastPaying.broughtFrom, ...w.from.filter(m => m !== lastPaying.month)])].sort((a, b) => a - b); }
+      lastPaying.owing = round2(lastPaying.owing + w.amount);
     }
+    waiting = [];
   }
+  const debt = debtOf();
 
   const out = rows.map(r => {
     const settled = r.owing <= 0.004;
