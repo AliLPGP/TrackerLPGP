@@ -1551,6 +1551,14 @@ app.post('/api/payments', requireAuth, requireAdmin, async (req, res) => {
       const { rows: done } = await q('SELECT id FROM monthly_payments WHERE employee_id = ? AND payment_year = ? AND payment_month = ? LIMIT 1', [employee_id, payment_year, payment_month]);
       if (done.length) return res.status(409).json({ error: 'A payment is already logged for that month' });
     }
+    // "Pay the rest" tops a month up from what the page believed was logged. If that has
+    // changed (the rest was already paid from another window, or from a view that had not
+    // caught up), it is refused rather than paid twice.
+    if (req.body.only_if_total !== undefined && req.body.only_if_total !== null) {
+      const { rows: sum } = await q('SELECT COALESCE(SUM(amount), 0) AS total FROM monthly_payments WHERE employee_id = ? AND payment_year = ? AND payment_month = ?', [employee_id, payment_year, payment_month]);
+      if (Math.abs(parseFloat(sum[0].total) - parseFloat(req.body.only_if_total)) > 0.005)
+        return res.status(409).json({ error: 'The payments logged for that month have changed since this was opened. Check the month again before paying the rest.' });
+    }
     const id = await addPayment(req, { employee_id, payment_year, payment_month, amount, notes: String(req.body.notes || '').slice(0, 300), currency: cur });
     res.json({ id });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1603,6 +1611,40 @@ app.put('/api/payments/:id', requireAuth, requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// A payment above a self-employed person's monthly pay was counted as pay in advance, but
+// the extra was a one-off (a bonus, commission, expenses). It comes off that month's
+// payments, latest first, and is recorded as a bonus dated in that month, so the months
+// after are owed in full again and the year's figures agree.
+app.post('/api/payments/extra-is-bonus', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const employee_id = parseInt(req.body.employee_id, 10), year = parseInt(req.body.year, 10), month = parseInt(req.body.month, 10);
+    const amount = round2(parseFloat(req.body.amount));
+    if (!(employee_id > 0) || !validPayMonth(year, month) || !(amount > 0)) return res.status(400).json({ error: 'Choose the person, the month and the amount' });
+    const { rows: logged } = await q('SELECT * FROM monthly_payments WHERE employee_id = ? AND payment_year = ? AND payment_month = ? ORDER BY id', [employee_id, year, month]);
+    const total = round2(logged.reduce((a, p) => a + (parseFloat(p.amount) || 0), 0));
+    if (!logged.length || amount > total + 0.005) return res.status(409).json({ error: 'The payments for that month have changed. Reload and try again.' });
+    let excess = amount;
+    for (const p of [...logged].reverse()) {
+      if (excess <= 0.005) break;
+      const had = round2(parseFloat(p.amount));
+      if (had <= excess + 0.005) {
+        await q('DELETE FROM monthly_payments WHERE id = ?', [p.id]);
+        await logPayment(req, 'removed', { id: p.id, employee_id, payment_year: year, payment_month: month, amount: had, notes: 'Recorded as a bonus instead' });
+        excess = round2(excess - had);
+      } else {
+        await q('UPDATE monthly_payments SET amount = ? WHERE id = ?', [round2(had - excess), p.id]);
+        await logPayment(req, 'changed', { id: p.id, employee_id, payment_year: year, payment_month: month, amount: round2(had - excess), notes: 'The extra was recorded as a bonus' },
+          { payment_year: year, payment_month: month, amount: had });
+        excess = 0;
+      }
+    }
+    const last = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    await q('INSERT INTO bonuses (employee_id, amount, bonus_date, reason, notes, created_by) VALUES (?, ?, ?, ?, ?, ?)',
+      [employee_id, amount, `${year}-${String(month).padStart(2, '0')}-${String(last).padStart(2, '0')}`, `Paid with ${MONTH_LONG[month - 1]} pay`, 'Moved from that month’s pay on the Salary page', req.admin.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.delete('/api/payments/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { rows } = await q('DELETE FROM monthly_payments WHERE id = ? RETURNING *', [parseInt(req.params.id, 10) || 0]);
@@ -1647,6 +1689,7 @@ app.post('/api/pay-skips', requireAuth, requireAdmin, async (req, res) => {
 
 // Months set aside to pay later in an earlier year that still have no payment. The Salary
 // page keeps them on its list until they are paid or marked nothing owed, however long ago.
+// Also the month from which unpaid months are chased at all (`since`).
 app.get('/api/pay-skips/later', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { rows } = await q(
@@ -1654,7 +1697,9 @@ app.get('/api/pay-skips/later', requireAuth, requireAdmin, async (req, res) => {
        WHERE s.kind = 'later' AND s.pay_year < ?
          AND NOT EXISTS (SELECT 1 FROM monthly_payments p WHERE p.employee_id = s.employee_id AND p.payment_year = s.pay_year AND p.payment_month = s.pay_month)
        GROUP BY s.pay_year ORDER BY s.pay_year DESC LIMIT 5`, [new Date().getFullYear()]);
-    res.json({ years: rows.map(r => Number(r.pay_year)), count: rows.reduce((a, r) => a + Number(r.months), 0) });
+    // ...and the month reminders start from (see database.js: app_marks), as 'YYYY-MM'
+    const { rows: mark } = await q(`SELECT to_char(at, 'YYYY-MM') AS since FROM app_marks WHERE name = 'salary_reminders_from'`).catch(() => ({ rows: [] }));
+    res.json({ years: rows.map(r => Number(r.pay_year)), count: rows.reduce((a, r) => a + Number(r.months), 0), since: mark[0] ? mark[0].since : null });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1739,10 +1784,26 @@ app.post('/api/payslips/file', requireAuth, requireAdmin, async (req, res) => {
 
     const slip = readPayslip(up.buf, up.name);
     if (slip.several) return res.status(400).json({ error: slip.problems[0] });
-    const figures = figuresToKeep(slip, year, month);
+    // Filed under one person with another's name plainly on it, the other person's pay is
+    // theirs to open. The page checks before it gets here; this is the second lock, opened
+    // only by the owner choosing the person by hand.
+    if (!req.body.confirmed_person && slip.name) {
+      const { rows: payroll } = await q(`SELECT id, name FROM employees WHERE employment_type = 'payroll'`);
+      const named = matchPerson(slip.name, payroll);
+      if (named.id && named.sure && Number(named.id) !== Number(emp.id)) {
+        return res.status(409).json({ check: 'name', error: `That payslip has ${payroll.find(p => p.id === named.id).name}\u2019s name on it, not ${emp.name}\u2019s. Choose who it is for again.` });
+      }
+    }
     const typed = req.body.amount === undefined || req.body.amount === null || req.body.amount === '' ? null : round2(parseFloat(req.body.amount));
     if (typed !== null && !(typed > 0)) return res.status(400).json({ error: 'Enter the amount paid' });
     const amount = typed !== null ? typed : (slip.payment > 0 ? slip.payment : null);
+    // An amount typed because the one read off the payslip was wrong or doubtful
+    // (`amount_is_payslip`) is the payslip's figure from here on, and nothing further is
+    // worked out from that payslip. (An amount typed in the pay box is only what was paid:
+    // less than the payslip says when a deduction was taken off.)
+    const figures = figuresToKeep(slip, year, month);
+    const corrected = !!req.body.amount_is_payslip && typed !== null && slip.payment !== null && Math.abs(typed - slip.payment) > 0.005;
+    if (figures && corrected) { figures.payment = typed; figures.adds_up = false; }
 
     const { rows: saved } = await q(
       `INSERT INTO employee_payslips (employee_id, pay_year, pay_month, file_name, file_data, file_size, uploaded_by, figures, payment_amount)
@@ -1750,7 +1811,7 @@ app.post('/api/payslips/file', requireAuth, requireAdmin, async (req, res) => {
        ON CONFLICT (employee_id, pay_year, pay_month) DO UPDATE SET file_name = EXCLUDED.file_name, file_data = EXCLUDED.file_data,
          file_size = EXCLUDED.file_size, uploaded_by = EXCLUDED.uploaded_by, figures = EXCLUDED.figures, payment_amount = EXCLUDED.payment_amount, created_at = NOW()
        RETURNING id, (xmax = 0) AS is_new`,
-      [emp.id, year, month, up.name, up.data, up.buf.length, adminName(req), figures ? JSON.stringify(figures) : null, slip.payment]);
+      [emp.id, year, month, up.name, up.data, up.buf.length, adminName(req), figures ? JSON.stringify(figures) : null, corrected ? typed : slip.payment]);
     // They see it in their own portal, as with a payslip uploaded from their profile
     if (saved[0].is_new) await q('INSERT INTO emp_notifications (employee_id, message, type) VALUES (?, ?, ?)',
       [emp.id, `Your payslip for ${MONTH_LONG[month - 1]} ${year} is now available in Payslips.`, 'info']);
@@ -1812,7 +1873,23 @@ app.post('/api/payslips/file', requireAuth, requireAdmin, async (req, res) => {
 
 // Everyone's pay for a year: target, what is left, payments, deductions, days off.
 // The Salary page and Wasteman both read this, so they always agree.
+// Payslips filed before the tracker could read them are read once, a few at a time, when
+// the Salary page asks for its figures: what is printed on each is kept beside the file,
+// so those months show what their payslip says. Nothing is logged or changed besides.
+async function readUnreadPayslips(limit = 8) {
+  const { rows } = await q(`SELECT id, pay_year, pay_month, file_name, file_data FROM employee_payslips WHERE figures IS NULL AND read_at IS NULL ORDER BY pay_year DESC, pay_month DESC LIMIT ${Math.max(1, Math.min(20, limit | 0))}`);
+  for (const r of rows) {
+    let figures = null, amount = null;
+    try {
+      const slip = readPayslip(Buffer.from(String(r.file_data || ''), 'base64'), r.file_name);
+      if (!slip.several) { figures = figuresToKeep(slip, r.pay_year, r.pay_month); amount = slip.payment; }
+    } catch (e) { /* stays unread, and is not tried again */ }
+    await q('UPDATE employee_payslips SET figures = ?, payment_amount = COALESCE(?, payment_amount), read_at = NOW() WHERE id = ?', [figures ? JSON.stringify(figures) : null, amount, r.id]);
+  }
+}
+
 async function salaryOverview(year) {
+  await readUnreadPayslips().catch(e => console.warn('reading payslips on file failed:', e.message));
   // Include terminated employees so their final summary still shows
   const [{ rows: employees }, onFile] = await Promise.all([q('SELECT * FROM employees ORDER BY active DESC, name'), payslipsAndSkips(year)]);
   return Promise.all(employees.map(emp => salaryOverviewRow(emp, year, onFile)));

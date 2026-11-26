@@ -232,11 +232,12 @@ function payrollYear({ months, payments, deductions = 0, lastYear = null, exact 
     const due = skip === 'none' ? 0 : fixed ? round2(fixed.due) : round2(m.due * rate);
     const source = fixed ? fixed.source : payslip !== null ? 'usual' : 'estimate';
     const onSlip = fixed && fixed.source === 'payslip';
-    const gap = paid ? round2(due - got) : 0;
-    // Less paid than the payslip says, by no more than that month's deductions (days off
-    // over the allowance, office deductions): the deduction was taken, nothing is short
-    const taken = onSlip && gap > 0.005 ? Math.min(gap, round2((deductionsByMonth && deductionsByMonth[m.month]) || 0)) : 0;
-    const short = !paid ? 0 : onSlip ? (gap - taken > 0.005 ? round2(gap - taken) : 0) : (atOldPay(m, got, rate) ? Math.max(0, gap) : 0);
+    const gap = paid ? round2(due - got) : 0, oldPay = paid && !onSlip && atOldPay(m, got, rate);
+    // Less paid than the payslip says (or than the new pay, after a rise), by no more than
+    // that month's deductions (days off over the allowance, office deductions, an agreed
+    // "nothing more owed"): the deduction was taken, and only what is beyond it is short
+    const taken = (onSlip || oldPay) && gap > 0.005 ? Math.min(gap, round2((deductionsByMonth && deductionsByMonth[m.month]) || 0)) : 0;
+    const short = (onSlip || oldPay) && gap - taken > 0.005 ? round2(gap - taken) : 0;
     const over = paid && onSlip && got > due + 0.005 ? round2(got - due) : 0;
     // (a month whose own payslip pays nothing is settled: there is nothing to pay or to chase)
     const status = skip === 'none' || (onSlip && !paid && due === 0) ? 'none' : short ? 'short' : paid ? 'paid' : skip === 'later' ? 'later' : 'due';

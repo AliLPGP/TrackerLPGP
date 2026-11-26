@@ -572,6 +572,11 @@ async function runMigrations() {
   await sql(`ALTER TABLE employee_payslips ADD COLUMN IF NOT EXISTS figures TEXT`);
   await sql(`ALTER TABLE employee_payslips ADD COLUMN IF NOT EXISTS payment_amount NUMERIC(12,2)`);
 
+  // When a payslip was read (or reading it was tried). Payslips filed before the tracker
+  // could read them have neither figures nor this, and are read the next time the Salary
+  // page is opened.
+  await sql(`ALTER TABLE employee_payslips ADD COLUMN IF NOT EXISTS read_at TIMESTAMPTZ`);
+
   // A month set aside on the Salary page: 'later' (still owed, pay it later) or 'none'
   // (nothing is owed for that month). Kept here, not in the browser, so it is the same on
   // every device and can be listed and undone.
@@ -598,6 +603,12 @@ async function runMigrations() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  // When the Salary page began keeping watch. Months from before it are history, not
+  // reminders: the page it replaced only ever asked about the month in hand, so nothing
+  // older is dug up the first time the new one opens. Stamped once, the first time this runs.
+  await sql(`CREATE TABLE IF NOT EXISTS app_marks (name TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+  await sql(`INSERT INTO app_marks (name) VALUES ('salary_reminders_from') ON CONFLICT (name) DO NOTHING`);
 
   // Every payment added, changed or removed, so "was this always that amount?" has an answer
   await sql(`
