@@ -8376,8 +8376,8 @@ body:has(.modal-overlay.open) .wm-launcher, body:has(.modal-overlay.active) .wm-
 
 /* The list beside a summary column; one column when there is no room for two */
 .pay-layout { display: grid; grid-template-columns: minmax(0, 1fr) 372px; gap: 16px; align-items: start; }
-.pay-main { min-width: 0; padding-top: 4px !important; }
-.pay-main > .pay-group:first-child { margin-top: 12px; }
+.pay-main { display: flex; flex-direction: column; gap: 14px; min-width: 0; container: paymain / inline-size; }
+.pay-main > .card { margin-bottom: 0; }
 .pay-side { display: flex; flex-direction: column; gap: 14px; position: sticky; top: 12px; min-width: 0; }
 .pay-layout.is-single { grid-template-columns: minmax(0, 1fr); }
 .pay-layout.is-single .pay-side { position: static; order: -1; }
@@ -8422,18 +8422,90 @@ div.pay-kpi:hover { border-color: var(--border); box-shadow: var(--shadow-card);
 .pay-nudge--plain { margin: 0; }
 
 :root .pay-attention { padding: 6px 16px 8px; }
-.pay-attention h3, .pay-group-head h3 { margin: 0; font: 600 15px/1.3 var(--font-sans); color: var(--text); }
-.pay-attention h3 { padding: 12px 0 8px; }
-.pay-att, .pay-row { display: grid; grid-template-columns: minmax(0, 1fr) 132px 150px 268px; align-items: center; gap: 12px; padding: 8px 8px; border-top: 1px solid var(--line, var(--border)); }
-.pay-row { border-radius: 8px; }
-.pay-row:hover { background: var(--surface-2); }
-.pay-att { grid-template-columns: minmax(0, 1fr) auto; row-gap: 6px; position: relative; padding: 10px 0 10px 12px; }
+.pay-attention h3 { margin: 0; padding: 12px 0 8px; font: 600 15px/1.3 var(--font-sans); color: var(--text); }
+.pay-att { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 12px; position: relative; padding: 10px 0 10px 12px; border-top: 1px solid var(--line, var(--border)); }
 .pay-att .pay-btns { grid-column: 1 / -1; justify-content: flex-start; }
 .pay-att::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 3px; background: var(--negative); }
 .pay-att.is-later::before { background: var(--warning); }
-.pay-group { margin-top: 20px; }
-.pay-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 8px; }
-.pay-group-head h3 span { margin-left: 6px; font: 400 12.5px/1.3 var(--font-sans); color: var(--muted); }
+
+/* The list, a section for each kind of person. Every section has a colour, an icon and a
+   heading of its own, so Payroll, Self-employed and the people paid in another currency
+   are told apart at a glance. */
+.pay-group { --grp: var(--accent); --grp-ink: var(--accent); --grp-soft: rgb(var(--accent-rgb) / .09); border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow-card); overflow: hidden; }
+.pay-group.is-self { --grp: #6d4de6; --grp-ink: #5a3bd1; --grp-soft: rgb(109 77 230 / .09); }
+.pay-group.is-abroad { --grp: #0b8a96; --grp-ink: #08737e; --grp-soft: rgb(11 138 150 / .10); }
+.pay-group.is-left { --grp: #64748b; --grp-ink: var(--muted); --grp-soft: rgb(100 116 139 / .10); }
+[data-theme="dark"] .pay-group.is-self { --grp: #7f63f4; --grp-ink: #b3a2ff; --grp-soft: rgb(127 99 244 / .16); }
+[data-theme="dark"] .pay-group.is-abroad { --grp: #0f9aa8; --grp-ink: #5fd0db; --grp-soft: rgb(15 154 168 / .16); }
+[data-theme="dark"] .pay-group.is-left { --grp: #5b6472; --grp-soft: rgb(120 130 145 / .12); }
+[data-theme="dark"] .pay-group { --grp-soft: rgb(var(--accent-rgb) / .14); }
+.pay-group-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 14px; padding: 14px 18px 14px 14px; border-left: 4px solid var(--grp); border-bottom: 1px solid var(--line, var(--border)); background: linear-gradient(90deg, var(--grp-soft), transparent 72%); }
+.pay-group-icon { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: var(--grp); color: #fff; flex-shrink: 0; }
+.pay-group-icon svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.pay-group-icon b { font: 700 19px/1 var(--font-sans); }
+.pay-group-title { min-width: 0; }
+.pay-group-title h3 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0; font: 700 18px/1.2 var(--font-sans); letter-spacing: -0.015em; color: var(--text); }
+.pay-group-tag { padding: 2px 9px; border-radius: 999px; border: 1px solid var(--grp); color: var(--grp-ink); font: 700 12px/1.4 var(--font-sans); letter-spacing: 0; }
+.pay-group-title p { margin: 3px 0 0; font: 400 12.5px/1.35 var(--font-sans); color: var(--muted); }
+.pay-group-stats { display: flex; align-items: center; gap: 18px; }
+.pay-group-sum { text-align: right; }
+.pay-group-sum strong { display: block; font: 700 18px/1.2 var(--font-sans); letter-spacing: -0.01em; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pay-group-sum strong.is-done { color: var(--positive); }
+.pay-group-sum span { display: block; font: 400 12.5px/1.3 var(--font-sans); color: var(--muted); white-space: nowrap; }
+.pay-group-prog { min-width: 132px; }
+.pay-group-prog .pay-bar { margin-top: 0; background: color-mix(in srgb, var(--text) 11%, transparent); }
+.pay-group-prog small { display: block; margin-top: 5px; font: 400 12px/1.3 var(--font-sans); color: var(--muted); white-space: nowrap; }
+.pay-group-act { white-space: nowrap; }
+.pay-rows { padding: 2px 12px 6px; }
+
+/* A person's row. Narrow, the bar and the buttons sit under the name; with room (see the
+   container rule below) everything is on one line. */
+.pay-row { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; grid-template-areas: "av who amt" ". prog prog" ". btns btns"; align-items: center; gap: 8px 12px; padding: 12px 6px; border-top: 1px solid var(--line, var(--border)); }
+.pay-row:first-child, .pay-yrow:first-child { border-top: 0; }
+.pay-row:hover { background: var(--surface-2); border-radius: 10px; }
+.pay-av { grid-area: av; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; background: var(--grp-soft); color: var(--grp-ink); font: 700 12.5px/1 var(--font-sans); letter-spacing: .01em; }
+.pay-row > .pay-who { grid-area: who; }
+.pay-row > .pay-prog { grid-area: prog; }
+.pay-row > .pay-amt { grid-area: amt; }
+.pay-row > .pay-btns { grid-area: btns; justify-content: flex-start; }
+.pay-row > .pay-btns:empty { display: none; }
+.pay-amt { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; min-width: 0; }
+.pay-amt .pay-fig { font-size: 16px; }
+.pay-prog { min-width: 0; }
+.pay-prog-note { display: block; font: 400 12.5px/1.3 var(--font-sans); color: var(--muted); }
+.pay-row.is-paid .pay-av, .pay-row.is-none .pay-av { opacity: .75; }
+/* With some room: the figure and the buttons beside the name, the bar underneath */
+@container paymain (min-width: 600px) {
+  .pay-row { grid-template-columns: 36px minmax(0, 1fr) 136px 200px; grid-template-areas: "av who amt btns" ". prog prog prog"; gap: 8px 14px; }
+  .pay-row > .pay-btns { justify-content: flex-end; }
+  .pay-row > .pay-btns:empty { display: flex; }
+}
+/* With plenty: everything on one line */
+@container paymain (min-width: 860px) {
+  .pay-row { grid-template-columns: 36px minmax(0, 1.05fr) minmax(200px, 1fr) 136px 200px; grid-template-areas: "av who prog amt btns"; gap: 14px; padding: 10px 6px; }
+  .pay-prog-note { text-align: right; }
+}
+
+/* How far through the year's pay someone is: paid (green), the part of it paid ahead
+   (striped), what is owed now (hatched amber, red once a month has gone by), and the rest
+   of the year still to come (the empty track) */
+.pay-meter { min-width: 0; }
+.pay-meter-track { display: flex; height: 8px; border-radius: 999px; background: color-mix(in srgb, var(--text) 11%, transparent); overflow: hidden; }
+.pay-meter-track i { display: block; height: 100%; flex-shrink: 0; }
+.pay-meter-track i.is-paid, .pay-mini i.is-paid, .pay-key-bar.is-paid { background: var(--positive); }
+.pay-meter-track i.is-ahead, .pay-mini i.is-ahead, .pay-key-bar.is-ahead { background: repeating-linear-gradient(135deg, var(--positive) 0 4px, color-mix(in srgb, var(--positive) 45%, transparent) 4px 8px); }
+.pay-meter-track i.is-owed, .pay-mini i.is-owed, .pay-key-bar.is-owed { background: repeating-linear-gradient(135deg, var(--warning) 0 3px, color-mix(in srgb, var(--warning) 28%, transparent) 3px 6px); }
+.pay-meter-track i.is-owed.is-late, .pay-mini i.is-owed.is-late, .pay-key-bar.is-owed.is-late { background: repeating-linear-gradient(135deg, var(--negative) 0 3px, color-mix(in srgb, var(--negative) 28%, transparent) 3px 6px); }
+.pay-meter-text { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 6px; margin-top: 5px; font: 400 12px/1.3 var(--font-sans); color: var(--muted); white-space: nowrap; }
+.pay-meter-text b { font: 700 12.5px/1.3 var(--font-sans); color: var(--text); font-variant-numeric: tabular-nums; }
+.pay-meter.is-done .pay-meter-text b { color: var(--positive); }
+.pay-meter-flag { margin-left: auto; padding-left: 6px; font-weight: 600; }
+.pay-meter-flag.is-ahead { color: var(--positive); }
+.pay-meter-flag.is-late { color: var(--negative); }
+.pay-meter-flag.is-over { color: var(--warning); }
+.pay-key-bar { display: inline-block; width: 22px; height: 8px; border-radius: 999px; }
+.pay-feet { padding: 0 4px; }
+.pay-feet .sp-foot:first-child { margin-top: 0; }
 .pay-who { min-width: 0; }
 .pay-who .emp-link { font: 600 14px/1.3 var(--font-sans); text-align: left; overflow-wrap: anywhere; }
 .pay-who small { display: block; margin-top: 1px; font: 400 12.5px/1.4 var(--font-sans); color: var(--muted); }
@@ -8445,15 +8517,24 @@ div.pay-kpi:hover { border-color: var(--border); box-shadow: var(--shadow-card);
 .pay-copy:hover { background: var(--accent-soft); color: var(--accent); }
 .pay-attention .co-refs-add { padding: 10px 0 6px; }
 .pay-row.is-paid .pay-fig, .pay-row.is-none .pay-fig { font-weight: 500; color: var(--muted); }
-.pay-state { display: flex; align-items: center; gap: 8px; justify-content: flex-start; }
+.pay-state { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
 .pay-slip { font: 500 12.5px/1.3 var(--font-sans); color: var(--accent); text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
 .pay-btns { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
-.pay-row .pay-fig { justify-self: end; }
 .pay-att .pay-btns { min-width: 0; }
 
 /* Year view */
-.pay-yrow { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(250px, 1.5fr) 118px 118px; align-items: center; gap: 14px; padding: 9px 0; border-top: 1px solid var(--line, var(--border)); cursor: pointer; }
-.pay-yrow:hover { background: var(--surface-2); }
+.pay-yrow { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; grid-template-areas: "av who num" ". strip strip" ". prog prog"; align-items: center; gap: 8px 12px; padding: 12px 6px; border-top: 1px solid var(--line, var(--border)); cursor: pointer; }
+.pay-yrow:hover { background: var(--surface-2); border-radius: 10px; }
+.pay-yrow > .pay-who { grid-area: who; }
+.pay-yrow > .pay-strip { grid-area: strip; }
+.pay-yrow > .pay-prog { grid-area: prog; }
+.pay-yrow > .pay-ynum { grid-area: num; }
+@container paymain (min-width: 600px) {
+  .pay-yrow { grid-template-columns: 36px minmax(0, 1fr) minmax(250px, 1.2fr) 122px; grid-template-areas: "av who strip num" ". prog prog prog"; gap: 8px 14px; }
+}
+@container paymain (min-width: 860px) {
+  .pay-yrow { grid-template-columns: 36px minmax(0, 1fr) minmax(250px, 1.35fr) minmax(170px, 1fr) 122px; grid-template-areas: "av who strip prog num"; gap: 14px; padding: 10px 6px; }
+}
 .pay-dot { padding: 0; border: 0; background: none; font: inherit; cursor: pointer; }
 .pay-dot.sc-mo.is-due { border: 1px dashed var(--border-bright, var(--border)); }
 .pay-dot.sc-mo.is-late { border: 1px solid var(--warning); }
@@ -8462,7 +8543,9 @@ div.pay-kpi:hover { border-color: var(--border); box-shadow: var(--shadow-card);
 .pay-ynum small { display: block; font: 400 11px/1.2 var(--font-sans); color: var(--dim); }
 .pay-ynum strong { font: 600 13.5px/1.3 var(--font-sans); color: var(--text); font-variant-numeric: tabular-nums; }
 .pay-ynum strong.is-none, .pay-tile strong.is-none { color: var(--muted); font-weight: 500; }
-.pay-key { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line, var(--border)); font: 400 12.5px/1.3 var(--font-sans); color: var(--muted); }
+.pay-ynum strong.is-ahead, .pay-tile strong.is-ahead { color: var(--positive); }
+.pay-ynum strong.is-over, .pay-tile strong.is-over { color: var(--warning); }
+.pay-key { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; padding: 2px 4px 0; font: 400 12.5px/1.3 var(--font-sans); color: var(--muted); }
 .pay-key span { display: inline-flex; align-items: center; gap: 6px; }
 .pay-key i.sc-mo { width: 16px; height: 16px; border-radius: 4px; }
 .pay-key .co-link { margin-top: 4px; font-size: 12.5px; }
@@ -8480,7 +8563,7 @@ div.pay-kpi:hover { border-color: var(--border); box-shadow: var(--shadow-card);
 .pay-choice input { margin-top: 3px; flex-shrink: 0; }
 .pay-choice b { display: block; margin-bottom: 3px; font: 600 14.5px/1.3 var(--font-sans); color: var(--text); }
 .pay-choice span { font: 400 12.5px/1.45 var(--font-sans); color: var(--muted); }
-.pay-note { margin-top: 6px; }
+.pay-note { margin-top: 14px; }
 .pay-foot { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; padding-top: 4px; padding-bottom: 18px; }
 .pay-sum { margin-right: auto; font: 400 13px/1.3 var(--font-sans); color: var(--muted); }
 .pay-sum b { color: var(--text); }
@@ -8518,13 +8601,20 @@ div.pay-kpi:hover { border-color: var(--border); box-shadow: var(--shadow-card);
 .pay-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
 .pay-tile { padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line, var(--border)); background: var(--surface-2); min-width: 0; }
 .pay-tile small { display: block; font: 500 12.5px/1.3 var(--font-sans); color: var(--muted); }
-.pay-tile strong { display: block; margin-top: 6px; font: 700 19px/1.2 var(--font-sans); color: var(--text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.pay-tile strong { display: block; margin-top: 6px; font: 700 19px/1.2 var(--font-sans); color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pay-tile span { display: block; margin-top: 2px; font: 400 12px/1.35 var(--font-sans); color: var(--muted); }
 .pay-warn { margin: 0 0 14px; padding: 10px 14px; border-radius: 10px; background: var(--warning-soft); font: 400 13px/1.45 var(--font-sans); color: var(--text); }
 .pay-months { border: 1px solid var(--line, var(--border)); border-radius: 12px; margin-bottom: 14px; }
 .pay-month { padding: 10px 14px; border-bottom: 1px solid var(--line, var(--border)); }
 .pay-month:last-child { border-bottom: 0; }
-.pay-month-top { display: grid; grid-template-columns: minmax(0, 1fr) 124px 118px 104px 14px; align-items: center; gap: 10px; }
+.pay-month-top { display: grid; grid-template-columns: minmax(0, 1fr) 72px 118px 124px 104px 14px; align-items: center; gap: 10px; }
+.pay-mini { display: flex; height: 6px; border-radius: 999px; background: color-mix(in srgb, var(--text) 11%, transparent); overflow: hidden; }
+.pay-mini i { display: block; height: 100%; flex-shrink: 0; }
+.pay-mini.is-off { background: none; }
+.pay-months-key { margin: -6px 0 14px; padding: 0 2px; }
+.pay-yearbar { margin-bottom: 14px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line, var(--border)); }
+.pay-yearbar .pay-meter-track { height: 10px; }
+.pay-yearbar p { margin: 8px 0 0; font: 400 12.5px/1.45 var(--font-sans); color: var(--muted); }
 .pay-month-top.can-open { cursor: pointer; }
 .pay-month-top b { font: 600 14px/1.3 var(--font-sans); color: var(--text); }
 .pay-month-top .co-chip, .pay-row .co-chip, .pay-att .co-chip, .pay-slip-item .co-chip { justify-self: start; }
@@ -8580,25 +8670,34 @@ div.pay-kpi:hover { border-color: var(--border); box-shadow: var(--shadow-card);
   .pay-acts { width: 100%; }
   .pay-acts .btn { flex: 1; text-align: center; justify-content: center; }
   .pay-hero { font-size: 28px; }
-  .pay-att, .pay-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 8px; }
-  /* (the buttons sit in the column that can give, so three of them wrap instead of squeezing the name) */
-  .pay-row .pay-btns { grid-column: 1; grid-row: 2; justify-content: flex-start; min-width: 0; }
-  .pay-row .pay-state { grid-column: 2; grid-row: 2; justify-content: flex-end; flex-wrap: wrap; }
   .pay-att .pay-btns { grid-column: 1 / -1; justify-content: flex-start; min-width: 0; }
-  .pay-row .pay-btns:empty { display: none; }
-  .pay-yrow { grid-template-columns: minmax(0, 1fr) auto auto; row-gap: 6px; }
-  .pay-yrow .pay-strip { grid-column: 1 / -1; grid-row: 2; }
+  /* A section's heading: what it is, then how it stands on a line of its own */
+  .pay-group-head { grid-template-columns: auto minmax(0, 1fr); gap: 10px 12px; padding: 12px 14px 12px 12px; }
+  .pay-group-stats { grid-column: 1 / -1; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .pay-group-sum { text-align: left; }
+  .pay-group-prog { min-width: 0; flex: 0 1 46%; }
+  .pay-group-prog small { white-space: normal; }
+  .pay-group-act { grid-column: 1 / -1; justify-content: center; }
+  .pay-group-icon { width: 36px; height: 36px; border-radius: 10px; }
+  .pay-group-title h3 { font-size: 17px; }
+  .pay-rows { padding: 2px 8px 6px; }
+  .pay-row, .pay-yrow { grid-template-columns: 32px minmax(0, 1fr) auto; gap: 8px 10px; padding: 12px 4px; }
+  .pay-av { width: 32px; height: 32px; font-size: 11.5px; }
+  /* (on a phone the bar and the buttons start under the picture, to use the whole width) */
+  .pay-row { grid-template-areas: "av who amt" "prog prog prog" "btns btns btns"; }
+  .pay-yrow { grid-template-areas: "av who num" "strip strip strip" "prog prog prog"; }
   .pay-ynum { min-width: 84px; }
   .pay-key { align-items: flex-start; }
-  .pay-tiles { gap: 6px; }
-  .pay-tile { padding: 9px 10px; }
-  .pay-tile small { font-size: 9.5px; letter-spacing: .3px; }
-  .pay-tile strong { font-size: 15px; }
-  .pay-tile span { font-size: 11px; }
-  .pay-month-top { grid-template-columns: minmax(0, 1fr) auto 14px; row-gap: 6px; }
-  .pay-month-top .co-chip { grid-column: 1; grid-row: 2; }
-  .pay-month-top .pay-btns { grid-column: 2 / -1; grid-row: 2; justify-content: flex-end; }
-  .pay-month-top .pay-chev { grid-column: 3; grid-row: 1; }
+  .pay-tiles { grid-template-columns: 1fr; gap: 6px; }
+  .pay-tile { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 2px 12px; padding: 10px 12px; }
+  .pay-tile small { font-size: 12.5px; }
+  .pay-tile strong { margin-top: 0; font-size: 17px; text-align: right; }
+  .pay-tile span { grid-column: 1 / -1; margin-top: 0; font-size: 12px; }
+  .pay-month-top { grid-template-columns: minmax(0, 1fr) 56px 104px 14px; row-gap: 6px; }
+  .pay-month-top .pay-fig { grid-column: 3; grid-row: 1; }
+  .pay-month-top .co-chip { grid-column: 1 / 3; grid-row: 2; }
+  .pay-month-top .pay-btns { grid-column: 3 / -1; grid-row: 2; justify-content: flex-end; }
+  .pay-month-top .pay-chev { grid-column: 4; grid-row: 1; }
   .pay-slip-item { grid-template-columns: minmax(0, 1fr) auto 28px; }
   .pay-slip-item .pay-fig { grid-column: 1; grid-row: 2; text-align: left; }
   .pay-slip-fields .form-control { width: 100%; }

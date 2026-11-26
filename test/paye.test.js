@@ -4,7 +4,7 @@
 // and Scotland), HMRC's worked examples, and made-up payslips.
 const assert = require('assert');
 const P = require('../paye');
-const { trackerGross, payslipDues, contractorMonths } = require('../pay-months');
+const { trackerGross, payslipDues, contractorMonths, contractorYear } = require('../pay-months');
 
 const near = (a, b, what) => assert.ok(Math.abs(a - b) < 0.0051, `${what}: got ${a}, expected ${b}`);
 const round2 = v => Math.round(v * 100) / 100;
@@ -362,8 +362,10 @@ const slip = (over = {}) => ({
   // A deduction taken off a payment does not leave the month looking unpaid
   const off = contractorMonths({ months: months.slice(0, 2), payments: [pay(1, 7800)], deductions: { 1: 200 } });
   assert.deepStrictEqual([off[0].paid, off[0].status, off[0].deduction, off[1].left], [true, 'paid', 200, 8000]);
-  // (an unpaid month's figure is before its deduction, which the page offers to take off)
-  assert.strictEqual(contractorMonths({ months: months.slice(0, 2), payments: [], deductions: { 1: 200 } })[0].left, 8000);
+  assert.strictEqual(off[0].taken, 200);
+  // An unpaid month's figure is what to send: its pay less its deduction
+  const unpaidOff = contractorMonths({ months: months.slice(0, 2), payments: [], deductions: { 1: 200 } });
+  assert.deepStrictEqual([unpaidOff[0].left, unpaidOff[0].taken, unpaidOff[0].status, unpaidOff[1].left], [7800, 200, 'due', 8000]);
   assert.deepStrictEqual(contractorMonths({ months: [], payments: [] }), []);
 
   // Paid in part and never made up: the month is short by what is still owing, and says so
@@ -377,7 +379,7 @@ const slip = (over = {}) => ({
   // A later payment that goes part of the way towards a missed month leaves the rest owing on it
   const partWay = contractorMonths({ months, payments: [pay(1, 8000), pay(3, 12000)] });
   assert.deepStrictEqual([partWay[1].status, partWay[1].left, partWay[2].status], ['due', 4000, 'paid']);
-  // Paid ahead, then a smaller payment: nothing is short, and the smaller one counts towards the next month
+  // Paid ahead, then a smaller payment: nothing is short (the advance makes up the month), and what is left of the advance goes to the next
   const aheadThenLess = contractorMonths({ months, payments: [pay(1, 16000), pay(2, 3000)] });
   assert.deepStrictEqual([aheadThenLess[1].status, aheadThenLess[1].short, aheadThenLess[2].status, aheadThenLess[2].left], ['paid', 0, 'due', 5000]);
   // What is owing across the months is never more than the year is behind by
@@ -389,20 +391,175 @@ const slip = (over = {}) => ({
   const leaver = contractorMonths({ months: months.slice(0, 3), payments: [pay(1, 8000), pay(2, 8000), pay(4, 8000)] });
   assert.deepStrictEqual([leaver.map(r => r.status), leaver[2].covered], [['paid', 'paid', 'paid'], true]);
   // Pay logged by hand is seldom to the penny: a month within half a percent of its pay is
-  // settled (a bank fee, a rounded figure), and that small an overpayment is not carried on
+  // settled (a bank fee, a rounded figure), and the difference goes on to the next month.
+  // Nothing is dropped: 23,920 paid against 24,000 leaves March 80 short.
   const fee = contractorMonths({ months, payments: [pay(1, 7990), pay(2, 8030), pay(3, 7900)] });
   assert.deepStrictEqual(fee.map(r => r.status).slice(0, 4), ['paid', 'paid', 'short', 'due']);
-  assert.deepStrictEqual([fee[1].ahead, fee[2].short, fee[3].left], [0, 100, 8000]);
+  assert.deepStrictEqual([fee[0].passed, fee[1].brought, fee[1].brought_from, fee[1].ahead, fee[2].short, fee[3].left], [10, 10, [1], 20, 80, 8000]);
   // Pay in advance says which month it was paid in, on the months it covers and on its own row
   const named = contractorMonths({ months, payments: [pay(2, 20000)] });
-  assert.deepStrictEqual([named[0].status, named[1].ahead, named[2].from, named[2].covered, named[3].from, named[3].left], ['paid', 4000, 2, false, null, 8000]);
+  assert.deepStrictEqual([named[0].status, named[1].ahead, named[2].from, named[2].covered, named[3].from, named[3].left], ['paid', 4000, [2], false, [], 8000]);
+  assert.deepStrictEqual([named[0].made_up, named[0].made_up_in, named[2].advance], [8000, [2], 4000], 'January was made up in February');
   assert.deepStrictEqual([named[2].status, named[2].left], ['due', 4000], 'March: half already paid in February');
   const whole = contractorMonths({ months, payments: [pay(1, 24000)] });
-  assert.deepStrictEqual([whole[0].ahead, whole[1].covered, whole[1].from, whole[2].covered, whole[3].status], [16000, true, 1, true, 'due']);
+  assert.deepStrictEqual([whole[0].ahead, whole[1].covered, whole[1].from, whole[2].covered, whole[3].status], [16000, true, [1], true, 'due']);
 
   // Paid before they started (an advance on January, logged in last... a month they were not working in)
   const early = contractorMonths({ months: months.slice(2), payments: [pay(2, 8000)] });
   assert.deepStrictEqual([early[0].status, early[0].covered, early[1].status], ['paid', true, 'due']);
+
+  // A month's own payment counts for that month first, and the advance only makes up the rest
+  const ownFirst = contractorMonths({ months, payments: [pay(1, 16000), pay(2, 8000)] });
+  assert.deepStrictEqual([ownFirst[1].advance, ownFirst[1].from, ownFirst[2].covered, ownFirst[2].from, ownFirst[3].left], [0, [], true, [1], 8000]);
+}
+
+// ── Self-employed: a deduction counts as money paid does, and the months agree with the year ──
+// What must hold for any year, whatever was paid and deducted
+function checkAccount(y, say) {
+  const p2 = v => Math.round(v * 100) / 100;
+  assert.strictEqual(y.left, p2(y.months.reduce((a, r) => a + r.left, 0)), say);
+  assert.strictEqual(y.remaining, p2(y.left - y.credit), say);
+  assert.ok(!(y.left > 0 && y.credit > 0), 'nothing is carried past a month still owing: ' + say);
+  for (const r of y.months) {
+    // Every month's pay (and any small shortfall asked for with it) is accounted for: its own
+    // payment, its deduction, what was carried forward, what came later, what went on to the
+    // next month, and what is left
+    const asked = p2(r.due + r.brought), own = Math.min(r.logged, asked);
+    assert.ok(r.left >= 0 && r.left <= asked + 0.005 && r.taken <= r.deduction + 0.005 && r.advance >= 0 && r.made_up >= 0 && r.passed >= 0 && r.back >= 0 && r.ahead >= 0, say);
+    assert.ok(Math.abs(own + r.taken + r.advance + r.made_up + r.passed + r.left - asked) < 0.006, `month ${r.month} does not add up: ` + say);
+    assert.ok(r.passed <= Math.max(1, r.due * 0.005) + 0.005, say);
+    assert.strictEqual(r.status === 'short', r.logged > 0 && r.left > 0, say);
+    assert.strictEqual(r.short, r.status === 'short' ? r.left : 0, say);
+    if (r.status === 'none') assert.deepStrictEqual([r.left, r.paid], [0, false], say);
+    if (r.covered) assert.ok(!(r.logged > 0) && r.left === 0, say);
+  }
+}
+{
+  const year = (due = 4000) => Array.from({ length: 12 }, (_, i) => ({ month: i + 1, due, whole: true }));
+  const pays = amounts => amounts.map((amount, i) => ({ payment_month: i + 1, amount })).filter(p => p.amount > 0);
+  // Paid unevenly all year, with a deduction of three and a half months' pay in July (an
+  // advance being paid back). 48,000 for the year, less 14,000, less the 33,000 paid: only
+  // 1,000 is left, and it is December's. No month in between is short.
+  const uneven = contractorYear({ months: year(), payments: pays([4000, 3350, 4500, 1200, 2000, 9000, 650, 1700, 4000, 1550, 1050]), deductions: { 7: 14000 } });
+  assert.deepStrictEqual(uneven.months.map(r => r.status), [...Array(11).fill('paid'), 'due']);
+  assert.deepStrictEqual(uneven.months.map(r => r.short), Array(12).fill(0));
+  assert.deepStrictEqual([uneven.months[11].left, uneven.left, uneven.credit, uneven.remaining], [1000, 1000, 0, 1000]);
+  // Where the account stood month by month: behind until June caught up, ahead from July
+  assert.deepStrictEqual(uneven.months.map(r => r.balance), [0, -650, -150, -2950, -4950, 50, 10700, 8400, 8400, 5950, 3000, -1000]);
+  // February's shortfall was made up in March and June; June's extra went to February, April and May
+  assert.deepStrictEqual([uneven.months[1].made_up, uneven.months[1].made_up_in, uneven.months[3].made_up_in, uneven.months[5].ahead], [650, [3, 6], [6], 50]);
+  assert.deepStrictEqual([uneven.months[2].back, uneven.months[2].back_to, uneven.months[5].back, uneven.months[5].back_to], [500, [2], 4950, [2, 4, 5]]);
+  // July: its 650 and 3,350 of the deduction settle it, and the rest of the deduction is carried forward
+  assert.deepStrictEqual([uneven.months[6].taken, uneven.months[6].ahead, uneven.months[6].deduction], [3350, 10650, 14000]);
+  // October: 1,550 paid, the other 2,450 from what July carried forward
+  assert.deepStrictEqual([uneven.months[9].advance, uneven.months[9].from, uneven.months[11].advance, uneven.months[11].from], [2450, [7], 3000, [7]]);
+
+  // A deduction bigger than its month and nothing paid since: it covers the months after it
+  const big = contractorYear({ months: year().slice(0, 6), payments: pays([4000]), deductions: { 2: 10000 } });
+  assert.deepStrictEqual(big.months.map(r => [r.status, r.left, r.covered]), [['paid', 0, false], ['paid', 0, true], ['paid', 0, true], ['due', 2000, false], ['due', 4000, false], ['due', 4000, false]]);
+  assert.deepStrictEqual([big.months[1].taken, big.months[1].ahead, big.months[2].from, big.remaining], [4000, 6000, [2], 10000]);
+  // ...and goes to an older month still owing before it is carried forward
+  const older = contractorYear({ months: year().slice(0, 4), payments: pays([1000, 4000]), deductions: { 2: 5000 } });
+  assert.deepStrictEqual([older.months[0].status, older.months[0].made_up, older.months[0].made_up_in, older.months[1].ahead, older.months[2].left, older.remaining], ['paid', 3000, [2], 2000, 2000, 6000]);
+  // A small deduction left over is a figure put on record, not a rounding difference: it is carried on
+  const small = contractorYear({ months: year().slice(0, 2), payments: pays([4000]), deductions: { 1: 10 } });
+  assert.deepStrictEqual([small.months[0].ahead, small.months[1].left, small.remaining], [10, 3990, 3990]);
+  // ...and so is a few pounds of money over: nothing is dropped on the way
+  assert.deepStrictEqual(contractorYear({ months: year().slice(0, 2), payments: pays([4010]) }).months[1].left, 3990);
+
+  // Paid a rounded-up figure every month and squared up in December: level, and nothing short
+  const roundUp = contractorYear({ months: year(2083.33), payments: pays([...Array(11).fill(2090), 2009.96]) });
+  assert.deepStrictEqual([roundUp.remaining, roundUp.credit, roundUp.rounding, roundUp.months.map(r => r.status).join()], [0, 0, 0, Array(12).fill('paid').join()]);
+  assert.deepStrictEqual(contractorYear({ months: year(1000), payments: pays([...Array(11).fill(1005), 945]) }).remaining, 0);
+  // ...and before December is paid, it asks for what squares the year
+  assert.strictEqual(contractorYear({ months: year(2083.33), payments: pays(Array(11).fill(2090)) }).months[11].left, 2009.96);
+  // A little over every month adds up, and shows: 14.99 a month on 3,000 is 179.88 over the year
+  const steadyOver = contractorYear({ months: year(3000), payments: pays(Array(12).fill(3014.99)) });
+  assert.deepStrictEqual([steadyOver.remaining, steadyOver.credit, steadyOver.months[11].balance], [-179.88, 179.88, 179.88]);
+  // A rounded-down figure every month, topped up in December: level too
+  const roundDown = contractorYear({ months: year(2083.33), payments: pays([...Array(11).fill(2080), 2119.96]) });
+  assert.deepStrictEqual([roundDown.remaining, roundDown.rounding, roundDown.months.every(r => r.status === 'paid')], [0, 0, true]);
+  // A little under every month is not written off: once it comes to more than half a percent
+  // of a month it is owed, on the month it reached that (12 short a month on 2,500: every other month)
+  const steadyUnder = contractorYear({ months: year(2500), payments: pays(Array(12).fill(2488)) });
+  assert.deepStrictEqual([steadyUnder.remaining, steadyUnder.rounding, steadyUnder.months.map(r => r.short).join()], [144, 0, [0, 24, 0, 24, 0, 24, 0, 24, 0, 24, 0, 24].join()]);
+  // Round pounds on a pay that does not divide (2,083 on 2,083.33): no month is short, the
+  // pence roll on, and the 3.96 still waiting at the end of the year is let go
+  const pence = contractorYear({ months: year(2083.33), payments: pays(Array(12).fill(2083)) });
+  assert.deepStrictEqual([pence.remaining, pence.rounding, pence.months.every(r => r.status === 'paid'), pence.months[11].brought], [0, 3.96, true, 3.63]);
+  // ...and while a month is still to pay, it asks for the pence with its own pay
+  const penceSoFar = contractorYear({ months: year(2083.33), payments: pays(Array(10).fill(2083)) });
+  assert.deepStrictEqual([penceSoFar.months[10].left, penceSoFar.months[10].brought, penceSoFar.months[11].left, penceSoFar.remaining], [2086.63, 3.3, 2083.33, 4169.96]);
+  // The pence wait through a month marked nothing owed for the next month with pay of its own
+  const through = contractorYear({ months: year(2083.33).slice(0, 3), payments: pays([2080]), skips: { 2: 'none' } });
+  assert.deepStrictEqual(through.months.map(r => [r.status, r.left, r.brought_from.join()]), [['paid', 0, ''], ['none', 0, ''], ['due', 2086.66, '1']]);
+  // A month with no working day of theirs in it (they started on Saturday the 31st) is worth nothing, not unpaid
+  const weekend = contractorYear({ months: [{ month: 1, due: 0, whole: false }, { month: 2, due: 2000, whole: true }], payments: [] });
+  assert.deepStrictEqual(weekend.months.map(r => [r.status, r.paid, r.left]), [['none', false, 0], ['due', false, 2000]]);
+
+  // Paid more than the year is worth: nothing is left, and the rest is what they are ahead by
+  const over = contractorYear({ months: year().slice(0, 3), payments: pays([4000, 4000, 9000]) });
+  assert.deepStrictEqual([over.left, over.credit, over.remaining, over.months[2].ahead, over.months[2].balance], [0, 5000, -5000, 5000, 5000]);
+  // Deducted before their first month, or after their last: it still counts
+  const before = contractorYear({ months: year().slice(2, 5), payments: [], deductions: { 1: 1000 } });
+  assert.deepStrictEqual([before.months[0].left, before.months[0].from, before.remaining], [3000, [1], 11000]);
+  const after = contractorYear({ months: year().slice(0, 3), payments: pays([4000, 4000]), deductions: { 5: 1500 } });
+  assert.deepStrictEqual([after.months[2].left, after.months[2].made_up_in, after.remaining], [2500, [5], 2500]);
+  // A month marked nothing owed with a deduction dated in it: the deduction comes off the others
+  const noneOff = contractorYear({ months: year().slice(0, 3), payments: [], deductions: { 2: 500 }, skips: { 2: 'none' } });
+  assert.deepStrictEqual(noneOff.months.map(r => r.left), [3500, 0, 4000]);
+  // Nobody to count months for
+  assert.deepStrictEqual(contractorYear({ months: [], payments: pays([500]), deductions: { 3: 100 } }), { months: [], left: 0, credit: 600, remaining: -600, rounding: 0 });
+
+  // Whatever is paid and deducted, in whatever months, the months add up to the year:
+  // what is left is the year's pay, less everything paid, less everything deducted.
+  // (Round hundreds, so that nothing is small enough to be let go as a rounding difference.)
+  let seed = 20261126;
+  const rand = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  for (let run = 0; run < 3000; run++) {
+    const from = 1 + rand(4), to = 9 + rand(4), months = year().filter(m => m.month >= from && m.month <= to);
+    const payments = [], deductions = {}, skips = {};
+    for (let m = 1; m <= 12; m++) {
+      if (rand(10) < 7) payments.push({ payment_month: m, amount: 100 * (1 + rand(90)) });
+      if (rand(10) < 2) payments.push({ payment_month: m, amount: 100 * (1 + rand(40)) });
+      if (rand(10) < 3) deductions[m] = 100 * (1 + rand(rand(4) ? 30 : 160));
+      if (rand(12) === 0) skips[m] = rand(2) ? 'later' : 'none';
+    }
+    const y = contractorYear({ months, payments, deductions, skips });
+    const worth = y.months.reduce((a, r) => a + r.due, 0), paid = payments.reduce((a, p) => a + p.amount, 0), off = Object.values(deductions).reduce((a, b) => a + b, 0);
+    const say = JSON.stringify({ from, to, payments, deductions, skips });
+    assert.strictEqual(y.remaining, worth - paid - off, say);
+    assert.strictEqual(y.rounding, 0, say);
+    checkAccount(y, say);
+    // The balance at the end of the last month is the year's figure before anything logged after it
+    const tail = Object.keys(deductions).map(Number).concat(payments.map(p => p.payment_month)).some(m => m > to);
+    if (!tail && y.months.length) assert.strictEqual(y.months[y.months.length - 1].balance, -y.remaining, say);
+    // What months put towards older ones is what those older ones had made up
+    const sum = pick => Math.round(y.months.reduce((a, r) => a + pick(r), 0) * 100) / 100;
+    if (!tail) assert.strictEqual(sum(r => r.back), sum(r => r.made_up), say);
+  }
+
+  // The same with pounds and pence, amounts a little over and a little under a month's pay,
+  // and part months: the year is always its pay, less paid, less deducted, less the little
+  // let go at the very end, which is never more than half a percent of one month
+  for (let run = 0; run < 4000; run++) {
+    const pay = [2083.33, 1000, 4166.67, 3333.33, 50000][rand(5)], from = 1 + rand(3), to = 10 + rand(3);
+    const months = year(pay).filter(m => m.month >= from && m.month <= to).map((m, i, all) => (i === 0 && rand(3) === 0 ? { ...m, due: Math.round(pay * (1 + rand(20)) / 22 * 100) / 100 } : i === all.length - 1 && rand(4) === 0 ? { ...m, due: 0 } : m));
+    const payments = [], deductions = {}, skips = {};
+    for (let m = 1; m <= 12; m++) {
+      const kind = rand(10);
+      if (kind < 5) payments.push({ payment_month: m, amount: Math.round((pay + (rand(4001) - 2000) / 100 * (pay / 2000)) * 100) / 100 });   // within about a percent either way
+      else if (kind < 7) payments.push({ payment_month: m, amount: Math.round(pay * (rand(300) + 1)) / 100 });                                  // anything up to three months
+      if (rand(10) < 2) deductions[m] = Math.round(pay * (rand(250) + 1)) / 100;
+      if (rand(15) === 0) skips[m] = rand(2) ? 'later' : 'none';
+    }
+    const y = contractorYear({ months, payments, deductions, skips });
+    const p2 = v => Math.round(v * 100) / 100, say = JSON.stringify({ months, payments, deductions, skips });
+    const worth = y.months.reduce((a, r) => a + r.due, 0), paid = payments.reduce((a, p) => a + p.amount, 0), off = Object.values(deductions).reduce((a, b) => a + b, 0);
+    assert.ok(Math.abs(y.remaining - p2(worth - paid - off - y.rounding)) < 0.011, `remaining ${y.remaining} against ${p2(worth - paid - off)} less ${y.rounding}: ` + say);
+    assert.ok(y.rounding >= 0 && y.rounding <= Math.max(1, pay * 0.005) + 0.005, say);
+    checkAccount(y, say);
+  }
 }
 
 console.log('pay calculator tests passed');
