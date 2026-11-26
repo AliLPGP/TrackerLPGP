@@ -245,7 +245,10 @@ function pensionFor(rule, gross, basic, taxYear) {
   if (!rule || !(gross > 0)) return 0;
   const t = tables(taxYear).pension;
   const base = rule.on === 'qualifying' ? Math.max(0, Math.min(gross, t.upper) - t.lower) : rule.on === 'basic' ? (basic > 0 ? basic : gross) : gross;
-  return round2(base * rule.rate);
+  // One step from the pay to the penny, half a penny rounding up (in whole numbers, so a
+  // half is never lost to floating point)
+  const perMillion = Math.round(rule.rate * 1000000);
+  return Math.floor((pence(base) * perMillion + 500000) / 1000000) / 100;
 }
 
 // ─── A person's payroll settings, from a payslip ─────────────────────────────

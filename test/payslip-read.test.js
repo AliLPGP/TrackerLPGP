@@ -29,33 +29,52 @@ const SLIP = {
 
 // ── 1. The accountant's software: one glyph per instruction, y axis flipped ──
 // A hand-made PDF: a Type0 font whose only useful part is its code-to-letter table.
-function skiaStylePdf(slip, { title = `${slip.name} - ${slip.heading}` } = {}) {
+// A label or a figure holding "\n" is drawn over several lines, as the real thing does
+// when a figure grows and its label no longer fits beside it.
+//   figureOn   'first' draws a wrapped label's figure level with its first line, after the
+//              label's lines (how the payroll software does it); 'last' beside its last line
+//   headGap    extra space between the letters of the box headings
+//   before, after   extra lines drawn before the name or after the footer (a browser's
+//              printed page header)
+//   type3      embed the font as a Type 3 font, whose widths are in the font's own units
+function skiaStylePdf(slip, { title = `${slip.name} - ${slip.heading}`.replace(/\n/g, ' '), figureOn = 'first', headGap = 0, before = [], after = [], type3 = false } = {}) {
   const chars = [];
   const cid = ch => { let i = chars.indexOf(ch); if (i < 0) { chars.push(ch); i = chars.length - 1; } return i + 3; };
+  const hex = n => n.toString(16).toUpperCase().padStart(type3 ? 2 : 4, '0');
   const hex4 = n => n.toString(16).toUpperCase().padStart(4, '0');
   const W = 6;   // every glyph 6 units wide at size 12 (500/1000 of the size)
-  const run = (text, x, y, size = 12) => {
+  const run = (text, x, y, size = 12, gap = 0) => {
     let out = `BT\n/F1 ${size} Tf\n1 0 0 -1 ${x} ${y} Tm\n`;
-    [...text].forEach((ch, i) => { out += `${i ? `${(W * size) / 12} 0 Td ` : ''}<${hex4(cid(ch))}> Tj\n`; });
+    [...text].forEach((ch, i) => { out += `${i ? `${(W * size) / 12 + gap} 0 Td ` : ''}<${hex(cid(ch))}> Tj\n`; });
     return out + 'ET\n';
   };
   // Three boxes across, two rows of boxes, as on the real thing. Units before the page
   // transform: the page is 2480 wide, drawn at 0.24.
   let ops = '.24 0 0 -.24 0 420 cm\nq\n3.125 0 0 3.125 116 116 cm\n';
-  ops += run(slip.name, 0, 22, 27) + run(slip.heading, 0, 46, 21);
+  before.forEach((line, i) => { ops += run(line, 0, -60 + i * 12, 8); });
+  const nameLines = slip.name.split('\n');
+  nameLines.forEach((line, i) => { ops += run(line, 0, 22 - (nameLines.length - 1 - i) * 30, 27); });
+  ops += run(slip.heading, 0, 46, 21);
   slip.boxes.forEach(([head, rows], b) => {
     const left = (b % 3) * 240, top = 70 + Math.floor(b / 3) * 250;
-    ops += `q\n1 0 0 1 ${left} ${top} cm\n` + run(head, 60, 7);
-    rows.forEach(([label, value], r) => {
-      const y = 31 + r * 15;
-      ops += run(label, 8.5, y);
-      if (value) ops += run(value, 220 - value.length * W, y);   // right-aligned
+    ops += `q\n1 0 0 1 ${left} ${top} cm\n` + run(head, 60, 7, 12, headGap);
+    let y = 31;
+    rows.forEach(([label, value]) => {
+      const labelLines = label.split('\n'), valueLines = String(value || '').split('\n');
+      labelLines.forEach((part, k) => {
+        ops += run(part, 8.5, y + k * 15);
+        if (figureOn === 'last' && k === labelLines.length - 1 && value) ops += run(valueLines[0], 220 - valueLines[0].length * W, y + k * 15);
+      });
+      if (value) valueLines.forEach((part, k) => { if (figureOn !== 'last' || k > 0) ops += run(part, 220 - part.length * W, y + k * 15); });   // right-aligned
+      y += Math.max(labelLines.length, valueLines.length) * 15;
     });
     ops += 'Q\n';
   });
-  ops += run(slip.footer, 220, 600) + 'Q\n';
-  const cmap = `/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n${chars.length} beginbfchar\n`
-    + chars.map((ch, i) => `<${hex4(i + 3)}> <${hex4(ch.charCodeAt(0))}>`).join('\n') + '\nendbfchar\nendcmap\nend\nend';
+  ops += run(slip.footer, 220, 600);
+  after.forEach((line, i) => { ops += run(line, 0, 640 + i * 12, 8); });
+  ops += 'Q\n';
+  const cmap = `/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n1 begincodespacerange\n${type3 ? '<00> <FF>' : '<0000> <FFFF>'}\nendcodespacerange\n${chars.length} beginbfchar\n`
+    + chars.map((ch, i) => `<${hex(i + 3)}> <${hex4(ch.charCodeAt(0))}>`).join('\n') + '\nendbfchar\nendcmap\nend\nend';
   const stream = (dict, data) => { const z = zlib.deflateSync(Buffer.from(data, 'latin1')); return Buffer.concat([Buffer.from(`<<${dict}/Filter/FlateDecode/Length ${z.length}>>stream\n`, 'latin1'), z, Buffer.from('\nendstream', 'latin1')]); };
   const objects = [
     `<</Title(${title})/Producer(Test)>>`,
@@ -63,7 +82,9 @@ function skiaStylePdf(slip, { title = `${slip.name} - ${slip.heading}` } = {}) {
     '<</Type/Pages/Count 1/Kids[4 0 R]>>',
     '<</Type/Page/Parent 3 0 R/MediaBox[0 0 595 420]/Contents 5 0 R/Resources<</Font<</F1 6 0 R>>>>>>',
     stream('', ops),
-    '<</Type/Font/Subtype/Type0/BaseFont/AAAAAA+Made/Encoding/Identity-H/DescendantFonts[7 0 R]/ToUnicode 8 0 R>>',
+    // (a Type 3 font 2048 units to the em: each glyph 1024 units wide is the same half an em)
+    type3 ? `<</Type/Font/Subtype/Type3/FontBBox[0 0 2048 2048]/FontMatrix[.00048828125 0 0 -.00048828125 0 0]/CharProcs<<>>/Encoding<</Type/Encoding/Differences[]>>/FirstChar 0/LastChar 255/Widths[${Array(256).fill(1024).join(' ')}]/ToUnicode 8 0 R>>`
+      : '<</Type/Font/Subtype/Type0/BaseFont/AAAAAA+Made/Encoding/Identity-H/DescendantFonts[7 0 R]/ToUnicode 8 0 R>>',
     '<</Type/Font/Subtype/CIDFontType2/BaseFont/AAAAAA+Made/CIDSystemInfo<</Registry(Adobe)/Ordering(Identity)/Supplement 0>>/DW 500>>',
     stream('', cmap),
   ];
@@ -153,6 +174,75 @@ function checkFigures(r, where) {
   assert.deepStrictEqual(o.additions.map(a => a.kind), ['basic', 'extra']);
   assert.strictEqual(o.pension, null); assert.strictEqual(o.payment, 2093.64); assert.strictEqual(o.paid_on, '2026-12-01');
   assert.deepStrictEqual(o.period, { year: 2026, month: 11, end: '2026-11-30' }, 'the month it ends in, not the month it was paid');
+
+  // Labels wrap onto two or three lines as the figures beside them grow, and which ones
+  // wrap changes from month to month. Every figure still lands in its own box: the
+  // "deductions" that ends "Student Loan deductions" is not the DEDUCTIONS heading, and the
+  // "payment" that ends "Statutory redundancy payment" is not the PAYMENT box.
+  const wrapped = JSON.parse(JSON.stringify(SLIP));
+  wrapped.boxes[0][1] = [['Tax\ncode', 'K475 (Week 1/Month\n1)'], ['National\nInsurance\nnumber', 'QQ 12 34 56 C'], ['National\nInsurance table', 'A'], ['Student Loan\nplan', 'Plan 2'], ['Annual leave\nremaining', '12.5 days']];
+  wrapped.boxes[1][1] = [['Monthly pay', '£2,500.00'], ['Statutory redundancy\npayment', '£1,000.00'], ['Total', '£3,500.00']];
+  wrapped.boxes[2][1] = [['Tax', '£290.20'], ['National\nInsurance', '£116.16'], ['Student Loan\ndeductions', '£4.00'], ['NEST', '£79.20'], ['Total', '£489.56']];
+  wrapped.boxes[3][1][1] = ['Employer National\nInsurance', '£312.45'];
+  wrapped.boxes[4][1] = [['Taxable gross pay', '£20,000.00'], ['Tax', '£2,322.60'], ['Employee National\nInsurance', '£929.28'], ['Employer National\nInsurance', '£2,499.60'],
+    ['Student Loan\ndeductions', '£1,032.00'], ['Employee pension', '£633.60'], ['Employer pension', '£475.20']];
+  wrapped.boxes[5][1] = [['£3,010.44', ''], ['Paid on 30/11/2026', '']];
+  for (const figureOn of ['first', 'last']) {
+    const r = readPayslip(skiaStylePdf(wrapped, { figureOn })), where = `wrapped labels, figure beside the ${figureOn} line`;
+    assert.strictEqual(r.ok, true, where); assert.deepStrictEqual(r.problems, [], where);
+    assert.strictEqual(r.tax_code, 'K475', where); assert.strictEqual(r.tax_basis, 'month1', where);
+    assert.strictEqual(r.ni_table, 'A', where); assert.deepStrictEqual(r.student_loan_plans, ['2'], where); assert.strictEqual(r.postgrad_loan, false, where);
+    assert.deepStrictEqual(r.additions, [{ label: 'Monthly pay', amount: 2500, kind: 'basic' }, { label: 'Statutory redundancy payment', amount: 1000, kind: 'extra' }], where);
+    assert.deepStrictEqual(r.deductions.map(d => [d.label, d.amount, d.kind]),
+      [['Tax', 290.2, 'tax'], ['National Insurance', 116.16, 'ni'], ['Student Loan deductions', 4, 'student_loan'], ['NEST', 79.2, 'pension']], where);
+    assert.strictEqual(r.gross, 3500, where); assert.strictEqual(r.basic, 2500, where); assert.strictEqual(r.pension, 79.2, where); assert.strictEqual(r.other_deductions, null, where);
+    assert.strictEqual(r.employer_ni, 312.45, where); assert.strictEqual(r.net_pay, 2089.64, where); assert.strictEqual(r.payment, 3010.44, where);
+    assert.deepStrictEqual(r.ytd, { gross: 20000, tax: 2322.6, employee_ni: 929.28, employer_ni: 2499.6, student_loan: 1032, postgrad_loan: null, employee_pension: 633.6, employer_pension: 475.2 }, where);
+    assert.strictEqual(r.adds_up, true, where);
+    assert.ok(!JSON.stringify(r).includes('QQ 12'), `${where}: the National Insurance number is never read into the result`);
+  }
+
+  // Box headings with their letters spaced apart, and a font embedded the other way
+  // (Type 3, whose widths are in its own units rather than thousandths)
+  assert.ok(readPdfText(skiaStylePdf(SLIP, { headGap: 2.6 })).lines.includes('D E D U C T I O N S'), 'the headings really are spaced out in this one');
+  checkFigures(readPayslip(skiaStylePdf(SLIP, { headGap: 2.6 })), 'letter-spaced headings');
+  assert.strictEqual(readPdfText(skiaStylePdf(SLIP, { type3: true })).lines[0], 'Jane Example', 'a Type 3 font reads as words, not letter by letter');
+  checkFigures(readPayslip(skiaStylePdf(SLIP, { type3: true })), 'Type 3 font');
+
+  // Printed from a browser, the page gains a header that repeats the document's title:
+  // still one payslip, and the header is no part of the name
+  const header = ['26/11/2026, 16:46\tJane Example - Payslip for Month Ending 30 Nov 2026', 'https://payroll.example.com/payslips/view\t1/1'];
+  checkFigures(readPayslip(skiaStylePdf(SLIP, { after: header })), 'browser header after the page');
+  checkFigures(readPayslip(skiaStylePdf(SLIP, { before: header })), 'browser header before the page');
+
+  // Names: letters a font joins into one character ("fi", "ffi"), and a double-barrelled
+  // name split at its hyphen
+  const joined = JSON.parse(JSON.stringify(SLIP)); joined.name = 'Soﬁa Griﬃn';
+  assert.strictEqual(readPayslip(skiaStylePdf(joined)).name, 'Sofia Griffin');
+  const long = JSON.parse(JSON.stringify(SLIP)); long.name = 'Maximiliana Featherstonehaugh-\nCholmondeley Example';
+  assert.strictEqual(readPayslip(skiaStylePdf(long)).name, 'Maximiliana Featherstonehaugh-Cholmondeley Example');
+
+  // A postgraduate loan row that says there is none
+  for (const [value, has] of [['—', false], ['None', false], ['No', false], ['Yes', true]]) {
+    const pg = JSON.parse(JSON.stringify(SLIP)); pg.boxes[0][1].splice(4, 0, ['Postgraduate Loan', value]);
+    const r = readPayslip(skiaStylePdf(pg));
+    assert.strictEqual(r.postgrad_loan, has, `Postgraduate Loan: ${value}`); assert.deepStrictEqual(r.student_loan_plans, ['2']); assert.strictEqual(r.tax_code, '1257L');
+  }
+  // Something that is not a tax code beside "Tax code" is not taken for one
+  const noCode = JSON.parse(JSON.stringify(SLIP)); noCode.boxes[0][1][0] = ['Tax code', ''];
+  assert.strictEqual(readPayslip(skiaStylePdf(noCode)).tax_code, '');
+  for (const [printed, code, basis] of [['1257L', '1257L', 'cumulative'], ['1257L X', '1257L', 'month1'], ['1257LM1', '1257L', 'month1'], ['S1257L', 'S1257L', 'cumulative'], ['BR', 'BR', 'cumulative'],
+    ['0T W1/M1', '0T', 'month1'], ['K475X', 'K475', 'month1'], ['D0', 'D0', 'cumulative'], ['NT', 'NT', 'cumulative'], ['1257M', '1257M', 'cumulative'], ['C1257L (Month 1)', 'C1257L', 'month1']]) {
+    const t = JSON.parse(JSON.stringify(SLIP)); t.boxes[0][1][0] = ['Tax code', printed];
+    const r = readPayslip(skiaStylePdf(t));
+    assert.strictEqual(r.tax_code, code, `tax code printed as ${printed}`); assert.strictEqual(r.tax_basis, basis, `basis of ${printed}`);
+  }
+
+  // A box whose lines do not come to the total printed under them is flagged, even when
+  // the totals themselves agree with the amount paid
+  const lines = JSON.parse(JSON.stringify(SLIP)); lines.boxes[2][1][3] = ['NEST', '£89.20'];
+  const off = readPayslip(skiaStylePdf(lines));
+  assert.strictEqual(off.payment, 2010.44); assert.strictEqual(off.adds_up, false); assert.ok(off.problems.some(p => /do not add up/.test(p)));
 
   // Figures that do not add up are still read, with a warning
   const wrong = JSON.parse(JSON.stringify(SLIP));

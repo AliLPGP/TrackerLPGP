@@ -448,8 +448,15 @@ function loadFont(doc, ref) {
     return font;
   }
   font.bytes = 1;
+  // A Type 3 font gives its widths in its own units, which its FontMatrix turns into
+  // text space; every other font gives them in thousandths of the font size.
+  let unit = 1;
+  if (subtype === 'Type3') {
+    const fm = doc.get(dict.FontMatrix), a = Array.isArray(fm) ? Math.abs(num(doc.get(fm[0]))) : 0;
+    if (a > 0) unit = a * 1000;
+  }
   const first = num(doc.get(dict.FirstChar)), ws = doc.get(dict.Widths);
-  if (Array.isArray(ws)) ws.forEach((x, k) => font.widths.set(first + k, num(doc.get(x))));
+  if (Array.isArray(ws)) ws.forEach((x, k) => font.widths.set(first + k, num(doc.get(x)) * unit));
   const fd = doc.get(dict.FontDescriptor);
   if (fd && typeof fd === 'object') font.defaultWidth = num(doc.get(fd.MissingWidth), 500);
   // Without a ToUnicode table the characters come from the font's encoding
@@ -470,6 +477,9 @@ function loadFont(doc, ref) {
 const mul = (m, n) => [m[0] * n[0] + m[1] * n[2], m[0] * n[1] + m[1] * n[3], m[2] * n[0] + m[3] * n[2], m[2] * n[1] + m[3] * n[3],
   m[4] * n[0] + m[5] * n[2] + n[4], m[4] * n[1] + m[5] * n[3] + n[5]];
 const IDENTITY = [1, 0, 0, 1, 0, 0];
+// A font may hand back one joined-up character for two or three letters ("fi", "ffl")
+const LIGATURES = /[\ufb00-\ufb06]/g;
+const LIGATURE_LETTERS = ['ff', 'fi', 'fl', 'ffi', 'ffl', 'st', 'st'];
 
 class Page {
   constructor(doc) { this.doc = doc; this.lines = []; this.line = null; this.fonts = new Map(); this.ops = 0; }
@@ -498,7 +508,7 @@ class Page {
   }
   flush() {
     if (this.line) {
-      const t = this.line.text.replace(/ /g, ' ').replace(/[ ]*\t[ \t]*/g, '\t').replace(/ {2,}/g, ' ').replace(/^[ \t]+|[ \t]+$/g, '');
+      const t = this.line.text.replace(LIGATURES, c => LIGATURE_LETTERS[c.charCodeAt(0) - 0xfb00]).replace(/ /g, ' ').replace(/[ ]*\t[ \t]*/g, '\t').replace(/ {2,}/g, ' ').replace(/^[ \t]+|[ \t]+$/g, '');
       if (t) this.lines.push(t);
     }
     this.line = null;

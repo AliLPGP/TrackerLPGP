@@ -73,6 +73,68 @@ function additionKind(label) {
   return 'extra';
 }
 
+// Box headings with the spaces taken out, so a heading set with its letters spaced apart
+// ("D E D U C T I O N S") is still known
+const squeeze = text => String(text).replace(/\s+/g, '');
+const HEADINGS = {};
+for (const [heading, box] of Object.entries(SECTIONS)) HEADINGS[squeeze(heading)] = box;
+const FIGURE_BOXES = new Set(['additions', 'deductions', 'period', 'ytd']);
+
+// A tax code as HMRC writes them: 1257L, K475, BR, D0, NT, 0T, with S or C in front for
+// Scotland or Wales, and W1, M1 or X on the end when it is not cumulative
+const TAX_CODE = /^[SC]?(?:K\d{1,5}|\d{1,5}[A-Z]|BR|NT|D\d)(?:W1M1|W1|M1|X)?$/i;
+const NOT_CUMULATIVE = /^\(?\s*(?:(?:w1|wk\s*1|week\s*1)(?:\s*\/?\s*(?:m1|mth\s*1|month\s*1))?|m1|mth\s*1|month\s*1|x\b|non[- ]?cum|emergency)/i;
+
+// The things in the EMPLOYEE DETAILS box, by the words that label them
+const DETAIL_LABELS = {
+  tax_code: /\btax\s*code\b/i,
+  ni_number: /\b(?:national\s+insurance|n\.?i\.?)\s+(?:number|no\b\.?)/i,
+  ni_table: /\b(?:national\s+insurance|n\.?i\.?)\s+(?:table|category|letter)(?:\s+letter)?/i,
+  student_loan: /\bstudent\s+loans?\b/i,
+  postgrad: /\bpost-?\s?graduate(?:\s+loans?)?\b|\bpgl\b/i,
+  leave: /\b(?:annual\s+leave|holidays?)\b/i,
+};
+
+// The EMPLOYEE DETAILS box. A long label or a long value wraps onto lines of its own (and
+// which ones wrap changes with what is printed), so the box is read as one run of text and
+// each thing is found by its label. The National Insurance number is never read.
+function readDetails(lines, out) {
+  const text = lines.join(' ').replace(/\t/g, ' ').replace(/\s+/g, ' ').trim();
+  const found = Object.entries(DETAIL_LABELS)
+    .map(([key, re]) => { const m = re.exec(text); return m ? { key, at: m.index, end: m.index + m[0].length } : null; })
+    .filter(Boolean).sort((a, b) => a.at - b.at);
+  // What is printed against a label: everything up to the next label
+  const valueOf = (key, whole = false) => {
+    const f = found.find(x => x.key === key);
+    if (!f) return null;
+    const next = found.find(x => x.at >= f.end);
+    return text.slice(whole ? f.at : f.end, next ? next.at : text.length).replace(/^[\s:]+/, '').trim();
+  };
+
+  const code = valueOf('tax_code');
+  const m = code === null ? null : /^([A-Za-z0-9]+)\s*(.*)$/.exec(code);
+  if (m && TAX_CODE.test(m[1])) {
+    out.tax_code = m[1].toUpperCase();
+    if (NOT_CUMULATIVE.test(m[2])) out.tax_basis = 'month1';
+    const tail = /^(.*?)(W1M1|W1|M1|X)$/.exec(out.tax_code);   // written without a space
+    if (tail && /\d[A-Z]$|^[SC]?(BR|NT|D\d|K\d+)$/.test(tail[1])) { out.tax_code = tail[1]; out.tax_basis = 'month1'; }
+  }
+
+  const table = valueOf('ni_table'), letter = table === null ? null : /^([A-Za-z])\b/.exec(table);
+  if (letter) out.ni_table = letter[1].toUpperCase();
+
+  const loan = valueOf('student_loan', true);
+  if (loan !== null) {
+    for (const plan of loan.matchAll(/plans?\s*(\d)((?:\s*(?:,|&|and|\+|\/)\s*(?:plans?\s*)?\d)*)/gi)) {
+      for (const digit of (plan[1] + plan[2]).match(/\d/g)) if (!out.student_loan_plans.includes(digit)) out.student_loan_plans.push(digit);
+    }
+  }
+  // A postgraduate loan is named (on a row of its own, or after the plan) unless what
+  // follows says there is none
+  const pg = DETAIL_LABELS.postgrad.exec(text);
+  if (pg && !/^[\s:]*(?:no\b|none\b|n\/?a\b|nil\b|not\b|false\b|0\b|-|\u2013|\u2014)/i.test(text.slice(pg.index + pg[0].length))) out.postgrad_loan = true;
+}
+
 /**
  * Read a payslip PDF.
  * @param {Buffer} buffer    the PDF file
@@ -95,21 +157,36 @@ function readPayslip(buffer, fileName = '') {
     out.problems.push(pdf.error === 'password protected' ? 'This PDF is password protected, so it cannot be read.'
       : pdf.error === 'not a PDF' ? 'This file is not a PDF.' : 'No text could be read from this PDF (it may be a scan or a photo).');
   }
-  let lines = pdf.lines || [];
+  const lines = pdf.lines || [];
+  // A box heading is the name of a box on a line of its own. This payroll software prints
+  // them in capitals, and then only capitals count: a label wraps as its figure grows, and
+  // the last word of "Student Loan deductions" on a line of its own is not the start of the
+  // DEDUCTIONS box.
+  const capitals = lines.some(l => HEADINGS[squeeze(l)]);
+  const boxOf = raw => HEADINGS[capitals ? squeeze(raw) : squeeze(raw).toUpperCase()] || '';
+  // The payslip's own heading starts its line. (A browser that printed the page adds a
+  // header repeating the document's title, which also says "Payslip for ... Ending".)
+  const startsLine = l => /^payslip\s+for\b.*\bending\b/i.test(l.trim()), anywhere = l => /payslip\s+for\b.*\bending\b/i.test(l);
+  const isHeading = lines.some(startsLine) ? startsLine : anywhere;
+
   // One file, one payslip. A PDF holding several people's payslips is not read: filing it
   // against one person would show them everybody else's pay.
-  const headed = (pdf.pages || []).filter(pg => pg.lines.some(l => /payslip\s+for\b.*\bending\b/i.test(l)));
-  if (headed.length > 1 || lines.filter(l => /payslip\s+for\b.*\bending\b/i.test(l)).length > 1) {
+  const headedPages = (pdf.pages || []).filter(pg => pg.lines.some(isHeading)).length;
+  if (headedPages > 1 || lines.filter(isHeading).length > 1 || lines.filter(l => boxOf(l) === 'details').length > 1) {
     out.several = true;
-    out.problems.push('This PDF has more than one payslip in it. Upload one payslip per file, so nobody is shown someone else\u2019s.');
+    out.problems.push('This PDF has more than one payslip in it. Upload one payslip per file, so nobody is shown someone else’s.');
     return out;
   }
 
   // Whose it is and which month: the heading on the page, else the document title, else the file name
   const titleSources = [pdf.title || '', String(fileName || '').replace(/\.pdf$/i, '').replace(/^[0-9a-f]{6,}-/i, '').replace(/_/g, ' ')];
-  let headingAt = lines.findIndex(l => /payslip\s+for\b.*\bending\b/i.test(l));
+  const headingAt = lines.findIndex(isHeading);
   let period = headingAt >= 0 ? periodFrom(lines[headingAt]) : null;
-  if (headingAt > 0) out.name = lines.slice(0, headingAt).filter(l => !SECTIONS[l.trim().toUpperCase()]).join(' ').replace(/\s+/g, ' ').trim();
+  if (headingAt > 0) {
+    // (a double-barrelled name can be split at its hyphen; a printed page header is not part of the name)
+    out.name = lines.slice(0, headingAt).filter(l => !boxOf(l) && !anywhere(l) && !/^(?:file|https?):\/\/|^\d{1,2}\/\d{1,2}\/\d{2,4},/i.test(l.trim()))
+      .reduce((name, l) => name + (/[A-Za-z]-$/.test(name) ? '' : ' ') + l.replace(/\t/g, ' '), '').replace(/\s+/g, ' ').trim();
+  }
   for (const t of titleSources) {
     const m = /^(.*?)\s+[-–—]\s+(payslip\s+for\b.*)$/i.exec(t.trim());
     if (!m) continue;
@@ -120,58 +197,55 @@ function readPayslip(buffer, fileName = '') {
   // The boxes
   let section = '';
   const seen = {};
+  const details = [];
+  let waiting = [];   // the lines of a wrapped label whose figure has not come yet
   for (let i = Math.max(0, headingAt + 1); i < lines.length; i++) {
-    const raw = lines[i], head = SECTIONS[raw.replace(/\t/g, ' ').trim().toUpperCase()];
-    if (head) { section = head; seen[head] = true; continue; }
+    const raw = lines[i], head = boxOf(raw);
+    if (head) { section = head; seen[head] = true; waiting = []; continue; }
     const footer = /^(.*?)\s*[·|•-]\s*PAYE\s+ref(?:erence)?\.?:?\s*([0-9]{3}\s*\/\s*[A-Za-z0-9]+)/i.exec(raw.replace(/\t/g, ' '));
-    if (footer) { out.employer = footer[1].trim(); out.paye_ref = footer[2].replace(/\s/g, ''); continue; }
-    const { label, value } = split(raw);
-    const amount = money(value), low = label.toLowerCase();
+    if (footer) { out.employer = footer[1].trim(); out.paye_ref = footer[2].replace(/\s/g, ''); waiting = []; continue; }
+    const { label: own, value } = split(raw);
+    const amount = money(value);
 
     if (section === 'details') {
-      if (/^tax code/.test(low) && value) {
-        const m = /^([A-Za-z0-9]+)\s*(.*)$/.exec(value);
-        if (m) {
-          out.tax_code = m[1].toUpperCase();
-          if (/w1|m1|wk\s*1|mth\s*1|week\s*1|month\s*1|non.?cum|\bx\b/i.test(m[2])) out.tax_basis = 'month1';
-          const tail = /^(.*?)(W1M1|W1|M1|X)$/.exec(out.tax_code);   // written without a space
-          if (tail && /\d[A-Z]$|^(BR|NT|D\d|0T)$/.test(tail[1])) { out.tax_code = tail[1]; out.tax_basis = 'month1'; }
-        }
-      } else if (/national insurance (table|category|letter)|^ni (table|category|letter)/.test(low) && value) {
-        const m = /^([A-Za-z])\b/.exec(value); if (m) out.ni_table = m[1].toUpperCase();
-      } else if (/student loan|postgrad|^plan\s*\d/.test(low + ' ' + value.toLowerCase())) {
-        // (a long value wraps onto a line of its own, so the plan may arrive without its label)
-        const text = `${label} ${value}`;
-        if (/postgrad|post-grad|\bpgl\b/i.test(text) && !/\b(no|none|n\/a)\b/i.test(text)) out.postgrad_loan = true;
-        for (const m of text.matchAll(/plan\s*(\d)/gi)) if (!out.student_loan_plans.includes(m[1])) out.student_loan_plans.push(m[1]);
+      details.push(raw);
+    } else if (FIGURE_BOXES.has(section)) {
+      // A long label runs over two or three lines, with its figure after them or beside
+      // the last of them
+      if (value === '') { waiting.push(own); continue; }
+      if (amount === null) { waiting = []; continue; }   // (a row that is not money: hours, a rate)
+      const total = /^total\b/i.test(own);
+      const label = (total ? own : [...waiting, own].join(' ')).replace(/\s+/g, ' ').trim(), low = label.toLowerCase();
+      waiting = [];
+      if (section === 'additions') {
+        if (total) out.additions_total = amount;
+        else out.additions.push({ label, amount, kind: additionKind(own) === 'basic' ? 'basic' : additionKind(label) });
+      } else if (section === 'deductions') {
+        if (total) out.deductions_total = amount;
+        else out.deductions.push({ label, amount, kind: deductionKind(own) !== 'other' ? deductionKind(own) : deductionKind(label) });
+      } else if (section === 'period') {
+        if (/taxable (gross )?pay|^gross pay/.test(low)) out.taxable_gross = amount;
+        else if (/employer.*national insurance|employer.*\bni\b/.test(low)) out.employer_ni = amount;
+        else if (/^net pay/.test(low)) out.net_pay = amount;
+      } else {
+        if (/taxable (gross )?pay|^gross pay/.test(low)) out.ytd.gross = amount;
+        else if (/^(paye\s*)?(income\s*)?tax$/.test(low)) out.ytd.tax = amount;
+        else if (/employer.*national insurance|employer.*\bni\b/.test(low)) out.ytd.employer_ni = amount;
+        else if (/national insurance|\bni\b/.test(low)) out.ytd.employee_ni = amount;
+        else if (/postgrad/.test(low)) out.ytd.postgrad_loan = amount;
+        else if (/student loan/.test(low)) out.ytd.student_loan = amount;
+        else if (/employer.*pension/.test(low)) out.ytd.employer_pension = amount;
+        else if (/pension/.test(low)) out.ytd.employee_pension = amount;
       }
-    } else if (section === 'additions' && amount !== null) {
-      if (/^total\b/.test(low)) out.additions_total = amount;
-      else out.additions.push({ label, amount, kind: additionKind(label) });
-    } else if (section === 'deductions' && amount !== null) {
-      if (/^total\b/.test(low)) out.deductions_total = amount;
-      else out.deductions.push({ label, amount, kind: deductionKind(label) });
-    } else if (section === 'period' && amount !== null) {
-      if (/taxable (gross )?pay|^gross pay/.test(low)) out.taxable_gross = amount;
-      else if (/employer.*national insurance|employer.*\bni\b/.test(low)) out.employer_ni = amount;
-      else if (/^net pay/.test(low)) out.net_pay = amount;
-    } else if (section === 'ytd' && amount !== null) {
-      if (/taxable (gross )?pay|^gross pay/.test(low)) out.ytd.gross = amount;
-      else if (/^(paye\s*)?(income\s*)?tax$/.test(low)) out.ytd.tax = amount;
-      else if (/employer.*national insurance|employer.*\bni\b/.test(low)) out.ytd.employer_ni = amount;
-      else if (/national insurance|\bni\b/.test(low)) out.ytd.employee_ni = amount;
-      else if (/postgrad/.test(low)) out.ytd.postgrad_loan = amount;
-      else if (/student loan/.test(low)) out.ytd.student_loan = amount;
-      else if (/employer.*pension/.test(low)) out.ytd.employer_pension = amount;
-      else if (/pension/.test(low)) out.ytd.employee_pension = amount;
     } else if (section === 'payment') {
       const only = money(raw.replace(/\t/g, ' ').trim());
       if (only !== null && out.payment === null) out.payment = only;
-      else if (amount !== null && out.payment === null && /^(payment|total|net|amount)/.test(low)) out.payment = amount;
+      else if (amount !== null && out.payment === null && /^(payment|total|net|amount)/i.test(own)) out.payment = amount;
       const paid = /paid\s+on\s+(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})/i.exec(raw);
       if (paid) out.paid_on = isoDate(paid[1], paid[2], paid[3]);
     }
   }
+  readDetails(details, out);
 
   // Totals by kind
   const sumOf = (rows, kind) => { const r = rows.filter(x => x.kind === kind); return r.length ? round2(r.reduce((a, x) => a + x.amount, 0)) : null; };
@@ -199,7 +273,11 @@ function readPayslip(buffer, fileName = '') {
 
   // Does it add up? Pay, less everything taken off, is what was paid.
   if (out.payment !== null && out.gross !== null && out.deductions_total !== null) {
-    out.adds_up = Math.abs(round2(out.gross - out.deductions_total) - out.payment) <= 0.011;
+    // (and each box's lines come to the total printed under them: a line read into the
+    // wrong box shows up here)
+    const comesTo = (rows, total) => !rows.length || total === null || Math.abs(round2(rows.reduce((a, x) => a + x.amount, 0)) - total) <= 0.011;
+    out.adds_up = Math.abs(round2(out.gross - out.deductions_total) - out.payment) <= 0.011
+      && comesTo(out.additions, out.additions_total) && comesTo(out.deductions, out.deductions_total);
     if (!out.adds_up) out.problems.push('The figures on this payslip do not add up to the amount paid, so check the amount before logging it.');
   }
   if (!out.name && pdf.ok) out.problems.push('Could not find whose payslip this is.');
