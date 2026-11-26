@@ -8581,8 +8581,9 @@ div.pay-kpi:hover { border-color: var(--border); box-shadow: var(--shadow-card);
   .pay-acts .btn { flex: 1; text-align: center; justify-content: center; }
   .pay-hero { font-size: 28px; }
   .pay-att, .pay-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 8px; }
-  .pay-row .pay-state { grid-column: 1; grid-row: 2; flex-wrap: wrap; }
-  .pay-row .pay-btns { grid-column: 2; grid-row: 2; min-width: 0; }
+  /* (the buttons sit in the column that can give, so three of them wrap instead of squeezing the name) */
+  .pay-row .pay-btns { grid-column: 1; grid-row: 2; justify-content: flex-start; min-width: 0; }
+  .pay-row .pay-state { grid-column: 2; grid-row: 2; justify-content: flex-end; flex-wrap: wrap; }
   .pay-att .pay-btns { grid-column: 1 / -1; justify-content: flex-start; min-width: 0; }
   .pay-row .pay-btns:empty { display: none; }
   .pay-yrow { grid-template-columns: minmax(0, 1fr) auto auto; row-gap: 6px; }
