@@ -3381,7 +3381,7 @@ function payRowHtml(row, m, year, month) {
     btns = `<button class="btn btn-ghost btn-sm" onclick="payUnskip(${m.skip_id})">Undo</button>`;
   } else if (m.paid) {
     fig = payMoney(m.logged || 0, cur);
-    if (m.covered) { fig = '—'; chip = '<span class="co-chip is-ok">Paid ahead</span>'; notes.push('Covered by an earlier payment'); state = 'paid'; }
+    if (m.covered) { fig = '—'; chip = '<span class="co-chip is-ok">Covered</span>'; notes.push('Covered by a payment logged in another month'); state = 'paid'; }
     else if (m.short > 0.005) {
       chip = `<span class="co-chip is-late">${payMoney(m.short, cur)} short</span>`;
       notes.push(m.source === 'payslip' ? `The payslip says ${payMoney(m.due, cur)}` : 'Paid at the amount from before the pay rise');
@@ -3445,7 +3445,7 @@ function payYearHtml(year) {
     const state = !m ? 'off' : m.status === 'none' ? 'off' : m.short > 0.005 ? 'late' : m.paid ? 'paid' : late ? 'late' : 'due';
     const tip = !m ? `${name}: not on the books` : m.status === 'none' ? `${name}: nothing owed`
       : m.short > 0.005 ? `${name}: ${payMoney(m.logged, cur)} paid, ${payMoney(m.short, cur)} short`
-      : m.covered ? `${name}: covered by an earlier payment` : m.paid ? `${name}: ${payMoney(m.logged, cur)} paid`
+      : m.covered ? `${name}: covered by a payment in another month` : m.paid ? `${name}: ${payMoney(m.logged, cur)} paid`
       : `${name}: ${payMoney(m.left, cur)} to pay${m.status === 'later' ? ', set aside to pay later' : late ? ', overdue' : ''}`;
     return `<button class="sc-mo is-${state} pay-dot" title="${esc(tip)}" onclick="event.stopPropagation();_pay.view='month';paySetMonth(${year}, ${i + 1})">${name[0]}</button>`;
   }).join('');
@@ -3921,7 +3921,7 @@ function renderPayPerson() {
   const months = (row.months || []).map(m => {
     const mine = pays.filter(p => Number(p.payment_month) === m.month), late = !m.paid && m.status !== 'none' && (year < now.year || (year === now.year && m.month < now.month));
     const chip = m.status === 'none' ? '<span class="co-chip">Nothing owed</span>' : m.short > 0.005 ? `<span class="co-chip is-late">${payMoney(m.short, cur)} short</span>`
-      : m.covered ? '<span class="co-chip is-ok">Paid ahead</span>' : m.paid ? '<span class="co-chip is-ok">Paid</span>'
+      : m.covered ? '<span class="co-chip is-ok">Covered</span>' : m.paid ? '<span class="co-chip is-ok">Paid</span>'
       : m.status === 'later' ? '<span class="co-chip is-soon">Pay later</span>' : late ? '<span class="co-chip is-late">Not paid</span>' : '<span class="co-chip is-soon">To pay</span>';
     const fig = m.status === 'none' || m.covered ? '—' : payMoney(m.paid ? m.logged : m.left, cur);
     const act = m.status === 'none' ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();payUnskip(${m.skip_id})">Undo</button>`

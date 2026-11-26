@@ -123,11 +123,15 @@ function payslipDues({ slips, gross, history, annual, months, none = [] }) {
  *   deductions   { month: amount } taken off for days off and office deductions
  *   skips        { month: 'later' | 'none' }
  *
- * They are often paid several months in one go, so a month with no payment of its own
- * still counts as paid when the payments so far cover everything due so far. A month
- * marked 'none' is worth nothing. Each row: { month, due, logged, paid, covered, skip,
- * status, left, deduction } where `left` is what to send for an unpaid month (the month's
- * pay, or less when earlier payments ran ahead).
+ * They are often paid several months in one go, or a missed month is made up with the
+ * next payment. So a month with no payment of its own still counts as paid when, in that
+ * month or any month after it, everything paid so far has caught up with everything due
+ * so far. (January's payment for four months covers February to April; a double payment
+ * in May covers a missed April. But a missed February followed by ordinary payments stays
+ * missed, because the total never catches up.) A month marked 'none' is worth nothing.
+ * Each row: { month, due, logged, paid, covered, skip, status, left, deduction } where
+ * `left` is what to send for an unpaid month (the month's pay, or less when earlier
+ * payments ran ahead).
  */
 function contractorMonths({ months, payments, deductions = {}, skips = {} }) {
   const logged = {};
@@ -136,17 +140,22 @@ function contractorMonths({ months, payments, deductions = {}, skips = {} }) {
   // Payments logged against a month the person was not working in still count from the start
   const firstMonth = months.length ? months[0].month : 13;
   for (let m = 1; m < firstMonth; m++) paidSoFar += logged[m] || 0;
-  return months.map(row => {
+  const rows = months.map(row => {
     const got = round2(logged[row.month] || 0);
     const skip = got > 0 ? null : skips[row.month] || null;
     const due = skip === 'none' ? 0 : round2(row.due), off = round2(deductions[row.month] || 0);
     dueSoFar += due; paidSoFar += got; offSoFar += off;
-    const behind = round2(dueSoFar - paidSoFar);
-    const covered = !(got > 0) && due > 0 && behind - offSoFar <= 0.5;
-    const paid = got > 0 || covered;
-    const left = paid || skip === 'none' ? 0 : round2(Math.max(0, Math.min(due, behind)));
-    const status = skip === 'none' ? 'none' : paid ? 'paid' : skip === 'later' ? 'later' : 'due';
-    return { month: row.month, due, logged: got, paid, covered, short: 0, over: 0, source: 'salary', skip, status, left, deduction: off };
+    return { month: row.month, due, got, skip, off, behind: round2(dueSoFar - paidSoFar), caughtUp: dueSoFar - offSoFar - paidSoFar <= 0.5 };
+  });
+  // Working back from the end: has the total caught up at this month or any later one?
+  let later = false;
+  for (let i = rows.length - 1; i >= 0; i--) { later = later || rows[i].caughtUp; rows[i].settled = later; }
+  return rows.map(r => {
+    const covered = !(r.got > 0) && r.due > 0 && r.settled;
+    const paid = r.got > 0 || covered;
+    const left = paid || r.skip === 'none' ? 0 : round2(Math.max(0, Math.min(r.due, r.behind)));
+    const status = r.skip === 'none' ? 'none' : paid ? 'paid' : r.skip === 'later' ? 'later' : 'due';
+    return { month: r.month, due: r.due, logged: r.got, paid, covered, short: 0, over: 0, source: 'salary', skip: r.skip, status, left, deduction: r.off };
   });
 }
 

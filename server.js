@@ -1620,8 +1620,9 @@ app.get('/api/payment-log/:employeeId', requireAuth, requireAdmin, async (req, r
 app.post('/api/pay-skips', requireAuth, requireAdmin, async (req, res) => {
   try {
     const employee_id = parseInt(req.body.employee_id, 10), year = parseInt(req.body.pay_year, 10), month = parseInt(req.body.pay_month, 10);
-    const kind = req.body.kind === 'none' ? 'none' : 'later';
+    const kind = req.body.kind;
     if (!(employee_id > 0) || !validPayMonth(year, month)) return res.status(400).json({ error: 'Choose the person and the month' });
+    if (kind !== 'later' && kind !== 'none') return res.status(400).json({ error: 'Choose "pay later" or "nothing owed"' });
     const { rows: emp } = await q('SELECT id FROM employees WHERE id = ?', [employee_id]);
     if (!emp[0]) return res.status(404).json({ error: 'Employee not found' });
     const { rows: paid } = await q('SELECT id FROM monthly_payments WHERE employee_id = ? AND payment_year = ? AND payment_month = ? LIMIT 1', [employee_id, year, month]);

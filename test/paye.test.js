@@ -261,6 +261,13 @@ const slip = (over = {}) => ({
   assert.deepStrictEqual(ahead.map(r => r.status), ['paid', 'paid', 'paid', 'paid', 'paid', 'due']);
   assert.deepStrictEqual(ahead.map(r => r.covered), [false, true, true, true, false, false]);
   assert.strictEqual(ahead[5].left, 8000);
+  // A missed month made up with a double payment the month after is settled; one never made up stays missed
+  const madeUp = contractorMonths({ months, payments: [pay(1, 8000), pay(2, 8000), pay(3, 8000), pay(5, 16000)] });
+  assert.deepStrictEqual(madeUp.map(r => r.status), ['paid', 'paid', 'paid', 'paid', 'paid', 'due']);
+  assert.strictEqual(madeUp[3].covered, true);
+  const missed = contractorMonths({ months, payments: [pay(1, 8000), pay(3, 8000), pay(4, 8000), pay(5, 8000)] });
+  assert.deepStrictEqual(missed.map(r => r.status), ['paid', 'due', 'paid', 'paid', 'paid', 'due']);
+  assert.deepStrictEqual([missed[1].left, missed[1].covered], [8000, false]);
   // Part of a month already paid ahead
   const partly = contractorMonths({ months, payments: [pay(1, 12000)] });
   assert.deepStrictEqual([partly[1].paid, partly[1].left, partly[2].left], [false, 4000, 8000]);

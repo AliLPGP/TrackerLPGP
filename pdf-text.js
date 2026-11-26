@@ -14,6 +14,7 @@ const zlib = require('zlib');
 
 const MAX_OBJECTS = 20000;
 const MAX_STREAM = 32 * 1024 * 1024;   // no decompressed stream may be bigger than this
+const MAX_TOTAL = 96 * 1024 * 1024;    // nor may everything decompressed from one file
 const MAX_DEPTH = 8;                   // forms inside forms, page-tree levels
 const MAX_OPS = 2000000;               // drawing instructions read from one page
 
@@ -216,6 +217,9 @@ function streamBytes(doc, obj) {
     else data = null;
   }
   obj.decoded = data && data.length <= MAX_STREAM ? data : null;
+  // A small file must not be able to unpack into something enormous
+  doc.unpacked = (doc.unpacked || 0) + (data ? data.length : 0);
+  if (doc.unpacked > MAX_TOTAL) throw new Error('file too large once unpacked');
   return obj.decoded;
 }
 
