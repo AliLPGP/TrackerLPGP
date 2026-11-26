@@ -567,6 +567,57 @@ async function runMigrations() {
     )
   `);
 
+  // What each payslip says, read from the PDF when it is uploaded (payslip-read.js): the
+  // Salary page logs the payment from it and works out the months to come (paye.js)
+  await sql(`ALTER TABLE employee_payslips ADD COLUMN IF NOT EXISTS figures TEXT`);
+  await sql(`ALTER TABLE employee_payslips ADD COLUMN IF NOT EXISTS payment_amount NUMERIC(12,2)`);
+
+  // A month set aside on the Salary page: 'later' (still owed, pay it later) or 'none'
+  // (nothing is owed for that month). Kept here, not in the browser, so it is the same on
+  // every device and can be listed and undone.
+  await sql(`
+    CREATE TABLE IF NOT EXISTS pay_skips (
+      id SERIAL PRIMARY KEY,
+      employee_id INT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+      pay_year INT NOT NULL,
+      pay_month INT NOT NULL CHECK (pay_month BETWEEN 1 AND 12),
+      kind TEXT NOT NULL DEFAULT 'later' CHECK (kind IN ('later', 'none')),
+      note TEXT NOT NULL DEFAULT '',
+      created_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (employee_id, pay_year, pay_month)
+    )
+  `);
+
+  // The name printed on someone's payslips, when it is not the name the tracker has for them:
+  // remembered the first time the Salary page is told whose payslip it is
+  await sql(`
+    CREATE TABLE IF NOT EXISTS payslip_names (
+      name_key TEXT PRIMARY KEY,
+      employee_id INT NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // Every payment added, changed or removed, so "was this always that amount?" has an answer
+  await sql(`
+    CREATE TABLE IF NOT EXISTS payment_log (
+      id SERIAL PRIMARY KEY,
+      payment_id INT,
+      employee_id INT NOT NULL,
+      action TEXT NOT NULL,
+      pay_year INT,
+      pay_month INT,
+      amount NUMERIC(12,2),
+      was_year INT,
+      was_month INT,
+      was_amount NUMERIC(12,2),
+      note TEXT NOT NULL DEFAULT '',
+      by_name TEXT,
+      at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   // Extra bank holidays an admin adds (other countries, one-offs) and small settings such as the NDA wording
   await sql(`
     CREATE TABLE IF NOT EXISTS bank_holidays (

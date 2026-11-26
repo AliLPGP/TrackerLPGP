@@ -9,6 +9,7 @@ const { renderContractPdf } = require('./contract-pdf');
 const { STARTER_FORM, checkAnswers, starterDefaults } = require('./starter-form');
 const { renderStarterPdf } = require('./starter-pdf');
 const idCrypto = require('./id-crypto');
+const { readPayslip, figuresToKeep, matchPerson, nameKey } = require('./payslip-read');
 
 /**
  * Everything the staff portal needs beyond the original day-off buttons.
@@ -1016,7 +1017,7 @@ ${row.nda_signature ? `<img alt="Signature" src="${row.nda_signature}">` : ''}
   router.get('/employees/:id/payslips', requireAuth, requireAdmin, async (req, res) => {
     try {
       const { rows } = await q(
-        `SELECT id, pay_year, pay_month, file_name, file_size, uploaded_by, created_at
+        `SELECT id, pay_year, pay_month, file_name, file_size, uploaded_by, created_at, payment_amount
          FROM employee_payslips WHERE employee_id = ? ORDER BY pay_year DESC, pay_month DESC`, [req.params.id]);
       res.json(rows);
     } catch (e) { fail(res, e); }
@@ -1035,22 +1036,48 @@ ${row.nda_signature ? `<img alt="Signature" src="${row.nda_signature}">` : ''}
       const emp = await getEmployee(req.params.id);
       if (!emp) return res.status(404).json({ error: 'Employee not found' });
       if (emp.employment_type !== 'payroll') return res.status(400).json({ error: 'Payslips are only for payroll staff' });
+      // The figures on it are read and kept beside the file, so the Salary page can work out the months to come
+      const slip = readPayslip(Buffer.from(file_data, 'base64'), file_name), figures = figuresToKeep(slip, year, month);
+      if (slip.several) return res.status(400).json({ error: slip.problems[0] });
+      // What is printed on it is checked against the month and the person it is being filed
+      // for: a payslip under the wrong month sets the wrong month's pay, and under the wrong
+      // person it is theirs to open. The page asks, and sends the answer back.
+      if (slip.period && (slip.period.year !== year || slip.period.month !== month) && !req.body.confirm_month) {
+        return res.status(409).json({ check: 'month', says: { year: slip.period.year, month: slip.period.month },
+          error: `This payslip says it is for ${MONTH_NAMES[slip.period.month - 1]} ${slip.period.year}, not ${MONTH_NAMES[month - 1]} ${year}.` });
+      }
+      const printed = nameKey(slip.name);
+      if (printed && !req.body.confirm_name && !matchPerson(slip.name, [{ id: emp.id, name: emp.name }]).id) {
+        const { rows: known } = await q('SELECT employee_id FROM payslip_names WHERE name_key = ?', [printed]).catch(() => ({ rows: [] }));
+        if (!known[0] || Number(known[0].employee_id) !== Number(emp.id)) {
+          return res.status(409).json({ check: 'name', says_name: slip.name, error: `This payslip says \u201c${slip.name.slice(0, 80)}\u201d, not ${emp.name}.` });
+        }
+      }
       const { rows } = await q(
-        `INSERT INTO employee_payslips (employee_id, pay_year, pay_month, file_name, file_data, file_size, uploaded_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO employee_payslips (employee_id, pay_year, pay_month, file_name, file_data, file_size, uploaded_by, figures, payment_amount)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (employee_id, pay_year, pay_month) DO UPDATE SET file_name = EXCLUDED.file_name,
-           file_data = EXCLUDED.file_data, file_size = EXCLUDED.file_size, uploaded_by = EXCLUDED.uploaded_by, created_at = NOW()
-         RETURNING id, pay_year, pay_month, file_name, file_size, uploaded_by, created_at`,
-        [emp.id, year, month, safeName(file_name, 'payslip.pdf'), file_data, size, req.admin.username || null]);
+           file_data = EXCLUDED.file_data, file_size = EXCLUDED.file_size, uploaded_by = EXCLUDED.uploaded_by,
+           figures = EXCLUDED.figures, payment_amount = EXCLUDED.payment_amount, created_at = NOW()
+         RETURNING id, pay_year, pay_month, file_name, file_size, uploaded_by, created_at, payment_amount`,
+        [emp.id, year, month, safeName(file_name, 'payslip.pdf'), file_data, size, req.admin.username || null, figures ? JSON.stringify(figures) : null, slip.payment]);
       await q('INSERT INTO emp_notifications (employee_id, message, type) VALUES (?, ?, ?)',
         [emp.id, `Your payslip for ${MONTH_NAMES[month - 1]} ${year} is now available in Payslips.`, 'info']);
+      // (the printed name is remembered against them, or forgotten when it is their own: as on the Salary page)
+      if (printed && printed !== nameKey(emp.name)) await q(`INSERT INTO payslip_names (name_key, employee_id) VALUES (?, ?) ON CONFLICT (name_key) DO UPDATE SET employee_id = EXCLUDED.employee_id`, [printed, emp.id]).catch(() => {});
+      else if (printed) await q('DELETE FROM payslip_names WHERE name_key = ?', [printed]).catch(() => {});
       res.json(rows[0]);
     } catch (e) { fail(res, e); }
   });
 
   router.delete('/payslips/:id', requireAuth, requireAdmin, async (req, res) => {
     try {
-      await q('DELETE FROM employee_payslips WHERE id = ?', [req.params.id]);
+      const { rows } = await q('DELETE FROM employee_payslips WHERE id = ? RETURNING employee_id, pay_year, pay_month', [req.params.id]);
+      // The notice telling them it was there goes too (it may have been filed against the wrong person)
+      if (rows[0]) await q('DELETE FROM emp_notifications WHERE employee_id = ? AND message = ?',
+        [rows[0].employee_id, `Your payslip for ${MONTH_NAMES[rows[0].pay_month - 1]} ${rows[0].pay_year} is now available in Payslips.`]).catch(() => {});
+      // ...and so does any printed name remembered against them, so the next upload asks whose it is
+      if (rows[0]) await q('DELETE FROM payslip_names WHERE employee_id = ?', [rows[0].employee_id]).catch(() => {});
       res.json({ success: true });
     } catch (e) { fail(res, e); }
   });

@@ -1,6 +1,7 @@
 'use strict';
 // Payroll: each month owed in full at the salary in force; months not paid are what is left
 const assert = require('assert');
+const round2 = v => Math.round(v * 100) / 100;
 const { payrollMonths, payrollYear } = require('../salary-periods');
 
 const net = a => a / 12; // keep the arithmetic readable: take-home = gross / 12
@@ -97,5 +98,71 @@ assert.strictEqual(y.months.find(m => m.month === 7).due, 2375, '2,500 estimated
 // Everything paid, with a deduction never taken off a payslip: paid ahead by that much
 y = payrollYear({ months: flat, payments: flat.map(m => pay(m.month, 2000)), deductions: 100 });
 assert.strictEqual(y.remaining, -100); assert.strictEqual(y.pct, 100);
+
+// A pay rise from 1 November, but November was still paid at the old amount: the difference is owed
+{
+  const hist = [{ id: 1, effective_from: '2026-08-15', annual_salary: 18000 }, { id: 2, effective_from: '2026-11-01', annual_salary: 28000 }];
+  const ms = payrollMonths({ history: hist, year: 2026, startDate: '2026-08-15', endDate: null, annual: 28000, netMonthly: a => a / 15 });
+  const pay = (m, amount) => ({ payment_month: m, amount });
+  const old = payrollYear({ months: ms, payments: [pay(8, 600), pay(9, 1200), pay(10, 1200), pay(11, 1200)] });
+  const nov = old.months.find(m => m.month === 11);
+  assert.strictEqual(nov.paid, true);
+  assert.strictEqual(nov.short, round2(28000 / 15 - 1200));
+  assert.strictEqual(old.remaining, round2(nov.short + 28000 / 15));
+  // Paid at the new amount: nothing short
+  const fine = payrollYear({ months: ms, payments: [pay(9, 1200), pay(10, 1200), pay(11, 1866.67)] });
+  assert.strictEqual(fine.months.find(m => m.month === 11).short, 0);
+  // No rise: a low payment is still just a paid month
+  const flatMs = payrollMonths({ history: [], year: 2026, startDate: '2025-01-01', endDate: null, annual: 18000, netMonthly: a => a / 15 });
+  assert.strictEqual(payrollYear({ months: flatMs, payments: [pay(1, 900)] }).months[0].short, 0);
+}
+
+// Payslips on file give the months their figures, and a month can be set aside
+{
+  const ms = payrollMonths({ history: [], year: 2026, startDate: '2025-01-01', endDate: null, annual: 30000, netMonthly: a => a / 15 });   // 2,000 a month by the estimate
+  const pay = (m, amount) => ({ payment_month: m, amount });
+  const exact = { 10: { due: 2010.24, source: 'payslip' }, 11: { due: 2010.44, source: 'payslip' }, 12: { due: 2010.24, source: 'worked' } };
+  const toOctober = () => [...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(m => pay(m, 2010.44)), pay(10, 2010.24)];
+  const y = payrollYear({ months: ms, payments: [...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(m => pay(m, 2010.44)), pay(10, 2010.24), pay(11, 1900)], exact,
+    skips: { 12: 'later' } });
+  const row = m => y.months.find(r => r.month === m);
+  // October was paid what its payslip says; November less than its payslip says; December is worked out, and set aside to pay later
+  assert.deepStrictEqual([row(10).status, row(10).short, row(10).source], ['paid', 0, 'payslip']);
+  assert.deepStrictEqual([row(11).status, row(11).short, row(11).left, row(11).due], ['short', 110.44, 110.44, 2010.44]);
+  assert.deepStrictEqual([row(12).status, row(12).due, row(12).left, row(12).source, row(12).skip], ['later', 2010.24, 2010.24, 'worked', 'later']);
+  assert.strictEqual(y.remaining, round2(110.44 + 2010.24));
+  // A month without a figure from the payslips falls back to the usual amount paid
+  assert.strictEqual(row(9).source, 'usual');
+  // More than the payslip says is noted, never owed
+  const over = payrollYear({ months: ms, payments: [pay(11, 2100)], exact });
+  assert.deepStrictEqual([over.months.find(r => r.month === 11).over, over.months.find(r => r.month === 11).short], [89.56, 0]);
+  // Nothing owed for a month: it is worth nothing and nothing is left on it
+  const none = payrollYear({ months: ms, payments: [], exact, skips: { 12: 'none' } });
+  assert.deepStrictEqual([none.months.find(r => r.month === 12).status, none.months.find(r => r.month === 12).due, none.months.find(r => r.month === 12).left], ['none', 0, 0]);
+  // ...but a payment logged for a month set aside wins
+  const paidAnyway = payrollYear({ months: ms, payments: [pay(12, 2010.24)], exact, skips: { 12: 'none' } });
+  assert.deepStrictEqual([paidAnyway.months.find(r => r.month === 12).status, paidAnyway.months.find(r => r.month === 12).skip], ['paid', null]);
+
+  // A month whose own payslip pays nothing (unpaid leave put through payroll) is settled
+  const nil = payrollYear({ months: ms, payments: toOctober(), exact: { ...exact, 11: { due: 0, source: 'payslip' } } });
+  assert.deepStrictEqual([nil.months.find(r => r.month === 11).status, nil.months.find(r => r.month === 11).left, nil.remaining], ['none', 0, 2010.24]);
+
+  // A day off over the allowance in November costs 115.38. Paying November's payslip less
+  // that is the deduction being taken: nothing is short, and it is not taken off December too
+  const toOct = toOctober();
+  const taken = payrollYear({ months: ms, payments: [...toOct, pay(11, 1895.06)], exact, deductions: 115.38, deductionsByMonth: { 11: 115.38 } });
+  const nov = taken.months.find(r => r.month === 11);
+  assert.deepStrictEqual([nov.status, nov.short, nov.taken, nov.left], ['paid', 0, 115.38, 0]);
+  assert.strictEqual(taken.remaining, 2010.24);
+  // Paying less than that again is short by the difference
+  const less = payrollYear({ months: ms, payments: [...toOct, pay(11, 1800)], exact, deductions: 115.38, deductionsByMonth: { 11: 115.38 } });
+  assert.deepStrictEqual([less.months.find(r => r.month === 11).status, less.months.find(r => r.month === 11).short, less.remaining], ['short', 95.06, round2(95.06 + 2010.24)]);
+  // Paid in full, the deduction is still to come off what is left
+  const inFull = payrollYear({ months: ms, payments: [...toOct, pay(11, 2010.44)], exact, deductions: 115.38, deductionsByMonth: { 11: 115.38 } });
+  assert.deepStrictEqual([inFull.months.find(r => r.month === 11).taken, inFull.remaining], [0, round2(2010.24 - 115.38)]);
+  // A deduction in another month does not excuse a short payment in this one
+  const elsewhere = payrollYear({ months: ms, payments: [...toOct, pay(11, 1895.06)], exact, deductions: 115.38, deductionsByMonth: { 3: 115.38 } });
+  assert.deepStrictEqual([elsewhere.months.find(r => r.month === 11).status, elsewhere.months.find(r => r.month === 11).short], ['short', 115.38]);
+}
 
 console.log('payroll months tests passed');

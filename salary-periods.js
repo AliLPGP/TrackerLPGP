@@ -128,7 +128,16 @@ function payrollMonths({ history, year, startDate, endDate, annual, netMonthly }
       const segEnd = addDay(cuts[i + 1], -1);
       due += netMonthly(salaryOn(cuts[i])) * workdaysBetween(cuts[i], segEnd) / full;
     }
-    out.push({ month: m, due: round2(due), whole: s === mStart && e === mEnd && cuts.length === 2 });
+    const row = { month: m, due: round2(due), whole: s === mStart && e === mEnd && cuts.length === 2 };
+    // After a pay rise: what this month would have paid at the salary before it, so a
+    // payment still made at the old amount can be told apart (see payrollYear).
+    const rise = periods.length < 2 ? null : periods.slice(1).filter(p => p.from <= e).pop();
+    // Only for the six months after it: by then a payment is no longer "still the old amount"
+    if (rise && addDay(rise.from, 183) >= s) {
+      const before = salaryOn(addDay(rise.from, -1));
+      if (salaryOn(e) > before) row.dueBefore = round2(netMonthly(before) * workdaysBetween(s, e) / full);
+    }
+    out.push(row);
   }
   return out;
 }
@@ -150,6 +159,22 @@ function payrollMonths({ history, year, startDate, endDate, annual, netMonthly }
 // single month of 2,150 among the 1,900s changes nothing. Last year's payslips count too,
 // so the rate carries into January and a January bonus does not set the new year.
 //
+// The one time a paid month is not settled: a pay rise was in force and the payment was
+// still the old amount (nearer the old pay than the new). The difference is owed as a
+// top-up (`short`), and that payslip says nothing about the new usual pay.
+//
+// Better than any of that is the payslip itself. `exact` gives, for the months it can, the
+// figure worked out from the payslips on file ({ month: { due, source } }, see pay-months.js):
+// the payslip's own payment for a month whose payslip is on file ('payslip'), or the month
+// worked out forward from the latest payslip the way the payroll software does ('worked').
+// A paid month with its own payslip is short when less was paid than the payslip says, and
+// over when more was. Paying less by no more than that month's deductions
+// (`deductionsByMonth`, { month: amount }) is the deduction being taken: the month is not
+// short, and that deduction is not taken off the rest of the year a second time.
+//
+// `skips` marks months set aside on purpose ({ month: 'later' | 'none' }): 'later' is still
+// owed and only changes the status; 'none' means nothing is owed for that month at all.
+//
 // `months` (and `lastYear.months`) come from payrollMonths. Returns the months with what
 // was logged and what is still due, plus `rate` (payslip ÷ estimate, 1 with no payslip yet).
 const PAYSLIP_BAND = [0.75, 1.25];
@@ -162,13 +187,21 @@ function loggedByMonth(payments) {
 }
 
 // Each whole month's payslip as a share of the estimate for that month, oldest first
-function payslipRates(months, logged) {
+function payslipRates(months, logged, base = 1) {
   const rates = [];
   for (const m of months || []) {
     const got = logged[m.month] || 0;
+    if (atOldPay(m, got, base)) continue;
     if (m.whole && m.due > 0 && got >= m.due * PAYSLIP_BAND[0] && got <= m.due * PAYSLIP_BAND[1]) rates.push(got / m.due);
   }
   return rates;
+}
+
+// Paid at the amount from before a pay rise: nearer the old pay than the new, and not a
+// small advance. `rate` scales the estimates to real payslips.
+function atOldPay(m, got, rate) {
+  if (!(m.dueBefore > 0) || !(m.due > m.dueBefore) || !(got > 0)) return false;
+  return got >= m.dueBefore * rate * PAYSLIP_BAND[0] && got <= (m.dueBefore + m.due) / 2 * rate;
 }
 
 // The usual one of those: the latest that matches another (SAME_PAYSLIP). With no two
@@ -183,17 +216,37 @@ function usualRate(rates) {
   return sorted[Math.floor((sorted.length - 1) / 2)];
 }
 
-function payrollYear({ months, payments, deductions = 0, lastYear = null }) {
+function payrollYear({ months, payments, deductions = 0, lastYear = null, exact = null, skips = null, deductionsByMonth = null }) {
   const logged = loggedByMonth(payments);
-  const payslip = usualRate([...(lastYear ? payslipRates(lastYear.months, loggedByMonth(lastYear.payments)) : []), ...payslipRates(months, logged)]);
+  const lastLogged = lastYear ? loggedByMonth(lastYear.payments) : {};
+  const ratesWith = (pick, base) => [...(lastYear ? payslipRates(lastYear.months.filter(pick), lastLogged, base) : []), ...payslipRates(months.filter(pick), logged, base)];
+  // The payslips from before any recent rise say how real pay compares with the estimate,
+  // which is what tells an old-amount payment from a new one
+  const before = usualRate(ratesWith(m => !m.dueBefore, 1)) ?? 1;
+  const payslip = usualRate(ratesWith(() => true, before));
   const rate = payslip ?? 1;
   const rows = months.map(m => {
-    const got = round2(logged[m.month] || 0), due = round2(m.due * rate), paid = got > 0;
-    return { month: m.month, due, logged: got, paid, status: paid ? 'paid' : 'due', left: paid ? 0 : due };
+    const got = round2(logged[m.month] || 0), paid = got > 0;
+    const fixed = exact && exact[m.month] && exact[m.month].due >= 0 ? exact[m.month] : null;
+    const skip = !paid && skips && skips[m.month] ? skips[m.month] : null;
+    const due = skip === 'none' ? 0 : fixed ? round2(fixed.due) : round2(m.due * rate);
+    const source = fixed ? fixed.source : payslip !== null ? 'usual' : 'estimate';
+    const onSlip = fixed && fixed.source === 'payslip';
+    const gap = paid ? round2(due - got) : 0;
+    // Less paid than the payslip says, by no more than that month's deductions (days off
+    // over the allowance, office deductions): the deduction was taken, nothing is short
+    const taken = onSlip && gap > 0.005 ? Math.min(gap, round2((deductionsByMonth && deductionsByMonth[m.month]) || 0)) : 0;
+    const short = !paid ? 0 : onSlip ? (gap - taken > 0.005 ? round2(gap - taken) : 0) : (atOldPay(m, got, rate) ? Math.max(0, gap) : 0);
+    const over = paid && onSlip && got > due + 0.005 ? round2(got - due) : 0;
+    // (a month whose own payslip pays nothing is settled: there is nothing to pay or to chase)
+    const status = skip === 'none' || (onSlip && !paid && due === 0) ? 'none' : short ? 'short' : paid ? 'paid' : skip === 'later' ? 'later' : 'due';
+    return { month: m.month, due, logged: got, paid, short, over, taken: round2(taken), source, skip, status, left: paid ? short : due };
   });
   const totalPaid = round2((payments || []).reduce((a, p) => a + (parseFloat(p.amount) || 0), 0));
   const toPay = round2(rows.reduce((a, m) => a + m.left, 0));
-  const remaining = round2(toPay - deductions), owed = Math.max(0, remaining);
+  // (a deduction already taken out of a payment is not taken off again)
+  const stillToTake = Math.max(0, round2(deductions - rows.reduce((a, m) => a + m.taken, 0)));
+  const remaining = round2(toPay - stillToTake), owed = Math.max(0, remaining);
   return { months: rows, rate, fromPayslip: payslip !== null, target: round2(totalPaid + toPay), remaining, totalPaid,
     pct: totalPaid + owed > 0 ? Math.min(100, Math.round(totalPaid / (totalPaid + owed) * 100)) : 100 };
 }

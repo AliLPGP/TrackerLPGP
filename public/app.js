@@ -174,12 +174,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // Initial badge — silent, non-blocking (pay is admin-only)
-  if (currentUser.role === 'admin') fetch(`/api/salary-overview?year=${new Date().getFullYear()}`)
-    .then(r => r.ok ? r.json() : [])
-    .then(data => {
-      const now = new Date();
-      updateSalaryBadge(getUnpaidThisMonth(data, now.getFullYear(), now.getMonth() + 1).length);
-    }).catch(() => {});
+  if (currentUser.role === 'admin') Promise.all([fetch(`/api/salary-overview?year=${new Date().getFullYear()}`).then(r => r.ok ? r.json() : []), payLaterBefore()])
+    .then(([data, later]) => { updateSalaryBadge(payToDoCount({ [new Date().getFullYear()]: data }) + later.count); }).catch(() => {});
 });
 
 function toggleMobileNav() {
@@ -647,7 +643,7 @@ async function loadEmployees() {
   const res = await fetch('/api/employees');
   const raw = await res.json();
   employees = Array.isArray(raw) ? raw : [];
-  ['trackEmp', 'repEmp', 'calEmpFilter', 'salaryEmpFilter'].forEach(id => {
+  ['trackEmp', 'repEmp', 'calEmpFilter'].forEach(id => {
     const sel = document.getElementById(id);
     const prev = sel.value;
     if (id === 'trackEmp') sel.innerHTML = '<option value="">-- Select Employee --</option>';
@@ -1048,7 +1044,7 @@ async function loadDashboard() {
   document.getElementById('dashStats').innerHTML = `
     <div class="db-kpis">${'<div class="skeleton db-skel"></div>'.repeat(4)}</div>`;
 
-  const [summaryRes, salaryRes, upcomingRes, expiringRes, allEmpRes, hotelRes, dealsRes, evtRevRes, calCurRes, calNextRes] = await Promise.all([
+  const [summaryRes, salaryRes, upcomingRes, expiringRes, allEmpRes, hotelRes, dealsRes, evtRevRes, calCurRes, calNextRes, payLaterOld] = await Promise.all([
     fetch(`/api/summary?from=${year}-01-01&to=${year}-12-31`),
     currentUser.role === 'admin' ? fetch(`/api/salary-overview?year=${year}`) : null, // pay is admin-only
     fetch(`/api/calendar-reminders/upcoming?days=30`),
@@ -1058,7 +1054,8 @@ async function loadDashboard() {
     fetch(`/api/deals`),
     fetch(`/api/deals/revenue-by-event`),
     fetch(`/api/calendar?year=${year}&month=${month}`),
-    fetch(`/api/calendar?year=${month === 12 ? year + 1 : year}&month=${month === 12 ? 1 : month + 1}`)
+    fetch(`/api/calendar?year=${month === 12 ? year + 1 : year}&month=${month === 12 ? 1 : month + 1}`),
+    currentUser.role === 'admin' ? payLaterBefore().then(d => d.count) : 0   // months set aside in an earlier year, still unpaid
   ]);
 
   const summary       = summaryRes.ok   ? await summaryRes.json()   : [];
@@ -1078,7 +1075,8 @@ async function loadDashboard() {
 
   const activeEmps    = allEmps.filter(e => e.active);
   const unpaidCount   = getUnpaidThisMonth(salaryData, year, month).length;
-  updateSalaryBadge(unpaidCount);
+  const payLeftOver   = payAttention({ [year]: salaryData }).length + payLaterOld;   // missed, set aside or short, from earlier months
+  updateSalaryBadge(payToDoCount({ [year]: salaryData }) + payLaterOld);
 
   const totalHeadcount  = activeEmps.length;
   const payrollCount    = activeEmps.filter(e => e.employment_type === 'payroll').length;
@@ -1094,7 +1092,7 @@ async function loadDashboard() {
       return a + salToGBP(r, e.currency || 'GBP');
     }, 0);
 
-  renderDashOverview({ year, activeEmps, totalHeadcount, payrollCount, seCount, unpaidCount,
+  renderDashOverview({ year, activeEmps, totalHeadcount, payrollCount, seCount, unpaidCount, payLeftOver,
     totalGBPRemaining, deals: dashDeals, evtRevData, hotelData, expiring,
     upcoming, dayOffs: upcomingDayOffs });
 
@@ -1289,9 +1287,10 @@ function renderDashOverview(o) {
 
   const kpis = `<div class="db-kpis">
     ${kpi('Active staff', o.totalHeadcount, `${o.payrollCount} payroll · ${o.seCount} self-employed`, 'employees')}
-    ${kpi(`Unpaid for ${monthName}`, o.unpaidCount,
-          o.unpaidCount > 0 ? `${o.unpaidCount === 1 ? '1 person' : o.unpaidCount + ' people'} still to pay` : 'Everyone is paid',
-          'salary', o.unpaidCount > 0 ? 'is-alert' : 'is-good')}
+    ${kpi(`To pay for ${monthName}`, o.unpaidCount,
+          [o.unpaidCount > 0 ? (payWeekStarted() ? `${o.unpaidCount === 1 ? '1 person' : o.unpaidCount + ' people'} still to pay` : 'Due at the end of the month') : 'Everyone is paid',
+            o.payLeftOver > 0 ? `${o.payLeftOver} from earlier months` : ''].filter(Boolean).join(' · '),
+          'salary', (o.unpaidCount > 0 && payWeekStarted()) || o.payLeftOver > 0 ? 'is-alert' : o.unpaidCount > 0 ? '' : 'is-good')}
     ${kpi(`Salary left in ${o.year}`, pounds(o.totalGBPRemaining), 'All currencies, in GBP', 'salary')}
     ${kpi('Deals to collect', pounds(totals.out), `of ${pounds(totals.amount)} · ${pctCollected}% collected`, 'deals')}
   </div>`;
@@ -1674,7 +1673,7 @@ async function openEmployeeProfile(empId, opts = {}) {
         <h3>Payslips</h3>
         <div class="ep-doc-add">
           <input type="month" id="epSlipMonth" class="ep-doc-type" value="${new Date().toISOString().slice(0, 7)}" aria-label="Payslip month">
-          <label class="btn btn-sm">Upload PDF<input type="file" accept=".pdf,application/pdf" hidden onchange="epUploadPayslip(${emp.id},this)"></label>
+          <label class="btn btn-sm">Upload PDF<input type="file" accept=".pdf,application/pdf" multiple hidden onchange="epUploadPayslip(${emp.id},this)"></label>
         </div>
       </div>
       <div id="epPayslips" class="ep-list"><div class="ep-loading">Loading…</div></div>
@@ -1774,18 +1773,22 @@ function empLeftToPayHtml(row, year) {
   let summary, strip = '', rows, foot = '', figure = left > 0 ? money(left) : 'Nothing left';
   if (Array.isArray(row.pay_months) && row.pay_months.length) {
     // Payroll: one row for each month with no payment logged
-    const m = payrollCardMonths(row, year), toPay = row.pay_months.filter(x => !x.paid);
+    const m = payrollCardMonths(row, year), toPay = row.pay_months.filter(x => !x.paid && x.status !== 'none');
     const now = new Date(), lateBefore = year < now.getFullYear() ? 13 : year === now.getFullYear() ? now.getMonth() + 1 : 0;
     summary = [m.headline, m.count].filter(Boolean).join(' · ');
     strip = `<div class="sc-mo-strip" role="img" aria-label="${summary}">${m.strip}</div>`;
     rows = toPay.map(x => line(MONTHS[x.month], money(x.due), [
       start && start.month === x.month && start.day > 1 ? `Part month: started ${fmtDateShort(row.start_date)}` : '',
       end && end.month === x.month ? `Part month: left ${fmtDateShort(row.termination_date)}` : '',
-      x.month < lateBefore ? 'No payment logged for it' : '',
+      x.status === 'later' ? 'Set aside to pay later' : x.month < lateBefore ? 'No payment logged for it' : '',
     ].filter(Boolean).join(' · '))).join('');
-    if (!toPay.length) rows = line('Every month is paid', money(0));
-    else foot = `A whole month is ${money(parseFloat(row.monthly_pay) || 0)}: ${row.monthly_pay_from === 'payslip'
-      ? 'their usual payslip, leaving out one-off extras such as a bonus or a refund.' : 'the take-home worked out from their salary, until a whole month\'s payslip is logged.'}`;
+    rows += row.pay_months.filter(x => x.short > 0).map(x => line(`${MONTHS[x.month]} top-up`, money(x.short),
+      x.source === 'payslip' ? `Paid ${money(x.logged)}. The payslip says ${money(x.due)}`
+        : `Paid ${money(x.logged)}, the amount before the pay rise. It should have been ${money(x.due)}`)).join('');
+    if (!rows) rows = line('Every month is paid', money(0));
+    else foot = row.pay_exact ? 'Each month is worked out from their payslips, the way the payroll software does it, so it can differ by a few pence from one month to the next.'
+      : `A whole month is ${money(parseFloat(row.monthly_pay) || 0)}: ${row.monthly_pay_from === 'payslip'
+      ? 'their usual payslip, leaving out one-off extras such as a bonus or a refund.' : 'the take-home worked out from their salary, until a payslip is uploaded.'}`;
   } else {
     // Self-employed: the year's pay, less what has been paid
     const target = parseFloat(row.salary_target) || 0;
@@ -2204,29 +2207,22 @@ async function loadEmpPayslips(empId) {
           <small>${esc(p.file_name)} · ${docKb(p.file_size)} · uploaded ${fmtDateShort(String(p.created_at).slice(0, 10))}</small></span>
         <button class="btn btn-ghost btn-sm ep-danger" onclick="epDeletePayslip(${empId},${p.id})">Delete</button>
       </div>`).join('')
-      : '<div class="ep-empty">No payslips yet. Pick the month and upload the PDF; they will see it in their portal.</div>';
+      : '<div class="ep-empty">No payslips yet. Upload the PDF: the month and the amount paid are read from it, the payment is logged, and they will see it in their portal.</div>';
   } catch { box.innerHTML = '<div class="ep-empty">Could not load payslips.</div>'; }
 }
 
+// Payslips added from a person's profile go through the same steps as on the Salary page:
+// each is read, checked against the name and the month printed on it, filed, and the
+// payment logged if the month has none. The month box is only for one that cannot be read.
 async function epUploadPayslip(empId, input) {
-  const file = input.files[0];
+  const files = [...input.files];
   input.value = '';
-  const ym = document.getElementById('epSlipMonth').value;
-  if (!/^\d{4}-\d{2}$/.test(ym)) { showToast('Choose the month this payslip is for', 'error'); return; }
-  const doc = await readPdfFile(file);
-  if (!doc) return;
-  const [pay_year, pay_month] = ym.split('-').map(Number);
-  const res = await fetch(`/api/employees/${empId}/payslips`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...doc, pay_year, pay_month })
-  }).catch(() => null);
-  if (!res || !res.ok) {
-    const err = res ? await res.json().catch(() => ({})) : {};
-    showToast(err.error || 'Upload failed', 'error');
-    return;
-  }
-  showToast(`Payslip uploaded for ${MONTHS[pay_month]} ${pay_year}`, 'success');
-  loadEmpPayslips(empId);
+  if (!files.length) return;
+  const ym = document.getElementById('epSlipMonth').value, now = payNow();
+  const [year, month] = /^\d{4}-\d{2}$/.test(ym) ? ym.split('-').map(Number) : [now.year, now.month];
+  if (!_pay.data[year]) { try { await payFetchYear(year); } catch {} }
+  _pay.afterSlips = () => { if (_profileEmpId === empId) loadEmpPayslips(empId); };
+  payTakeFiles(files, { id: empId, year, month });
 }
 
 async function epDeletePayslip(empId, id) {
@@ -3075,41 +3071,6 @@ async function resetPw(id) {
 
 // ─── SALARY PAGE ─────────────────────────────────────────────────────────────
 
-function setSalaryTab(btn) {
-  document.querySelectorAll('.salary-tab').forEach(t => t.classList.remove('active'));
-  btn.classList.add('active');
-  loadSalaryPage();
-}
-
-function pbFilter(btn, filter) {
-  document.querySelectorAll('.pb-filter').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  document.querySelectorAll('#pbList .pb-row').forEach(row => {
-    row.style.display = (filter === 'unpaid' && row.classList.contains('pb-row--settled')) ? 'none' : '';
-  });
-  // Hide section headers if all their rows are hidden
-  document.querySelectorAll('#pbList .pb-section').forEach(sec => {
-    const visible = [...sec.querySelectorAll('.pb-row')].some(r => r.style.display !== 'none');
-    sec.style.display = visible ? '' : 'none';
-  });
-}
-
-function activeSalaryTab() {
-  return document.querySelector('.salary-tab.active')?.dataset.tab || 'all';
-}
-
-function initSalaryYearSelect() {
-  const sel = document.getElementById('salaryYear');
-  if (sel.options.length > 1) return;
-  const now = new Date().getFullYear();
-  for (let y = now; y >= now - 4; y--) {
-    const opt = document.createElement('option');
-    opt.value = y; opt.textContent = y;
-    sel.appendChild(opt);
-  }
-  sel.value = now;
-}
-
 // ── Payroll card: the year in months ──
 // Payroll staff are paid monthly, so their card counts months rather than a yearly target:
 // which months have a payment logged, which are still to pay, and what those come to at
@@ -3117,7 +3078,7 @@ function initSalaryYearSelect() {
 function payrollCardMonths(emp, year) {
   const months = emp.pay_months, sym = currencySymbol(emp.currency || 'GBP');
   const money = v => sym + v.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const paid = months.filter(m => m.paid), toPay = months.filter(m => !m.paid);
+  const paid = months.filter(m => m.paid), toPay = months.filter(m => !m.paid && m.status !== 'none');
   const lastPaid = paid.length ? paid[paid.length - 1].month : 0;
   const missed = toPay.filter(m => m.month < lastPaid);
   // A month still to pay is late once it is over: every month of a past year, and the ones before this month
@@ -3125,11 +3086,13 @@ function payrollCardMonths(emp, year) {
   const lateBefore = y < now.getFullYear() ? 13 : y === now.getFullYear() ? now.getMonth() + 1 : 0;
   const headline = !paid.length ? 'No months paid yet' : !toPay.length ? `Paid for all of ${year}`
     : `Paid to ${MONTHS[lastPaid]}${missed.length ? `, except ${missed.map(m => MONTHS[m.month].slice(0, 3)).join(', ')}` : ''}`;
-  const count = toPay.length ? `${toPay.length} month${toPay.length > 1 ? 's' : ''} to pay` : '';
+  const shortMonths = months.filter(m => m.short > 0), shortSum = shortMonths.reduce((a, m) => a + m.short, 0);
+  const count = [toPay.length ? `${toPay.length} month${toPay.length > 1 ? 's' : ''} to pay` : '',
+    shortMonths.length ? `${shortMonths.map(m => MONTHS[m.month].slice(0, 3)).join(', ')} ${money(shortSum)} short` : ''].filter(Boolean).join(' · ');
   const strip = MONTHS.slice(1).map((name, i) => {
     const m = months.find(x => x.month === i + 1);
-    const state = !m ? 'off' : m.paid ? 'paid' : m.month < lateBefore ? 'late' : 'due';
-    const tip = !m ? `${name}: not on the payroll` : m.paid ? `${name}: ${money(m.logged)} paid` : `${name}: ${money(m.due)} to pay${state === 'late' ? ', overdue' : ''}`;
+    const state = !m || m.status === 'none' ? 'off' : m.short > 0 ? 'late' : m.paid ? 'paid' : m.month < lateBefore ? 'late' : 'due';
+    const tip = !m ? `${name}: not on the payroll` : m.status === 'none' ? `${name}: nothing owed` : m.short > 0 ? `${name}: ${money(m.logged)} paid, ${money(m.short)} short` : m.paid ? `${name}: ${money(m.logged)} paid` : `${name}: ${money(m.due)} to pay${m.status === 'later' ? ', set aside to pay later' : state === 'late' ? ', overdue' : ''}`;
     return `<span class="sc-mo is-${state}" title="${tip}">${name[0]}</span>`;
   }).join('');
 
@@ -3139,844 +3102,991 @@ function payrollCardMonths(emp, year) {
   const sum = !toPay.length ? (ded > 0 ? `${money(ded)} of deductions not taken off` : 'Every month is paid')
     : (toPay.length === 1 ? `${MONTHS[toPay[0].month]} at ${money(toPay[0].due)}` : sameDue ? `${toPay.length} months × ${money(toPay[0].due)}` : `${toPay.length} months`)
       + (ded > 0 ? `, less ${money(ded)} deductions` : '');
-  return { headline, count, strip, sum, left: left > 0 ? money(left) : 'Nothing left', owing: left > 0 };
+  const sumAll = shortMonths.length ? `${toPay.length ? sum.replace(/, less .*$/, '') + ', plus ' : ''}${money(shortSum)} short for ${shortMonths.map(m => MONTHS[m.month]).join(', ')}${toPay.length && ded > 0 ? `, less ${money(ded)} deductions` : ''}` : sum;
+  return { headline, count, strip, sum: sumAll, left: left > 0 ? money(left) : 'Nothing left', owing: left > 0 };
+}
+
+// ─── SALARY PAGE ──────────────────────────────────────────────────────────────
+// One month at a time: who to pay, how much, and who is done. The amounts come from the
+// server (/api/salary-overview: each person's `months`), which works payroll pay out from
+// the payslips on file the way the accountant's software does. Payslip PDFs dropped on the
+// page are read, matched to the person and month, filed, and logged as the payment.
+//
+// A month can be set aside: "pay later" keeps it owed and on the list of things that need
+// attention; "nothing owed" takes it off what the person is owed. Both are kept on the
+// server, so every device shows the same thing, and both can be undone.
+let _pay = { year: 0, month: 0, view: 'month', data: {}, person: null, open: {}, slips: [], bulk: null };
+
+const payNow = () => { const d = new Date(); return { year: d.getFullYear(), month: d.getMonth() + 1 }; };
+function payMoney(v, cur) {
+  const n = Number(v) || 0;
+  return (n < 0 ? '−' : '') + currencySymbol(cur || 'GBP') + Math.abs(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+const payRows = year => _pay.data[year] || [];
+const payPerson = (id, year = _pay.year) => payRows(year).find(r => Number(r.employee_id) === Number(id)) || null;
+const payMonthOf = (row, month) => (row && Array.isArray(row.months) ? row.months.find(m => m.month === month) : null) || null;
+const payCur = row => (row && row.currency) || 'GBP';
+const payIsPayroll = row => !!row && row.employment_type === 'payroll';
+
+// The groups people are listed in: payroll first, then the self-employed by currency
+function payGroupOf(row) {
+  const cur = payCur(row);
+  if (payIsPayroll(row)) return { key: 'payroll' + (cur === 'GBP' ? '' : '_' + cur), label: 'Payroll' + (cur === 'GBP' ? '' : ' · ' + cur), order: 0 };
+  return { key: 'self_' + cur, label: 'Self-employed' + (cur === 'GBP' ? '' : ' · ' + cur), order: cur === 'GBP' ? 1 : 2 };
+}
+
+// Where a payroll month's figure comes from, in plain words
+function paySourceNote(row, m) {
+  if (!payIsPayroll(row)) return '';
+  if (m.source === 'payslip') return 'From this month’s payslip';
+  if (m.source === 'worked') return 'Worked out from their payslips';
+  if (m.source === 'rough') return 'Estimate from their last payslip';
+  if (m.source === 'usual') return 'Their usual pay';
+  return 'Estimate until a payslip is uploaded';
+}
+
+// Everyone with something to show for a month: { row, m }
+function payMonthList(year, month) {
+  return payRows(year).map(row => ({ row, m: payMonthOf(row, month) })).filter(x => x.m);
+}
+
+// What still needs dealing with as of today: months that have gone by unpaid, months set
+// aside to pay later, and months paid short. Oldest first. Unpaid and short months are
+// looked for in this year (and in last year until the end of March); a month set aside to
+// pay later stays on the list from any year, until it is paid or marked nothing owed.
+function payAttention(overviews) {
+  const now = payNow(), items = [];
+  Object.keys(overviews || {}).map(Number).sort().forEach(year => {
+    if (year > now.year) return;
+    const recent = year === now.year || (year === now.year - 1 && now.month <= 3);
+    (overviews[year] || []).forEach(row => (row.months || []).forEach(m => {
+      const past = year < now.year || m.month < now.month, unpaid = past && !m.paid && m.status !== 'none' && m.left > 0.005;
+      if (recent && m.short > 0.005 && (past || m.month === now.month)) items.push({ kind: 'short', row, m, year, amount: m.short });
+      else if (unpaid && m.status === 'later') items.push({ kind: 'later', row, m, year, amount: m.left });
+      else if (unpaid && recent) items.push({ kind: 'missed', row, m, year, amount: m.left });
+    }));
+  });
+  return items.sort((a, b) => (a.year - b.year) || (a.m.month - b.m.month) || String(a.row.name).localeCompare(String(b.row.name)));
+}
+// How many months set aside to pay later in earlier years are still unpaid, and which
+// years they are in (for the places that only have this year's figures to hand)
+async function payLaterBefore() {
+  try { const res = await fetch('/api/pay-skips/later'); if (res.ok) { const d = await res.json(); return { years: Array.isArray(d.years) ? d.years : [], count: Number(d.count) || 0 }; } } catch {}
+  return { years: [], count: 0 };
+}
+
+// People still to pay for a month (not counting anyone set aside). Used by the nav badge
+// and the dashboard as well as this page.
+function getUnpaidThisMonth(overview, year, month) {
+  return (overview || []).filter(row => {
+    if (Array.isArray(row.months)) { const m = payMonthOf(row, month); return !!m && m.status === 'due' && m.left > 0.005; }
+    // (an answer from before the server sent months)
+    if (row.is_terminated || !(parseFloat(row.annual_salary) > 0)) return false;
+    if (row.start_date) { const [sy, sm] = row.start_date.slice(0, 7).split('-').map(Number); if (sy > year || (sy === year && sm > month)) return false; }
+    return !(row.payments || []).some(p => parseInt(p.payment_year) === year && parseInt(p.payment_month) === month);
+  });
+}
+// Payday is the end of the month, so this month's pay only counts as "to pay now" from the
+// 25th. Before that the page lists it, but nothing nags.
+const PAY_WEEK_FROM = 25;
+const payWeekStarted = () => new Date().getDate() >= PAY_WEEK_FROM;
+// How many things want doing now: people to pay this month (once payday week has started),
+// plus anything left over from earlier months. The Salary badge and the dashboard use it.
+function payToDoCount(overviews) {
+  const now = payNow(), rows = overviews[now.year] || [];
+  return (payWeekStarted() ? getUnpaidThisMonth(rows, now.year, now.month).length : 0) + payAttention(overviews).length;
+}
+// The years that count towards what needs attention now: this year, last year until the end
+// of March, and an earlier year with a month still set aside (as last fetched)
+function payAttentionYears() {
+  const now = payNow();
+  return Object.fromEntries(Object.entries(_pay.data).filter(([y]) => Number(y) === now.year || (Number(y) === now.year - 1 && now.month <= 3) || (_pay.laterYears || []).includes(Number(y))));
+}
+function paySetBadge() {
+  if (!_pay.data[payNow().year]) return;
+  updateSalaryBadge(payToDoCount(payAttentionYears()));
+}
+// Tap an amount to copy it (for the banking app): the plain number, no pound sign or commas
+function payCopy(amount) {
+  const text = Number(amount).toFixed(2);
+  const done = () => showToast(`Copied ${text}`, 'success', 1800);
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, () => showToast('Could not copy', 'error'));
+  else showToast('Could not copy', 'error');
+}
+
+async function payFetchYear(year) {
+  const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 30000);
+  try {
+    const res = await fetch(`/api/salary-overview?year=${year}`, { signal: ctrl.signal });
+    if (!res.ok) { let msg = `Server error ${res.status}`; try { msg = (await res.json()).error || msg; } catch {} throw new Error(msg); }
+    const data = await res.json();
+    if (!Array.isArray(data)) throw new Error('Unexpected response from server');
+    _pay.data[year] = data;
+  } finally { clearTimeout(timer); }
 }
 
 async function loadSalaryPage() {
-  const container = document.getElementById('salaryCards');
+  const page = document.getElementById('page-salary');
+  if (!page) return;
+  let body = document.getElementById('salaryBody');
+  if (!body) { page.innerHTML = '<div id="salaryBody"></div>'; body = document.getElementById('salaryBody'); }
+  const now = payNow();
+  if (!_pay.year) { _pay.year = now.year; _pay.month = now.month; }
+  if (!body.innerHTML) body.innerHTML = '<div class="skeleton" style="height:360px;border-radius:16px"></div>';
   try {
-    initSalaryYearSelect();
-    const year       = document.getElementById('salaryYear').value || new Date().getFullYear();
-    const empFilter  = document.getElementById('salaryEmpFilter').value;
-    const searchTerm = (document.getElementById('salarySearch')?.value || '').trim().toLowerCase();
-
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 20000);
-    let res;
-    try {
-      res = await fetch(`/api/salary-overview?year=${year}`, { signal: ctrl.signal });
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!res.ok) {
-      let errMsg = `Server error ${res.status}`;
-      try { const j = await res.json(); errMsg = j.error || errMsg; } catch {}
-      throw new Error(errMsg);
-    }
-    const data = await res.json();
-    if (!Array.isArray(data)) throw new Error('Unexpected response from server');
-
-    // Unpaid-this-month set (current year only) — powers the expandable "to pay"
-    // lists inside the summary table, replacing the standalone reminder panel.
-    const _now = new Date();
-    const curY = _now.getFullYear(), curM = _now.getMonth() + 1;
-    const isCurrentYear = parseInt(year) === curY;
-    const unpaidList = isCurrentYear ? getUnpaidThisMonth(data, curY, curM) : [];
-    const unpaidSet  = new Set(unpaidList.map(e => e.employee_id));
-    const monthShort = MONTHS[curM].slice(0, 3);
-    updateSalaryBadge(unpaidList.length);
-
-    // Update tab counts
-    const base = empFilter ? data.filter(e => String(e.employee_id) === empFilter) : data;
-    const searched = searchTerm
-      ? base.filter(e => (e.name || '').toLowerCase().includes(searchTerm))
-      : base;
-    const counts = {
-      all:          searched.filter(e => !e.is_terminated).length,
-      payroll:      searched.filter(e => !e.is_terminated && e.employment_type === 'payroll').length,
-      self_employed:searched.filter(e => !e.is_terminated && e.employment_type === 'self_employed').length,
-      terminated:   searched.filter(e => e.is_terminated).length
-    };
-    document.querySelectorAll('.salary-tab').forEach(t => {
-      const key = t.dataset.tab;
-      const labels = { all:'All', payroll:'Payroll', self_employed:'Self-Employed', terminated:'Terminated' };
-      t.textContent = `${labels[key]} (${counts[key]})`;
-    });
-
-    // Update salary page tag and sub
-    const salaryPageTag = document.getElementById('salaryPageTag');
-    if (salaryPageTag) salaryPageTag.textContent = year;
-    const salarySub = document.getElementById('salarySub');
-    if (salarySub) {
-      const activeCount = searched.filter(e => !e.is_terminated).length;
-      const flagged = searched.filter(e => !e.is_terminated && (parseFloat(e.excess_days) || 0) > 0).length;
-      salarySub.textContent = `// ${activeCount} account${activeCount !== 1 ? 's' : ''} · ${flagged > 0 ? flagged + ' flagged' : 'all clear'}`;
-    }
-
-    const tab = activeSalaryTab();
-    let rows = [...searched];
-    if (tab === 'terminated')        rows = rows.filter(e => e.is_terminated);
-    else if (tab === 'payroll')      rows = rows.filter(e => !e.is_terminated && e.employment_type === 'payroll');
-    else if (tab === 'self_employed')rows = rows.filter(e => !e.is_terminated && e.employment_type === 'self_employed');
-    else                             rows = rows.filter(e => !e.is_terminated);
-
-    // ── Totals strip: grouped by employment_type × currency (active only) ──
-    const activeRows = rows.filter(r => !r.is_terminated);
-    const TYPE_ORDER = ['payroll', 'self_employed'];
-    const groups = [];
-    TYPE_ORDER.forEach(type => {
-      const ofType = activeRows.filter(r => r.employment_type === type);
-      if (!ofType.length) return;
-      const curs = [...new Set(ofType.map(r => r.currency || 'GBP'))];
-      curs.forEach(c => {
-        groups.push({ type, currency: c, rows: ofType.filter(r => (r.currency || 'GBP') === c) });
-      });
-    });
-    const TYPE_LABEL = { payroll: 'Payroll', self_employed: 'Self-Employed' };
-    const TYPE_CLASS  = { payroll: 'payroll', self_employed: 'self-employed' };
-
-    // ── Summary table ──
-    const allActive = activeRows;
-    const gtTarget  = allActive.reduce((s, e) => s + salFxToGBP(parseFloat(e.salary_target ?? e.annual_salary) || 0, e.currency || 'GBP'), 0);
-    const gtPaid    = allActive.reduce((s, e) => s + salFxToGBP(parseFloat(e.total_paid)    || 0, e.currency || 'GBP'), 0);
-    const gtDeduct  = allActive.reduce((s, e) => s + salFxToGBP((parseFloat(e.excess_deduction)||0)+(parseFloat(e.total_office_deductions)||0), e.currency || 'GBP'), 0);
-    const gtRemain  = allActive.reduce((s, e) => s + Math.max(0, salFxToGBP(parseFloat(e.net_remaining) || 0, e.currency || 'GBP')), 0);
-    const hasMultiCurrency = groups.some(g => g.currency !== 'GBP');
-    const gtPaidPct = (gtTarget - gtDeduct) > 0 ? Math.min(100, Math.round(gtPaid / (gtTarget - gtDeduct) * 100)) : 0;
-    const fmtN = (v, sym) => sym + v.toLocaleString('en-GB', {maximumFractionDigits:0});
-    const fmtGBP = v => '£' + v.toLocaleString('en-GB', {maximumFractionDigits:0});
-
-    // ── Overview: what is still to pay, per group ──────────────────────────
-    // Not filtered by the type tab on purpose. An overview that changed every
-    // time you clicked a tab would not be an overview; this answers "what is
-    // left across the whole team" whichever tab is open. The year, employee
-    // and search filters do apply, because those narrow who you are asking
-    // about rather than which slice of them you are looking at.
-    const ovRows = searched.filter(e => !e.is_terminated);
-
-    // Fixed list, fixed order. Payroll appears even when nobody is on it, so
-    // "nothing owed on payroll" is a visible answer rather than a missing
-    // tile. Anyone the list does not claim -- a currency we have not seen
-    // before -- still gets a tile rather than being dropped.
-    const OV_DEFS = [
-      { key: 'payroll', label: 'Payroll',
-        match: r => r.employment_type === 'payroll' },
-      { key: 'se_gbp',  label: 'Self-Employed',
-        match: r => r.employment_type === 'self_employed' && (r.currency || 'GBP') === 'GBP' },
-      { key: 'se_php',  label: 'Self-Employed · PHP',
-        match: r => r.employment_type === 'self_employed' && r.currency === 'PHP' },
-    ];
-    const ovClaimed = new Set();
-    const ovGroups = OV_DEFS.map(d => {
-      const rows = ovRows.filter(d.match);
-      rows.forEach(r => ovClaimed.add(r.employee_id));
-      return { key: d.key, label: d.label, rows };
-    });
-    const ovExtra = {};
-    ovRows.filter(r => !ovClaimed.has(r.employee_id)).forEach(r => {
-      const cur = r.currency || 'GBP';
-      const k = `${r.employment_type}_${cur}`;
-      (ovExtra[k] = ovExtra[k] || {
-        key: k,
-        label: `${TYPE_LABEL[r.employment_type] || r.employment_type}${cur !== 'GBP' ? ' · ' + cur : ''}`,
-        rows: []
-      }).rows.push(r);
-    });
-    Object.values(ovExtra).forEach(g => ovGroups.push(g));
-
-    // Each person's effective target is rebuilt as remaining + paid, so it is
-    // the server's own figure rather than a second formula that could drift.
-    const ovEffective = r => (parseFloat(r.net_remaining) || 0) + (parseFloat(r.total_paid) || 0);
-    // Owed counts only the people who are actually behind. Overpaying one
-    // person is not cash you get to hold back from another, so overpayment is
-    // reported on its own line instead of quietly shrinking the bill.
-    const ovOwedOf  = r => Math.max(0, parseFloat(r.net_remaining) || 0);
-    const ovOverOf  = r => Math.max(0, -(parseFloat(r.net_remaining) || 0));
-    const ovPaidOf  = r => parseFloat(r.total_paid) || 0;
-
-    const ovTiles = ovGroups.map(g => {
-      const curs  = [...new Set(g.rows.map(r => r.currency || 'GBP'))];
-      // A group in one currency is reported in it. A group spanning several
-      // can only be added up in GBP, and says so.
-      const mixed = curs.length > 1;
-      const cur   = mixed ? 'GBP' : (curs[0] || 'GBP');
-      const sym   = currencySymbol(cur);
-      const sum   = pick => g.rows.reduce(
-        (a, r) => a + (mixed ? salFxToGBP(pick(r), r.currency || 'GBP') : pick(r)), 0);
-
-      const owed = sum(ovOwedOf);
-      const eff  = sum(ovEffective);
-      const paid = sum(ovPaidOf);
-
-      const pctPaid = eff > 0 ? Math.min(100, Math.round(paid / eff * 100)) : 0;
-      const showGBP = !mixed && cur !== 'GBP' && owed > 0;
-      const money   = v => sym + Math.round(v).toLocaleString('en-GB');
-
-      if (!g.rows.length) {
-        return `<article class="sal-ov-tile sal-ov-tile--empty">
-          <div class="sal-ov-t-head">
-            <span class="sal-ov-t-name">${esc(g.label)}</span>
-            <span class="sal-ov-t-count">none</span>
-          </div>
-          <div class="sal-ov-t-owed sal-ov-t-owed--none">Nobody on this group</div>
-        </article>`;
-      }
-
-      return `<article class="sal-ov-tile">
-        <div class="sal-ov-t-head">
-          <span class="sal-ov-t-name">${esc(g.label)}</span>
-          <span class="sal-ov-t-count">${g.rows.length} ${g.rows.length === 1 ? 'person' : 'people'}</span>
-        </div>
-        <div class="sal-ov-t-owed${owed <= 0 ? ' sal-ov-t-owed--done' : ''}">${owed > 0 ? money(owed) : 'Fully paid'}</div>
-        ${showGBP ? `<div class="sal-ov-t-gbp">≈ ${fmtGBP(salFxToGBP(owed, cur))}</div>` : ''}
-        <div class="sal-ov-t-alt">${owed <= 0 ? 'nothing left to pay' : 'left to pay'}${mixed ? ', in GBP' : ''}</div>
-        <div class="sal-ov-meter" role="img" aria-label="${pctPaid}% paid">
-          <span class="sal-ov-meter-fill" style="width:${pctPaid}%"></span>
-        </div>
-        <div class="sal-ov-t-foot"><span class="sal-ov-t-pace">${pctPaid}% paid</span></div>
-      </article>`;
-    }).join('');
-
-    // Whole-team totals. GBP, because that is the only way to add them up.
-    const ovGbp     = pick => ovRows.reduce((a, r) => a + salFxToGBP(pick(r), r.currency || 'GBP'), 0);
-    const ovOwedGBP = ovGbp(ovOwedOf);
-    const ovOverGBP = ovGbp(ovOverOf);
-    const ovEffGBP  = ovGbp(ovEffective);
-    const ovPaidGBP = ovGbp(ovPaidOf);
-    const ovPct     = ovEffGBP > 0 ? Math.min(100, Math.round(ovPaidGBP / ovEffGBP * 100)) : 0;
-    const ovNonGBP  = [...new Set(ovRows.map(r => r.currency || 'GBP'))].filter(c => c !== 'GBP');
-
-    // Guard: a stale cached index.html would not have this element, and losing
-    // the overview must not take the rest of the salary page down with it.
-    const ovEl = document.getElementById('salaryOverview');
-    if (ovEl) ovEl.innerHTML = ovRows.length ? `
-      <section class="sal-ov">
-        <header class="sal-ov-head">
-          <div>
-            <div class="sal-ov-eyebrow">Overview</div>
-            <h3 class="sal-ov-title">Still to pay in ${year}</h3>
-            <p class="sal-ov-note">${ovRows.length} active ${ovRows.length === 1 ? 'person' : 'people'}${
-              ovOverGBP > 0 ? ` · ${fmtGBP(ovOverGBP)} overpaid (not taken off)` : ''}</p>
-          </div>
-          <div class="sal-ov-total">
-            <div class="sal-ov-total-label">Total left to pay, in GBP</div>
-            <div class="sal-ov-total-value">${fmtGBP(ovOwedGBP)}</div>
-            <div class="sal-ov-total-note">${ovPaidGBP > ovEffGBP
-              ? `${fmtGBP(ovPaidGBP)} paid, ${fmtGBP(ovPaidGBP - ovEffGBP)} ahead of what is owed`
-              : `${fmtGBP(ovPaidGBP)} of ${fmtGBP(ovEffGBP)} paid (${ovPct}%)`}</div>
-          </div>
-        </header>
-        <div class="sal-ov-grid">${ovTiles}</div>
-        ${ovNonGBP.length ? `<p class="sal-ov-fx">≈ GBP at ${ovNonGBP.map(c => `1 ${c} = £${Number(SAL_FX[c]).toFixed(4).replace(/0+$/, '')}`).join(' · ')}</p>` : ''}
-      </section>` : '';
-
-    window._salGrpOpen = window._salGrpOpen || {};
-    const tableRows = groups.map(g => {
-      const s       = currencySymbol(g.currency);
-      const tTarget = g.rows.reduce((a, b) => a + (parseFloat(b.salary_target ?? b.annual_salary) || 0), 0);
-      const tPaid   = g.rows.reduce((a, b) => a + (parseFloat(b.total_paid) || 0), 0);
-      const tDeduct = g.rows.reduce((a, b) => a + (parseFloat(b.excess_deduction)||0) + (parseFloat(b.total_office_deductions)||0), 0);
-      const tRemain = g.rows.reduce((a, b) => a + (parseFloat(b.net_remaining) || 0), 0);
-      const tEffective = tTarget - tDeduct;   // what is actually owed, after deductions
-      const pct     = tEffective > 0 ? Math.min(100, Math.round(tPaid / tEffective * 100)) : 0;
-      const isNonGBP = g.currency !== 'GBP';
-      const groupLabel = `${TYPE_LABEL[g.type]}${g.currency !== 'GBP' ? ' · ' + g.currency : ''}`;
-
-      // Employees in this group still needing payment this month
-      const groupUnpaid = g.rows.filter(r => unpaidSet.has(r.employee_id));
-      const key = `${g.type}_${g.currency}`;
-      const canExpand = groupUnpaid.length > 0;
-      const isOpen = canExpand && !!window._salGrpOpen[key];
-
-      const detailRows = canExpand ? groupUnpaid.map(r => {
-        const sym = currencySymbol(r.currency || 'GBP');
-        const grossMo = (parseFloat(r.annual_salary) || 0) / 12;
-        const netMo = parseFloat(r.monthly_pay) || parseFloat(r.net_monthly) || null;
-        const amt = netMo ?? grossMo;
-        const remain = parseFloat(r.net_remaining);
-        const remainHtml = isFinite(remain)
-          ? (remain > 0
-              ? `<span class="sal-grp-payleft">${sym}${remain.toLocaleString('en-GB',{maximumFractionDigits:0})} left this year</span>`
-              : `<span class="sal-grp-payleft sal-grp-payleft--done">Fully paid</span>`)
-          : '';
-        return `<div class="sal-grp-payitem">
-          <span class="sal-grp-payname">${empLink(r.employee_id, r.name)}${remainHtml}</span>
-          <span class="sal-grp-payamt">${sym}${amt.toLocaleString('en-GB',{minimumFractionDigits:2})}/mo${netMo ? '<span class="srr-net">net</span>' : ''}</span>
-          <span class="sal-grp-payactions">
-            <button class="srr-skip" onclick="skipGroupReminder(${r.employee_id})">Skip ${monthShort}</button>
-            <button class="srr-pay" onclick="openSalaryPaymentModal(${r.employee_id})">Log Payment</button>
-          </span>
-        </div>`;
-      }).join('') : '';
-
-      const headRow = `<tr class="sal-grp-row${canExpand ? ' sal-grp-clickable' : ''}${isOpen ? ' sal-grp-open' : ''}" id="salgrp-head-${key}"${canExpand ? ` onclick="toggleSalaryGroup('${key}')"` : ''}>
-        <td>
-          <div class="sal-grp-label">
-            <span class="sal-grp-chevron">${canExpand ? (isOpen ? '▼' : '▶') : ''}</span>
-            <div>
-              <div style="font-weight:600;font-size:0.85rem">${groupLabel}</div>
-              <div style="font-size:0.72rem;color:var(--muted)">${g.rows.length} employee${g.rows.length !== 1 ? 's' : ''}</div>
-            </div>
-            ${canExpand ? `<span class="sal-grp-topay">${groupUnpaid.length} to pay</span>` : ''}
-          </div>
-        </td>
-        <td>
-          <div>${fmtN(tTarget, s)}</div>
-          ${isNonGBP ? `<div class="sal-tbl-sub">${fmtGBP(salFxToGBP(tTarget,g.currency))}</div>` : ''}
-        </td>
-        <td>
-          <div>${fmtN(tPaid, s)}</div>
-          ${isNonGBP ? `<div class="sal-tbl-sub">${fmtGBP(salFxToGBP(tPaid,g.currency))}</div>` : ''}
-        </td>
-        <td>${tDeduct > 0 ? `<div style="color:var(--warning)">−${fmtN(tDeduct,s)}</div>` : '<span style="color:var(--muted)">—</span>'}</td>
-        <td>
-          <div style="color:${tRemain < 0 ? 'var(--positive)' : tRemain === 0 ? 'var(--muted)' : 'var(--text)'};font-weight:600">${tRemain < 0 ? 'Overpaid' : fmtN(Math.abs(tRemain),s)}</div>
-          ${isNonGBP && tRemain > 0 ? `<div class="sal-tbl-sub">${fmtGBP(salFxToGBP(tRemain,g.currency))}</div>` : ''}
-        </td>
-        <td>
-          <div style="display:flex;align-items:center;gap:8px">
-            <div style="flex:1;height:6px;background:var(--border);border-radius:3px;min-width:48px">
-              <div style="height:100%;width:${pct}%;background:var(--primary);border-radius:3px"></div>
-            </div>
-            <span style="font-size:0.78rem;font-weight:600;color:var(--muted);min-width:30px">${pct}%</span>
-          </div>
-        </td>
-      </tr>`;
-
-      const detailRow = canExpand ? `<tr class="sal-grp-detail" id="salgrp-detail-${key}" style="display:${isOpen ? '' : 'none'}">
-        <td colspan="6"><div class="sal-grp-paylist">${detailRows}</div></td>
-      </tr>` : '';
-
-      return headRow + detailRow;
-    }).join('');
-
-    document.getElementById('salaryTotals').innerHTML = `
-      <div class="card" style="padding:0;overflow:hidden">
-        <table class="sal-summary-tbl">
-          <thead><tr>
-            <th>Group</th>
-            <th>Annual</th>
-            <th>Paid</th>
-            <th>Deductions</th>
-            <th>Still Owed</th>
-            <th style="min-width:120px">Progress</th>
-          </tr></thead>
-          <tbody>${tableRows}</tbody>
-          <tfoot><tr>
-            <td><div style="font-weight:700">Total · GBP</div><div style="font-size:0.72rem;color:var(--muted)">${allActive.length} employees</div></td>
-            <td><div style="font-weight:700">${fmtGBP(gtTarget)}</div></td>
-            <td><div style="font-weight:700">${fmtGBP(gtPaid)}</div></td>
-            <td>${gtDeduct > 0 ? `<div style="color:var(--warning)">−${fmtGBP(gtDeduct)}</div>` : '<span style="color:var(--muted)">—</span>'}</td>
-            <td><div style="font-weight:700">${fmtGBP(gtRemain)}</div></td>
-            <td>
-              <div style="display:flex;align-items:center;gap:8px">
-                <div style="flex:1;height:6px;background:var(--border);border-radius:3px;min-width:48px">
-                  <div style="height:100%;width:${gtPaidPct}%;background:var(--primary);border-radius:3px"></div>
-                </div>
-                <span style="font-size:0.78rem;font-weight:700;min-width:30px">${gtPaidPct}%</span>
-              </div>
-            </td>
-          </tr></tfoot>
-        </table>
-      </div>`;
-
-    // Payment Board removed — salary reminder panel handles categorized view
-    document.getElementById('salaryBoard').innerHTML = '';
-
-    // ── Per-employee cards ──
-    if (!rows.length) {
-      container.innerHTML = `<div class="empty-state"><div class="icon">💰</div><div>No employees with salary data.</div></div>`;
-      return;
-    }
-
-    container.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:16px;margin-top:16px';
-    container.innerHTML = rows.map(emp => {
-      const annualSalary    = parseFloat(emp.annual_salary) || 0;
-      const salaryTarget    = parseFloat(emp.salary_target ?? emp.annual_salary) || 0;
-      const isProRatedYear  = !emp.is_terminated && salaryTarget !== annualSalary && salaryTarget > 0;
-      const totalPaidEmp    = parseFloat(emp.total_paid) || 0;
-      const excessDeduction = parseFloat(emp.excess_deduction) || 0;
-      const netRemaining    = parseFloat(emp.net_remaining) || 0;
-      const excessDays      = parseFloat(emp.excess_days) || 0;
-      const totalDaysOff    = emp.total_days_off != null ? emp.total_days_off : 0;
-      const allowanceDays   = emp.allowance_days != null ? emp.allowance_days : '—';
-      const pctPaid         = parseFloat(emp.pct_paid) || 0;
-      const payments        = Array.isArray(emp.payments) ? emp.payments : [];
-      const officeDeductions = Array.isArray(emp.office_deductions) ? emp.office_deductions : [];
-      const bonuses         = Array.isArray(emp.bonuses) ? emp.bonuses : [];
-      const salaryHistory   = Array.isArray(emp.salary_history) ? emp.salary_history : [];
-      const officeTotal     = parseFloat(emp.total_office_deductions) || 0;
-      const bonusTotal      = parseFloat(emp.total_bonuses) || 0;
-      const cur             = emp.currency || 'GBP';
-      const sym             = currencySymbol(cur);
-      const paye            = emp.paye_breakdown || null;
-      // Payroll is counted in months, at what a whole month really pays (the usual payslip, else the estimate)
-      const byMonth         = Array.isArray(emp.pay_months) && emp.pay_months.length ? payrollCardMonths(emp, year) : null;
-      const monthlyPay      = parseFloat(emp.monthly_pay) || 0;
-      const fromPayslip     = emp.monthly_pay_from === 'payslip';
-
-      // First-month suggestion, in the year they started: part of a month, by working days
-      const fm = emp.first_month_full;
-      const isPartialFirstMonth = fm && fm.first_month_days < fm.first_month_total_days;
-      const payeNetFactor = paye && annualSalary > 0 ? paye.net_annual / annualSalary : 1;
-      const suggestedFirstMonthNet = isPartialFirstMonth
-        ? parseFloat((fm.first_month_pay * payeNetFactor).toFixed(2))
-        : null;
-      const fmMeta = isPartialFirstMonth ? {
-        monthName: MONTHS[parseInt(fm.first_month.split('-')[1])] || fm.first_month,
-        startDate: fm.start_date || emp.start_date,
-        daysWorked: fm.first_month_days,
-        daysTotal: fm.first_month_total_days
-      } : null;
-
-      const initials = (emp.name || '?').split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
-      const typeLabel = emp.employment_type === 'self_employed' ? 'Self-Employed' : 'Payroll';
-      const typeBadge = 'badge-grey';
-      const allowanceLabel = emp.employment_type === 'self_employed' ? '5 days/yr free' : '20 days/yr free';
-      const isTerminated = !!emp.is_terminated;
-      const isOverpaid = netRemaining < 0;
-
-
-      const earnedTotal = emp.earned_to_date != null ? parseFloat(emp.earned_to_date) : null;
-      const eb = emp.earned_breakdown;
-
-      // ── figures strip values ──
-      const figOutClass = isOverpaid ? 'sc-fig-ok' : netRemaining === 0 ? 'sc-fig-dim' : 'sc-fig-bad';
-
-      // ── build card ──
-      const avatarTypeClass = isTerminated ? '' : emp.employment_type === 'self_employed' ? ' sc-self-emp-type' : '';
-      const accentClass = isTerminated ? 'sc-term-accent' : emp.employment_type === 'self_employed' ? 'sc-self-emp' : 'sc-payroll';
-
-      return `<div class="sc-card${isTerminated ? ' sc-terminated' : ''}${avatarTypeClass}" id="sc-emp-${emp.employee_id}">
-        <div class="sc-accent ${accentClass}"></div>
-
-        ${isTerminated ? `<div class="sc-term-banner">
-          <span>Terminated</span>
-          <span class="tb-date">${emp.termination_date}</span>
-          ${emp.termination_reason ? `<span class="tb-reason">· ${esc(emp.termination_reason)}</span>` : ''}
-        </div>` : ''}
-
-        <div class="sc-head">
-          <div class="sc-info">
-            <div class="sc-emp-name">${empLink(emp.employee_id, emp.name || '')}</div>
-            ${emp.job_title || emp.department ? `<div class="sc-emp-role">${[emp.job_title, emp.department].filter(Boolean).map(s => esc(s)).join(' · ')}</div>` : ''}
-            <div class="sc-emp-badges">
-              <span class="badge ${typeBadge}" style="font-size:0.67rem">${typeLabel}</span>
-              ${emp.start_date ? `<span class="sc-emp-since">${isTerminated ? 'Started' : 'Since'} ${emp.start_date}</span>` : ''}
-              <button type="button" class="sc-profile" onclick="event.stopPropagation();openEmployeeProfile(${Number(emp.employee_id)})">View profile →</button>
-            </div>
-          </div>
-          <div class="sc-annual">
-            <div class="sc-annual-lbl">${isTerminated ? 'Final earned' : byMonth ? `Monthly pay${fromPayslip ? '' : ' (est.)'}` : isProRatedYear ? `Target ${year}` : 'Annual'}</div>
-            <div class="sc-annual-val">${sym}${(isTerminated ? (earnedTotal ?? annualSalary) : byMonth ? monthlyPay : isProRatedYear ? salaryTarget : annualSalary).toLocaleString('en-GB',{maximumFractionDigits:0})}</div>
-          </div>
-          ${!isTerminated ? `<button class="btn btn-primary btn-sm" onclick="openSalaryPaymentModal(${emp.employee_id})" style="flex-shrink:0">+ Pay</button>` : ''}
-        </div>
-
-        ${byMonth ? `<div class="sc-prog">
-          <div class="sc-prog-meta">
-            <span>${byMonth.headline}</span>
-            <span class="sc-prog-left">${byMonth.count}</span>
-          </div>
-          <div class="sc-mo-strip" role="img" aria-label="${byMonth.headline}${byMonth.count ? ', ' + byMonth.count : ''}">${byMonth.strip}</div>
-        </div>` : `<div class="sc-prog">
-          <div class="sc-prog-meta">
-            <span>${pctPaid}% paid</span>
-            <span class="sc-prog-left${isOverpaid ? ' is-over' : ''}">${isOverpaid ? 'Overpaid' : netRemaining === 0 ? 'Fully paid' : `${sym}${Math.abs(netRemaining).toLocaleString('en-GB',{maximumFractionDigits:0})} left`}</span>
-          </div>
-          <div class="sc-prog-track">
-            <div class="sc-prog-fill${isOverpaid ? ' overpaid' : ''}" style="width:${Math.min(pctPaid,100)}%"></div>
-          </div>
-        </div>`}
-
-
-        ${(() => {
-          const monthlyVal = paye ? paye.net_monthly : annualSalary / 12;
-          const monthlyLbl = paye ? 'Take-home / mo' : 'Monthly';
-          const monthlySub = paye ? 'after PAYE' + (paye.pension > 0 ? ' + pension' : '') : '';
-          const showFirstMonth = suggestedFirstMonthNet !== null && fmMeta && !isOverpaid;
-          const firstMonthUnpaid = showFirstMonth && totalPaidEmp === 0;
-          return '<div class="sc-figs">' +
-            (byMonth
-              ? '<div class="sc-fig">' +
-                  '<div class="sc-fig-lbl">Left to pay in ' + year + '</div>' +
-                  '<div class="sc-fig-val' + (byMonth.owing ? '' : ' is-none') + '">' + byMonth.left + '</div>' +
-                  '<div class="sc-fig-sub">' + byMonth.sum + '</div>' +
-                '</div>'
-              : '<div class="sc-fig">' +
-                  '<div class="sc-fig-lbl">' + monthlyLbl + '</div>' +
-                  '<div class="sc-fig-val">' + sym + monthlyVal.toLocaleString('en-GB',{maximumFractionDigits:0}) + '</div>' +
-                  (monthlySub ? '<div class="sc-fig-sub">' + monthlySub + '</div>' : '') +
-                '</div>') +
-            '<div class="sc-fig">' +
-              (firstMonthUnpaid
-                ? '<div class="sc-fig-lbl">Pay this month</div>' +
-                  '<div class="sc-fig-val is-due">' + sym + Math.round(suggestedFirstMonthNet).toLocaleString('en-GB') + '</div>' +
-                  (fmMeta ? '<div class="sc-fig-sub">' + fmMeta.daysWorked + ' of ' + fmMeta.daysTotal + ' days · ' + (fmMeta.monthName||'') + '</div>' : '')
-                : (() => {
-                    // Latest by year+month; same-month payments tie-break on id
-                    // (highest id = most recently recorded)
-                    const payKey = p => (Number(p.payment_year)||0)*100 + (Number(p.payment_month)||0);
-                    const lastPay = payments.length
-                      ? payments.reduce((a,b) => {
-                          const ka = payKey(a), kb = payKey(b);
-                          return kb > ka || (kb === ka && (Number(b.id)||0) > (Number(a.id)||0)) ? b : a;
-                        }, payments[0])
-                      : null;
-                    if (!lastPay) return '<div class="sc-fig-lbl">Last payment</div>' +
-                      '<div class="sc-fig-val is-none">—</div>' +
-                      '<div class="sc-fig-sub">No payments yet</div>';
-                    const lpMonth = MONTHS[Number(lastPay.payment_month)] || '';
-                    const lpYear  = lastPay.payment_year || '';
-                    const lpAmt   = sym + parseFloat(lastPay.amount||0).toLocaleString('en-GB',{maximumFractionDigits:0});
-                    return '<div class="sc-fig-lbl">Last payment</div>' +
-                      '<div class="sc-fig-val">' + lpAmt + '</div>' +
-                      '<div class="sc-fig-sub">' + lpMonth + (lpYear ? ' ' + lpYear : '') + '</div>';
-                  })()
-              ) +
-            '</div>' +
-          '</div>' +
-          (!paye && excessDays > 0
-            ? '<div class="sc-excess">' +
-              excessDays + ' excess day' + (excessDays > 1 ? 's' : '') + ' — −' + sym + excessDeduction.toLocaleString('en-GB',{minimumFractionDigits:2}) + ' deducted</div>'
-            : '');
-        })()}
-
-        <div class="sc-sections">
-
-          <!-- Payments -->
-          <div class="sc-section">
-            <button class="sc-sec-toggle" onclick="toggleSection(this)">
-              <span class="sc-sec-title">Payments (${payments.length})</span>
-              ${payments.length ? `<span class="sc-sec-sum">${sym}${totalPaidEmp.toLocaleString('en-GB',{minimumFractionDigits:2})}</span>` : ''}
-              <span class="sc-chevron">›</span>
-            </button>
-            <div class="sc-sec-body">
-              ${payments.length ? payments.map(p => `
-                <div class="sc-item">
-                  <span class="sc-item-date">${MONTHS[p.payment_month]?.slice(0,3)||p.payment_month} ${p.payment_year}</span>
-                  <span class="sc-item-amt pos">+${sym}${parseFloat(p.amount||0).toLocaleString('en-GB',{minimumFractionDigits:2})}</span>
-                  <span class="sc-item-note">${esc(p.notes||'')}</span>
-                  <button class="btn btn-danger btn-sm" onclick="deleteSalaryPayment(${p.id})">×</button>
-                </div>`).join('') : `<div class="sc-empty">No payments logged yet.</div>`}
-            </div>
-          </div>
-
-          ${paye ? `
-          <!-- PAYE Breakdown -->
-          <div class="sc-section">
-            <button class="sc-sec-toggle" onclick="toggleSection(this)">
-              <span class="sc-sec-title">PAYE Breakdown (2024/25)</span>
-              <span class="sc-sec-sum">${sym}${(paye.income_tax+paye.national_insurance+paye.pension).toLocaleString('en-GB',{minimumFractionDigits:2})}/yr deducted</span>
-              <span class="sc-chevron">›</span>
-            </button>
-            <div class="sc-sec-body">
-              <div class="sc-paye-grid">
-                <div class="sc-paye-box">
-                  <div class="sc-paye-lbl">Income Tax</div>
-                  <div class="sc-paye-val">${sym}${paye.income_tax.toLocaleString('en-GB',{minimumFractionDigits:2})}</div>
-                  <div class="sc-paye-sub">per year</div>
-                </div>
-                <div class="sc-paye-box">
-                  <div class="sc-paye-lbl">National Insurance</div>
-                  <div class="sc-paye-val">${sym}${paye.national_insurance.toLocaleString('en-GB',{minimumFractionDigits:2})}</div>
-                  <div class="sc-paye-sub">per year</div>
-                </div>
-                ${paye.pension > 0 ? `
-                <div class="sc-paye-box">
-                  <div class="sc-paye-lbl">Pension (${emp.pension_rate}%)</div>
-                  <div class="sc-paye-val">${sym}${paye.pension.toLocaleString('en-GB',{minimumFractionDigits:2})}</div>
-                  <div class="sc-paye-sub">per year</div>
-                </div>` : ''}
-              </div>
-              <div class="sc-paye-footer">
-                <span class="sc-paye-footer-lbl">Estimated take-home</span>
-                <span class="sc-paye-footer-val">${sym}${paye.net_monthly.toLocaleString('en-GB',{minimumFractionDigits:2})}</span>
-              </div>
-              ${fromPayslip ? `<div class="sc-hist-hint">This is the tracker's own tax estimate. Their usual payslip is ${sym}${monthlyPay.toLocaleString('en-GB',{minimumFractionDigits:2})}, and that is the monthly pay used for the months still to pay.</div>` : ''}
-            </div>
-          </div>` : ''}
-
-          <!-- Office Deductions -->
-          <div class="sc-section">
-            <button class="sc-sec-toggle" onclick="toggleSection(this)">
-              <span class="sc-sec-title">Office Deductions (${officeDeductions.length})</span>
-              ${officeTotal > 0 ? `<span class="sc-sec-sum red">−${sym}${officeTotal.toLocaleString('en-GB',{minimumFractionDigits:2})}</span>` : ''}
-              <span class="sc-chevron">›</span>
-            </button>
-            <div class="sc-sec-body">
-              <div class="sc-sec-actions">
-                <button class="btn btn-ghost btn-sm" onclick="openOfficeDeductModal(${emp.employee_id})">+ Add Deduction</button>
-              </div>
-              ${officeDeductions.length ? officeDeductions.map(od => `
-                <div class="sc-item">
-                  <span class="sc-item-date">${od.deduction_date||''}</span>
-                  <span class="sc-item-amt neg">−${sym}${parseFloat(od.amount||0).toLocaleString('en-GB',{minimumFractionDigits:2})}</span>
-                  <span class="sc-item-note">${esc(od.description||'')}${od.notes?` · ${esc(od.notes)}`:''}</span>
-                  <button class="btn btn-danger btn-sm" onclick="deleteOfficeDeduction(${od.id})">×</button>
-                </div>`).join('') : `<div class="sc-empty">No deductions logged.</div>`}
-            </div>
-          </div>
-
-          <!-- Bonuses -->
-          <div class="sc-section">
-            <button class="sc-sec-toggle" onclick="toggleSection(this)">
-              <span class="sc-sec-title">Bonuses (${bonuses.length})</span>
-              ${bonusTotal > 0 ? `<span class="sc-sec-sum amber">+${sym}${bonusTotal.toLocaleString('en-GB',{minimumFractionDigits:2})}</span>` : ''}
-              <span class="sc-chevron">›</span>
-            </button>
-            <div class="sc-sec-body">
-              <div class="sc-sec-actions">
-                <button class="btn btn-ghost btn-sm" style="border-color:rgba(245,158,11,0.4);color:var(--warning)" onclick="openBonusModal(${emp.employee_id})">+ Add Bonus</button>
-              </div>
-              ${bonuses.length ? bonuses.map(b => `
-                <div class="sc-item" style="background:var(--warning-soft);border-color:rgba(245,158,11,0.35)">
-                  <span class="sc-item-date">${b.bonus_date||''}</span>
-                  <span class="sc-item-amt amb">+${sym}${parseFloat(b.amount||0).toLocaleString('en-GB',{minimumFractionDigits:2})}</span>
-                  <span class="sc-item-note">${esc(b.reason||'')}${b.notes?` · ${esc(b.notes)}`:''}</span>
-                  <button class="btn btn-danger btn-sm" onclick="deleteBonus(${b.id})">×</button>
-                </div>`).join('') : `<div class="sc-empty">No bonuses logged yet.</div>`}
-            </div>
-          </div>
-
-          <!-- Days off (payroll only) -->
-          ${emp.employment_type === 'payroll' ? `
-          <div class="sc-section">
-            <button class="sc-sec-toggle" onclick="toggleSection(this)">
-              <span class="sc-sec-title">Days Off — ${totalDaysOff} / ${allowanceDays} used</span>
-              ${excessDays > 0
-                ? `<span class="sc-sec-sum red">−${sym}${excessDeduction.toLocaleString('en-GB',{minimumFractionDigits:2})} deducted</span>`
-                : `<span class="sc-sec-sum muted">within allowance</span>`}
-              <span class="sc-chevron">›</span>
-            </button>
-            <div class="sc-sec-body">
-              <div class="sc-days-note">${excessDays > 0
-                ? `${excessDays} day${excessDays > 1 ? 's' : ''} over the ${allowanceDays}-day allowance → ${sym}${excessDeduction.toLocaleString('en-GB',{minimumFractionDigits:2})} deducted from salary.`
-                : `${totalDaysOff} of ${allowanceDays} free days used — no deduction.`}</div>
-            </div>
-          </div>` : ''}
-
-          <!-- Pro-rated breakdown -->
-          ${(emp.pro_rated || emp.first_month_full) ? (() => {
-            const pr = emp.pro_rated;
-            const fmr = emp.first_month_full;
-            const showFmFull = fmr && fmr.first_month_days < fmr.first_month_total_days;
-            const fmrName = fmr ? (MONTHS[parseInt(fmr.first_month.split('-')[1])] || fmr.first_month) : null;
-            const fmrGross = fmr ? fmr.first_month_pay : 0;
-            const fmrNet = fmr ? parseFloat((fmrGross * payeNetFactor).toFixed(2)) : 0;
-            const startLabel = (fmr || pr).start_date;
-            return `
-          <div class="sc-section">
-            <button class="sc-sec-toggle" onclick="toggleSection(this)">
-              <span class="sc-sec-title">Pro-Rated Pay — started ${startLabel}</span>
-              <span class="sc-chevron">›</span>
-            </button>
-            <div class="sc-sec-body">
-              ${showFmFull ? `
-              <div class="sc-breakdown">
-                <div class="sc-breakdown-title">Payment due — end of ${fmrName}</div>
-                <div class="sc-breakdown-row"><span>Working days (${fmr.first_month_days}/${fmr.first_month_total_days} in ${fmrName})</span><span>${sym}${fmrGross.toLocaleString('en-GB',{minimumFractionDigits:2})} gross</span></div>
-                ${paye ? `<div class="sc-breakdown-row total"><span>Net after PAYE/NI${paye.pension > 0 ? '/pension' : ''}</span><span>${sym}${fmrNet.toLocaleString('en-GB',{minimumFractionDigits:2})}</span></div>`
-                       : `<div class="sc-breakdown-row total"><span>Gross amount due</span><span>${sym}${fmrGross.toLocaleString('en-GB',{minimumFractionDigits:2})}</span></div>`}
-              </div>` : ''}
-              ${pr ? `
-              <div class="sc-breakdown${showFmFull ? ' sc-breakdown-secondary' : ''}">
-                <div class="sc-breakdown-title">${showFmFull ? 'Earned to today' : 'Earned pay to date'}</div>
-                <div class="sc-breakdown-row"><span>First month (${pr.first_month_days}/${pr.first_month_total_days} working days)</span><span>${sym}${pr.first_month_pay.toLocaleString('en-GB',{minimumFractionDigits:2})}</span></div>
-                ${pr.full_months_count > 0 ? `<div class="sc-breakdown-row"><span>${pr.full_months_count} full month${pr.full_months_count > 1 ? 's' : ''}</span><span>${sym}${pr.full_months_pay.toLocaleString('en-GB',{minimumFractionDigits:2})}</span></div>` : ''}
-                <div class="sc-breakdown-row total"><span>Total expected to date</span><span>${sym}${pr.total_expected.toLocaleString('en-GB',{minimumFractionDigits:2})}</span></div>
-              </div>` : ''}
-            </div>
-          </div>`; })() : ''}
-
-          <!-- Payroll: each month of the year, paid (what was logged) or still to pay (what is due) -->
-          ${byMonth ? (() => {
-            const toPay = emp.pay_months.filter(m => !m.paid).length;
-            const money = v => sym + v.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-            const ded = excessDeduction + officeTotal;
-            return `<div class="sc-section">
-            <button class="sc-sec-toggle" onclick="toggleSection(this)">
-              <span class="sc-sec-title">Month by month — ${emp.pay_months.length - toPay} paid, ${toPay} to pay</span>
-              <span class="sc-chevron">›</span>
-            </button>
-            <div class="sc-sec-body">
-              ${emp.pay_months.map(m => `<div class="sc-month${m.paid ? ' is-paid' : ''}">
-                <span>${MONTHS[m.month]} ${year}</span>
-                <span>${money(m.paid ? m.logged : m.due)}</span>
-                <span class="db-tag ${m.paid ? '' : 'is-warn'}">${m.paid ? 'Paid' : 'To pay'}</span>
-              </div>`).join('')}
-              <div class="sc-hist-hint">A month is paid once a payment is logged for it. The months still to pay are at ${fromPayslip ? 'their usual payslip (a month with a bonus or refund on top does not change it)' : 'the estimated take-home, until a payslip is logged'}${ded > 0 ? `, and ${money(ded)} of deductions comes off what is left` : ''}.</div>
-            </div>
-          </div>`; })() : ''}
-
-          <!-- Salary history / raises -->
-          ${salaryHistory.length ? `
-          <div class="sc-section">
-            <button class="sc-sec-toggle" onclick="toggleSection(this)">
-              <span class="sc-sec-title">Salary History (${salaryHistory.length})</span>
-              <span class="sc-chevron">›</span>
-            </button>
-            <div class="sc-sec-body">
-              ${(emp.pay_bands || []).length ? `
-              <div class="sc-breakdown">
-                <div class="sc-breakdown-title">How this year's pay is worked out</div>
-                ${emp.pay_bands.map(b => `<div class="sc-breakdown-row"><span>${fmtDateShort(b.from)} → ${fmtDateShort(b.to)}</span><span>${sym}${b.monthly.toLocaleString('en-GB',{minimumFractionDigits:2})} / month</span></div>`).join('')}
-                <div class="sc-breakdown-row total"><span>Target for the year</span><span>${sym}${(parseFloat(emp.salary_target) || 0).toLocaleString('en-GB',{minimumFractionDigits:2})}</span></div>
-                <div class="sc-hist-hint">Each row below is a salary and the day it started. If one was added by mistake, delete it with ×.</div>
-              </div>` : ''}
-              <div class="sc-hist-fix">
-                <span>Was an earlier salary wrong? Use ${sym}${annualSalary.toLocaleString('en-GB', { maximumFractionDigits: 0 })} for the whole time instead.</span>
-                <button class="btn btn-ghost btn-sm" onclick="correctSalaryHistory(${emp.employee_id}, ${esc(JSON.stringify(emp.name || ''))}, ${esc(JSON.stringify(sym + annualSalary.toLocaleString('en-GB', { maximumFractionDigits: 0 })))})">Use current salary for all</button>
-              </div>
-              ${salaryHistory.map(h => `
-                <div class="sc-hist-item">
-                  <span class="sc-item-date">${h.effective_from||''}</span>
-                  <span style="font-weight:800;color:#059669;min-width:100px">${currencySymbol(h.currency||cur)}${parseFloat(h.annual_salary||0).toLocaleString('en-GB',{minimumFractionDigits:2})}/yr</span>
-                  <span class="sc-item-note">${esc(h.reason||'')}</span>
-                  <button class="btn btn-danger btn-sm" onclick="deleteSalaryHistory(${h.id})">×</button>
-                </div>`).join('')}
-            </div>
-          </div>` : ''}
-
-          <!-- Final pay breakdown for terminated -->
-          ${isTerminated && eb ? `
-          <div class="sc-section">
-            <button class="sc-sec-toggle" onclick="toggleSection(this)">
-              <span class="sc-sec-title">Final Pay Breakdown</span>
-              <span class="sc-chevron">›</span>
-            </button>
-            <div class="sc-sec-body">
-              <div class="sc-breakdown danger">
-                <div class="sc-breakdown-title">${emp.start_date ? `Started ${emp.start_date} → ` : ''}Terminated ${emp.termination_date}</div>
-                <div class="sc-breakdown-row"><span>First month (${eb.first_month_days}/${eb.first_month_total_days} working days)</span><span>${sym}${eb.first_month_pay.toLocaleString('en-GB',{minimumFractionDigits:2})}</span></div>
-                ${eb.full_months_count > 0 ? `<div class="sc-breakdown-row"><span>${eb.full_months_count} full month${eb.full_months_count > 1 ? 's' : ''}</span><span>${sym}${eb.full_months_pay.toLocaleString('en-GB',{minimumFractionDigits:2})}</span></div>` : ''}
-                ${eb.last_month_pay > 0 ? `<div class="sc-breakdown-row"><span>Last month (pro-rated)</span><span>${sym}${eb.last_month_pay.toLocaleString('en-GB',{minimumFractionDigits:2})}</span></div>` : ''}
-                <div class="sc-breakdown-row total"><span>Total earned</span><span>${sym}${(earnedTotal||0).toLocaleString('en-GB',{minimumFractionDigits:2})}</span></div>
-              </div>
-            </div>
-          </div>` : ''}
-
-          <!-- HR Notes -->
-          <div class="sc-section" id="notes-section-${emp.employee_id}">
-            <button class="sc-sec-toggle" onclick="toggleNotesSection(this, ${emp.employee_id})">
-              <span class="sc-sec-title">HR Notes</span>
-              <span class="sc-chevron">›</span>
-            </button>
-            <div class="sc-sec-body">
-              <div class="sc-sec-actions">
-                <button class="btn btn-ghost btn-sm" onclick="openNoteModal(${emp.employee_id})">+ Add Note</button>
-              </div>
-              <div id="notes-list-${emp.employee_id}" class="sc-notes-list">
-                <div class="sc-empty">Click to load notes…</div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Print / Export row -->
-          <div class="sc-card-footer">
-            <button class="btn btn-ghost btn-sm" onclick="printPayslip(${emp.employee_id}, ${esc(JSON.stringify(emp.name || ''))})" title="Print formatted payslip">🖨 Print Payslip</button>
-          </div>
-
-        </div>
-      </div>`;
-    }).join('');
-  } catch(e) {
+    // The year on screen, this year (for what needs attention), last year while it is still
+    // fresh, and any earlier year with a month still set aside to pay later
+    const years = [...new Set([_pay.year, now.year, ...(now.month <= 3 ? [now.year - 1] : [])])];
+    const [later] = await Promise.all([payLaterBefore(), ...years.map(payFetchYear)]);
+    _pay.laterYears = later.years;
+    await Promise.all(later.years.filter(y => !years.includes(y)).map(payFetchYear));
+  } catch (e) {
     console.error('loadSalaryPage error:', e);
-    container.innerHTML = `<div class="alert alert-error" style="margin:24px">Failed to load salary data: ${esc(e.message)}. Please refresh and try again.</div>`;
+    body.innerHTML = `<div class="card pay-card"><div class="ep-empty">Could not load the salary page: ${esc(e.message || 'no connection')}. <button class="co-link" onclick="loadSalaryPage()">Try again</button></div></div>`;
+    return;
+  }
+  paySetBadge();
+  renderSalaryPage();
+  if (_pay.person && document.getElementById('payPersonModal')?.classList.contains('open')) renderPayPerson();
+}
+
+function paySetMonth(year, month) {
+  while (month < 1) { month += 12; year--; }
+  while (month > 12) { month -= 12; year++; }
+  _pay.year = year; _pay.month = month;
+  if (_pay.data[year]) renderSalaryPage();
+  loadSalaryPage();
+}
+function payStep(by) { if (_pay.view === 'year') paySetMonth(_pay.year + by, _pay.month); else paySetMonth(_pay.year, _pay.month + by); }
+function payGoNow() { const n = payNow(); _pay.view = 'month'; paySetMonth(n.year, n.month); }
+function paySetView(view) { _pay.view = view; renderSalaryPage(); }
+function exportPayrollCSV() {
+  const a = document.createElement('a');
+  a.href = `/api/export/payroll-csv?year=${_pay.year || payNow().year}`;
+  a.download = `payroll-${_pay.year || payNow().year}.csv`;
+  a.click();
+}
+
+function renderSalaryPage() {
+  const body = document.getElementById('salaryBody');
+  if (!body) return;
+  const now = payNow(), { year, month } = _pay, isNow = year === now.year && month === now.month;
+  const attention = payAttention(payAttentionYears());
+  const head = `<div class="pay-top">
+      <div class="pay-switch">
+        <button class="pay-arrow" onclick="payStep(-1)" aria-label="${_pay.view === 'year' ? 'Previous year' : 'Previous month'}">‹</button>
+        <h2>${_pay.view === 'year' ? year : `${MONTHS[month]} ${year}`}</h2>
+        <button class="pay-arrow" onclick="payStep(1)" aria-label="${_pay.view === 'year' ? 'Next year' : 'Next month'}">›</button>
+        ${isNow && _pay.view === 'month' ? '' : `<button class="co-link pay-back" onclick="payGoNow()">Back to ${MONTHS[now.month]}</button>`}
+      </div>
+      <div class="emp-seg pay-seg" role="group" aria-label="View">
+        <button type="button" class="${_pay.view === 'month' ? 'active' : ''}" onclick="paySetView('month')">Month</button>
+        <button type="button" class="${_pay.view === 'year' ? 'active' : ''}" onclick="paySetView('year')">Year</button>
+      </div>
+      <div class="pay-acts">
+        <label class="btn btn-primary">Upload payslips<input type="file" accept=".pdf,application/pdf" multiple hidden onchange="payTakeFiles(this.files);this.value=''"></label>
+        <button class="btn btn-ghost" onclick="openPayModal({})">Log a payment</button>
+      </div>
+    </div>`;
+  body.innerHTML = head + (_pay.view === 'year' ? payYearHtml(year) : payMonthHtml(year, month, attention, isNow));
+}
+
+// ── Month view ──
+function payMonthHtml(year, month, attention, isNow) {
+  const list = payMonthList(year, month), label = `${MONTHS[month]} ${year}`;
+  const due = list.filter(x => x.m.status === 'due' && x.m.left > 0.005);
+  const settled = list.filter(x => x.m.paid).length, aside = list.filter(x => !x.m.paid && (x.m.status === 'later' || x.m.status === 'none')).length;
+  // Totals by currency, and all of it in pounds when there is more than one
+  const byCur = {};
+  due.forEach(x => { const c = payCur(x.row); byCur[c] = (byCur[c] || 0) + x.m.left; });
+  const curs = Object.keys(byCur).sort((a, b) => (a === 'GBP' ? -1 : b === 'GBP' ? 1 : a.localeCompare(b)));
+  const gbp = curs.reduce((a, c) => a + salFxToGBP(byCur[c], c), 0);
+  const hero = !list.length ? 'Nobody to pay' : !due.length ? 'All paid' : curs.map(c => payMoney(byCur[c], c)).join(' + ');
+  const sub = !list.length ? `Nobody is on the books for ${label}.`
+    : `${settled} of ${list.length} ${list.length === 1 ? 'person' : 'people'} paid${aside ? ` · ${aside} set aside` : ''}${curs.length > 1 ? ` · about ${poundsWhole(gbp)} in all` : ''}`;
+  const summary = `<section class="card pay-card">
+      <div class="sp-head pay-head">
+        <div>
+          <div class="sp-eyebrow">${due.length ? 'Still to pay for' : 'Pay for'} ${esc(label)}</div>
+          <div class="pay-hero${due.length ? '' : ' is-done'}">${hero}</div>
+          <div class="sp-sub">${sub}</div>
+        </div>
+        <div class="pay-drop" id="payDrop">
+          <strong>Got payslips?</strong>
+          <span>Drop the PDFs anywhere on this page, or <label class="co-link">choose them<input type="file" accept=".pdf,application/pdf" multiple hidden onchange="payTakeFiles(this.files);this.value=''"></label>. Each one is matched to the right person and month, and logged as paid.</span>
+        </div>
+      </div>
+      ${isNow ? payAttentionHtml(attention) : (attention.length ? `<p class="pay-nudge"><b>${attention.length}</b> ${attention.length === 1 ? 'thing needs' : 'things need'} attention from other months. <button class="co-link" onclick="payGoNow()">Show ${attention.length === 1 ? 'it' : 'them'}</button></p>` : '')}
+      ${payGroupsHtml(list, year, month)}
+      ${payNoSalaryHtml(year)}
+      ${payDiffersHtml(year)}
+    </section>`;
+  return summary;
+}
+
+function payAttentionHtml(all) {
+  if (!all.length) return '';
+  const items = _pay.attAll || all.length <= 6 ? all : all.slice(0, 5);
+  const rows = items.map(it => {
+    const { row, m, year } = it, cur = payCur(row), when = `${MONTHS[m.month]}${year !== _pay.year ? ' ' + year : ''}`, id = Number(row.employee_id);
+    let text, btns;
+    if (it.kind === 'short') {
+      text = m.payslip && m.source === 'payslip' ? `${when}: paid ${payMoney(m.logged, cur)}, the payslip says ${payMoney(m.due, cur)}`
+        : !payIsPayroll(row) ? `${when}: paid ${payMoney(m.logged, cur)} of ${payMoney(m.due, cur)}`
+          : `${when}: paid ${payMoney(m.logged, cur)} at the amount from before the pay rise`;
+      btns = `<button class="btn btn-primary btn-sm" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${m.month}, topUp: true })">Pay the rest</button>
+        <button class="btn btn-ghost btn-sm" onclick="payFixShort(${id}, ${year}, ${m.month})" title="The full amount did go out: correct what was logged">It was paid in full</button>`;
+    } else {
+      text = it.kind === 'later' ? `${when}: set aside to pay later` : `${when}: no payment logged`;
+      btns = `<button class="btn btn-primary btn-sm" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${m.month} })">Mark paid</button>
+        <button class="btn btn-ghost btn-sm" onclick="paySkip(${id}, ${year}, ${m.month}, 'none')">Nothing owed</button>`;
+    }
+    return `<div class="pay-att is-${it.kind}">
+        <div class="pay-who"><button class="emp-link" onclick="openPayPerson(${id}, ${year})">${esc(row.name || '')}</button><small>${esc(text)}</small></div>
+        <strong class="pay-fig">${payMoney(it.amount, cur)}${it.kind === 'short' ? '<small>short</small>' : ''}</strong>
+        <div class="pay-btns">${btns}</div>
+      </div>`;
+  }).join('');
+  return `<div class="pay-attention">
+      <h3>Needs attention <span class="ep-count">${all.length}</span></h3>
+      ${rows}
+      ${items.length < all.length ? `<button class="co-refs-add" onclick="_pay.attAll=true;renderSalaryPage()">Show all ${all.length}</button>` : ''}
+    </div>`;
+}
+
+function payGroupsHtml(list, year, month) {
+  if (!list.length) return '';
+  const groups = {};
+  list.forEach(x => { const g = payGroupOf(x.row); (groups[g.key] = groups[g.key] || { ...g, items: [] }).items.push(x); });
+  return Object.values(groups).sort((a, b) => (a.order - b.order) || a.label.localeCompare(b.label)).map(g => {
+    const cur = payCur(g.items[0].row), due = g.items.filter(x => x.m.status === 'due' && x.m.left > 0.005);
+    const total = due.reduce((a, x) => a + x.m.left, 0);
+    const canBulk = !g.key.startsWith('payroll') && due.length > 1;
+    const order = { due: 0, short: 0, later: 1, paid: 2, none: 3 };
+    const rows = g.items.slice().sort((a, b) => (order[a.m.status] - order[b.m.status]) || String(a.row.name).localeCompare(String(b.row.name)))
+      .map(x => payRowHtml(x.row, x.m, year, month)).join('');
+    return `<div class="pay-group">
+        <div class="pay-group-head">
+          <h3>${esc(g.label)} <span>${g.items.length} ${g.items.length === 1 ? 'person' : 'people'}${due.length ? ` · ${payMoney(total, cur)} to pay` : ' · all done'}</span></h3>
+          ${canBulk ? `<button class="btn btn-ghost btn-sm" onclick="openPayAll('${g.key}')">Mark all ${due.length} paid</button>` : ''}
+        </div>
+        ${rows}
+      </div>`;
+  }).join('');
+}
+
+function payRowHtml(row, m, year, month) {
+  const cur = payCur(row), id = Number(row.employee_id), payroll = payIsPayroll(row);
+  const start = row.start_date && row.start_date.startsWith(`${year}-${String(month).padStart(2, '0')}`) && Number(row.start_date.slice(8, 10)) > 1;
+  const left = row.termination_date && row.termination_date.startsWith(`${year}-${String(month).padStart(2, '0')}`);
+  const notes = [];
+  if (start) notes.push(`Part month: started ${fmtDateShort(row.start_date)}`);
+  if (left) notes.push(`Final pay: left ${fmtDateShort(row.termination_date)}`);
+  let fig, chip, btns = '', state = m.status;
+  const slipLink = m.payslip ? `<a class="pay-slip" href="/api/payslips/${m.payslip.id}/file" target="_blank" rel="noopener" title="Open the payslip">Payslip</a>` : '';
+  if (m.status === 'none') {
+    fig = '—'; chip = '<span class="co-chip">Nothing owed</span>';
+    if (m.skip_note) notes.push(m.skip_note);
+    if (!m.skip_id && m.payslip) notes.push('The payslip pays nothing');
+    btns = m.skip_id ? `<button class="btn btn-ghost btn-sm" onclick="payUnskip(${m.skip_id})">Undo</button>` : '';
+  } else if (m.paid) {
+    fig = payMoney(m.logged || 0, cur);
+    if (m.covered) { fig = '—'; chip = '<span class="co-chip is-ok">Covered</span>'; notes.push('Covered by a payment logged in another month'); state = 'paid'; }
+    else if (m.short > 0.005) {
+      chip = `<span class="co-chip is-late">${payMoney(m.short, cur)} short</span>`;
+      notes.push(m.source === 'payslip' ? `The payslip says ${payMoney(m.due, cur)}` : !payroll ? `Their pay for the month is ${payMoney(m.due, cur)}` : 'Paid at the amount from before the pay rise');
+      btns = `<button class="btn btn-primary btn-sm" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${month}, topUp: true })">Pay the rest</button>`;
+    } else {
+      chip = '<span class="co-chip is-ok">Paid</span>';
+      if (m.over > 0.005) notes.push(`${payMoney(m.over, cur)} more than the payslip says`);
+      if (m.taken > 0.005) notes.push(`${payMoney(m.taken, cur)} taken off for days off or deductions`);
+    }
+    const count = (row.payments || []).filter(p => Number(p.payment_month) === month).length;
+    if (count > 1) notes.push(`${count} payments this month`);
+    if (payroll && !m.payslip && !m.covered) btns += `<label class="btn btn-ghost btn-sm" title="File the payslip for this month">Add payslip<input type="file" accept=".pdf,application/pdf" hidden onchange="payTakeFiles(this.files, { id: ${id}, year: ${year}, month: ${month} });this.value=''"></label>`;
+  } else {
+    fig = (payroll && (m.source === 'estimate' || m.source === 'rough') ? '<span class="pay-about">about</span> ' : '') + payMoney(m.left, cur);
+    const now = payNow(), gone = year < now.year || (year === now.year && month < now.month);
+    if (m.status === 'later') { chip = '<span class="co-chip is-soon">Pay later</span>'; if (m.skip_note) notes.push(m.skip_note); }
+    else chip = gone ? '<span class="co-chip is-late">Not paid</span>' : '<span class="co-chip is-soon">To pay</span>';
+    const src = paySourceNote(row, m);
+    if (src) notes.push(src);
+    if (!payroll && m.left + 0.005 < m.due) notes.push(`${payMoney(m.due, cur)} a month, part already paid`);
+    if (m.deduction > 0.005) notes.push(`${payMoney(m.deduction, cur)} to take off for days off or deductions`);
+    btns = `<button class="btn btn-primary btn-sm" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${month} })">Mark paid</button>`
+      + (m.status === 'later' ? `<button class="btn btn-ghost btn-sm" onclick="payUnskip(${m.skip_id})">Undo</button>`
+        : `<button class="btn btn-ghost btn-sm" onclick="openPaySkip(${id}, ${year}, ${month})">Skip</button>`);
+  }
+  const copyable = !m.paid && m.status !== 'none' && m.left > 0.005;
+  return `<div class="pay-row is-${state}">
+      <div class="pay-who"><button class="emp-link" onclick="openPayPerson(${id}, ${year})">${esc(row.name || '')}</button>${notes.length ? `<small>${notes.map(n => esc(n)).join(' · ')}</small>` : ''}</div>
+      ${copyable ? `<button class="pay-fig pay-copy" onclick="payCopy(${m.left})" title="Copy the amount">${fig}</button>` : `<strong class="pay-fig">${fig}</strong>`}
+      <div class="pay-state">${chip}${slipLink}</div>
+      <div class="pay-btns">${btns}</div>
+    </div>`;
+}
+
+// People with no salary set never appear in a month, which looks like nothing is wrong
+function payNoSalaryHtml(year) {
+  const none = payRows(year).filter(r => !r.is_terminated && r.active && !(parseFloat(r.annual_salary) > 0));
+  if (!none.length) return '';
+  return `<p class="sp-foot">No salary is set for ${none.map(r => empLink(r.employee_id, r.name || '')).join(', ')}, so ${none.length === 1 ? 'they are' : 'they are'} not listed. Set it on their profile.</p>`;
+}
+
+// A payslip whose monthly pay is not what the salary on record gives: worth a look
+function payDiffersHtml(year) {
+  return payRows(year).filter(r => (r.pay_differs || r.pay_behind) && !r.is_terminated).map(r => {
+    const cur = payCur(r), look = `<button class="co-link" onclick="openPayPerson(${Number(r.employee_id)}, ${year})">Take a look</button>`;
+    if (r.pay_behind) {
+      const d = r.pay_behind;
+      return `<p class="sp-foot">${esc(r.name || '')}’s ${MONTHS[d.month]} payslip is at ${payMoney(d.payslip, cur)} a month, the pay from before their rise. On the salary on record ${MONTHS[d.month]} should have been ${payMoney(d.tracker, cur)}, so ${payMoney(d.tracker - d.payslip, cur)} before tax is still owed for it. Payroll usually adds it to the next payslip. ${look}</p>`;
+    }
+    const d = r.pay_differs;
+    return `<p class="sp-foot">${esc(r.name || '')}’s ${MONTHS[d.month]} payslip pays ${payMoney(d.payslip, cur)} a month before tax, but the salary on record gives ${payMoney(d.tracker, cur)}. ${d.used === 'record'
+      ? 'One payslip out of line with the ones before it is taken for a one-off, so the salary on record is still used. If their pay has changed, update it on their profile.' : 'The payslip is used.'} ${look}</p>`;
+  }).join('');
+}
+
+// ── Year view: every month for everyone ──
+function payYearHtml(year) {
+  const rows = payRows(year).filter(r => (r.months || []).length || (r.payments || []).length);
+  const now = payNow();
+  const sum = pick => rows.reduce((a, r) => a + salFxToGBP(pick(r), payCur(r)), 0);
+  const paid = sum(r => parseFloat(r.total_paid) || 0), left = sum(r => Math.max(0, parseFloat(r.net_remaining) || 0));
+  const mixed = rows.some(r => payCur(r) !== 'GBP');
+  const groups = {};
+  rows.forEach(r => { const g = r.is_terminated ? { key: 'zz_left', label: 'Left during or before the year', order: 9 } : payGroupOf(r); (groups[g.key] = groups[g.key] || { ...g, items: [] }).items.push(r); });
+  const strip = r => MONTHS.slice(1).map((name, i) => {
+    const m = payMonthOf(r, i + 1), cur = payCur(r);
+    const late = m && !m.paid && m.status !== 'none' && (year < now.year || (year === now.year && m.month < now.month));
+    const state = !m ? 'off' : m.status === 'none' ? 'off' : m.short > 0.005 ? 'late' : m.paid ? 'paid' : late ? 'late' : 'due';
+    const tip = !m ? `${name}: not on the books` : m.status === 'none' ? `${name}: nothing owed`
+      : m.short > 0.005 ? `${name}: ${payMoney(m.logged, cur)} paid, ${payMoney(m.short, cur)} short`
+      : m.covered ? `${name}: covered by a payment in another month` : m.paid ? `${name}: ${payMoney(m.logged, cur)} paid`
+      : `${name}: ${payMoney(m.left, cur)} to pay${m.status === 'later' ? ', set aside to pay later' : late ? ', overdue' : ''}`;
+    return `<button class="sc-mo is-${state} pay-dot" title="${esc(tip)}" onclick="event.stopPropagation();_pay.view='month';paySetMonth(${year}, ${i + 1})">${name[0]}</button>`;
+  }).join('');
+  const body = Object.values(groups).sort((a, b) => (a.order - b.order) || a.label.localeCompare(b.label)).map(g => `
+      <div class="pay-group">
+        <div class="pay-group-head"><h3>${esc(g.label)} <span>${g.items.length} ${g.items.length === 1 ? 'person' : 'people'}</span></h3></div>
+        ${g.items.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))).map(r => {
+          const cur = payCur(r), rem = parseFloat(r.net_remaining) || 0;
+          return `<div class="pay-yrow" onclick="openPayPerson(${Number(r.employee_id)}, ${year})">
+            <div class="pay-who"><button class="emp-link" onclick="event.stopPropagation();openPayPerson(${Number(r.employee_id)}, ${year})">${esc(r.name || '')}</button></div>
+            <div class="sc-mo-strip pay-strip" role="img" aria-label="Months of ${year}">${strip(r)}</div>
+            <div class="pay-ynum"><small>Paid</small><strong>${payMoney(parseFloat(r.total_paid) || 0, cur)}</strong></div>
+            <div class="pay-ynum"><small>${rem < -0.005 ? 'Ahead by' : 'Left'}</small><strong class="${rem > 0.005 ? '' : 'is-none'}">${payMoney(Math.abs(rem), cur)}</strong></div>
+          </div>`;
+        }).join('')}
+      </div>`).join('');
+  return `<section class="card pay-card">
+      <div class="sp-head pay-head">
+        <div>
+          <div class="sp-eyebrow">Left to pay in ${year}</div>
+          <div class="pay-hero${left > 0.5 ? '' : ' is-done'}">${left > 0.5 ? poundsWhole(left) : 'All paid'}</div>
+          <div class="sp-sub">${poundsWhole(paid)} paid so far${mixed ? ' · these two totals are in pounds' : ''}</div>
+        </div>
+        <div class="pay-key">
+          <span><i class="sc-mo is-paid"></i>Paid</span><span><i class="sc-mo is-due"></i>To pay</span><span><i class="sc-mo is-late"></i>Late or short</span>
+          <button class="co-link" onclick="exportPayrollCSV()">Download ${year} as a spreadsheet</button>
+        </div>
+      </div>
+      ${rows.length ? body : `<div class="ep-empty" style="padding-top:18px">Nobody has pay recorded for ${year}.</div>`}
+      <p class="sp-foot">Tap a month to open it, or a name for that person’s year.</p>
+    </section>`;
+}
+
+// ── Setting a month aside, and undoing it ──
+function payDialog(id, html, width = 480) {
+  let m = document.getElementById(id);
+  if (!m) {
+    m = document.createElement('div');
+    m.className = 'modal-overlay'; m.id = id;
+    m.addEventListener('click', e => { if (e.target === m) closeModal(id); });
+    document.body.appendChild(m);
+  }
+  m.innerHTML = `<div class="modal" style="max-width:${width}px">${html}</div>`;
+  openModal(id);
+  return m;
+}
+
+function openPaySkip(id, year, month) {
+  const row = payPerson(id, year), m = payMonthOf(row, month);
+  if (!row || !m) return;
+  payDialog('paySkipModal', `
+    <div class="modal-header"><h2>Skip ${esc(row.name || '')} for ${MONTHS[month]}</h2><button class="modal-close" onclick="closeModal('paySkipModal')">✕</button></div>
+    <p class="pay-lead">${payMoney(m.left, payCur(row))} is due for ${MONTHS[month]} ${year}. Which is it?</p>
+    <div class="pay-choices">
+      <label class="pay-choice"><input type="radio" name="paySkipKind" value="later" onchange="document.getElementById('paySkipGo').disabled=false"><span><b>Pay later</b>They are still owed it. It stays on your list as needing attention until it is paid.</span></label>
+      <label class="pay-choice"><input type="radio" name="paySkipKind" value="none" onchange="document.getElementById('paySkipGo').disabled=false"><span><b>Nothing owed this month</b>For example unpaid leave, or they had not started. It comes off what they are owed for the year.</span></label>
+    </div>
+    <div class="form-group"><label>Note <span class="dm-opt">optional</span></label><input id="paySkipNote" class="form-control" type="text" maxlength="200" placeholder="e.g. Paying with December"></div>
+    <div><button class="btn btn-ghost" onclick="closeModal('paySkipModal')">Cancel</button><button class="btn btn-primary" id="paySkipGo" disabled onclick="paySkip(${Number(id)}, ${year}, ${month}, document.querySelector('input[name=paySkipKind]:checked')?.value)">Skip ${MONTHS[month]}</button></div>`);
+}
+
+// Set a month aside. From the Skip box the kind was chosen there; "Nothing owed" on a month
+// that has already gone by asks first.
+async function paySkip(id, year, month, kind) {
+  if (kind !== 'later' && kind !== 'none') return;
+  const fromBox = document.getElementById('paySkipModal')?.classList.contains('open');
+  const note = fromBox ? document.getElementById('paySkipNote')?.value.trim() || '' : '';
+  if (kind === 'none' && !fromBox) {
+    const row = payPerson(id, year);
+    if (!await showConfirm(`Mark ${MONTHS[month]} ${year} as nothing owed for ${row ? row.name : 'them'}? It comes off what they are owed for the year. You can undo this.`)) return;
+  }
+  const ok = await spSend('POST', '/api/pay-skips', { employee_id: id, pay_year: year, pay_month: month, kind, note });
+  if (!ok) return;
+  if (fromBox) closeModal('paySkipModal');
+  showToast(kind === 'later' ? `${MONTHS[month]} set aside to pay later` : `${MONTHS[month]} marked as nothing owed`, 'success');
+  loadSalaryPage();
+}
+
+async function payUnskip(skipId) {
+  if (!skipId) return;
+  if (await spSend('DELETE', `/api/pay-skips/${skipId}`)) loadSalaryPage();
+}
+
+// A month flagged short where the full amount did go out: correct what was logged
+async function payFixShort(id, year, month) {
+  const row = payPerson(id, year), m = payMonthOf(row, month);
+  if (!row || !m) return;
+  const pays = (row.payments || []).filter(p => Number(p.payment_month) === month);
+  if (!pays.length) return;
+  const cur = payCur(row), last = pays[pays.length - 1];
+  if (!await showConfirm(`Change ${row.name}’s ${MONTHS[month]} payment from ${payMoney(m.logged, cur)} to ${payMoney(m.logged + m.short, cur)}? Only do this if the full amount really was paid.`)) return;
+  if (await spSend('PUT', `/api/payments/${last.id}`, { amount: Math.round((parseFloat(last.amount) + m.short) * 100) / 100 })) { showToast('Payment corrected', 'success'); loadSalaryPage(); }
+}
+
+// ── Paying one person (or logging any payment by hand) ──
+// opts: { id, year, month, topUp, editId }
+let _payOne = null;
+function openPayModal(opts) {
+  const now = payNow(), year = opts.year || _pay.year || now.year, month = opts.month || _pay.month || now.month;
+  _payOne = { id: opts.id || null, year, month, topUp: !!opts.topUp, editId: opts.editId || null, slip: null, fixed: !!opts.id };
+  const people = payRows(year).filter(r => (r.months || []).length || !r.is_terminated).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const row = opts.id ? payPerson(opts.id, year) : null;
+  const pay = opts.editId && row ? (row.payments || []).find(p => Number(p.id) === Number(opts.editId)) : null;
+  const title = pay ? 'Change a payment' : opts.topUp ? 'Pay the rest' : row ? `Mark ${esc(row.name || '')} as paid` : 'Log a payment';
+  payDialog('payOneModal', `
+    <div class="modal-header"><h2>${title}</h2><button class="modal-close" onclick="closeModal('payOneModal')">✕</button></div>
+    ${row && _payOne.fixed ? `<p class="pay-lead">${pay || opts.topUp ? esc(row.name || '') + ' · ' : ''}${MONTHS[month]} ${year}</p>` : `
+    <div class="form-row">
+      <div class="form-group"><label>Person</label><select id="payOneWho" class="form-control" onchange="payOneChanged()"><option value="">Choose…</option>${people.map(r => `<option value="${Number(r.employee_id)}">${esc(r.name || '')}</option>`).join('')}</select></div>
+      <div class="form-group"><label>Month</label><input id="payOneMonth" class="form-control" type="month" value="${year}-${String(month).padStart(2, '0')}" onchange="payOneChanged()"></div>
+    </div>`}
+    ${pay ? `<div class="form-group"><label>Month</label><input id="payOneMonth" class="form-control" type="month" value="${year}-${String(month).padStart(2, '0')}"></div>` : ''}
+    <div class="form-group"><label>Amount paid <span id="payOneCur" class="dm-opt"></span></label><input id="payOneAmount" class="form-control pay-big-in" type="number" min="0" step="0.01" inputmode="decimal" value="${pay ? Number(pay.amount).toFixed(2) : ''}"></div>
+    <p class="pay-hint" id="payOneHint"></p>
+    ${pay ? '' : `<div class="pay-attach" id="payOneAttach"></div>`}
+    <div class="form-group"><label>Note <span class="dm-opt">optional</span></label><input id="payOneNote" class="form-control" type="text" maxlength="200" value="${pay ? esc(pay.notes || '') : ''}" placeholder="e.g. Bank transfer"></div>
+    <div><button class="btn btn-ghost" onclick="closeModal('payOneModal')">Cancel</button><button class="btn btn-primary" id="payOneGo" onclick="submitPayOne()">${pay ? 'Save' : row && !opts.topUp ? 'Mark as paid' : 'Log payment'}</button></div>`);
+  if (!pay) payOneChanged(true);
+  setTimeout(() => document.getElementById(row || pay ? 'payOneAmount' : 'payOneWho')?.focus(), 60);
+}
+
+// The person or month changed (or the form just opened): fill in what is due
+function payOneChanged(first) {
+  const o = _payOne;
+  if (!o) return;
+  const who = document.getElementById('payOneWho'), when = document.getElementById('payOneMonth');
+  if (who) o.id = Number(who.value) || null;
+  if (when && /^\d{4}-\d{2}$/.test(when.value)) { o.year = Number(when.value.slice(0, 4)); o.month = Number(when.value.slice(5, 7)); }
+  const hint = document.getElementById('payOneHint'), amount = document.getElementById('payOneAmount'), attach = document.getElementById('payOneAttach');
+  // A month in a year that has not been looked at yet: fetch that year, then fill in
+  if (o.id && !_pay.data[o.year] && !o.fetching) {
+    o.fetching = true;
+    payFetchYear(o.year).catch(() => {}).then(() => { o.fetching = false; if (_payOne === o && document.getElementById('payOneModal')?.classList.contains('open')) payOneChanged(); });
+  }
+  const row = o.id ? payPerson(o.id, o.year) : null, m = payMonthOf(row, o.month), cur = payCur(row);
+  document.getElementById('payOneCur').textContent = row ? `in ${cur}` : '';
+  let text = '';
+  if (o.id && !_pay.data[o.year]) text = o.fetching ? 'Looking up that month…' : 'That year could not be loaded, so type the amount.';
+  else if (row && m) {
+    const owed = o.topUp ? m.short : m.left;
+    if (o.topUp) text = `${payMoney(m.logged, cur)} is logged for ${MONTHS[o.month]}; ${payMoney(m.short, cur)} is still owed.`;
+    else if (m.paid && !m.covered) text = `${payMoney(m.logged, cur)} is already logged for ${MONTHS[o.month]}. This adds a second payment.`;
+    else if (m.status === 'none') text = `${MONTHS[o.month]} is marked as nothing owed. Logging a payment undoes that.`;
+    else text = [paySourceNote(row, m) || 'Their monthly pay', m.deduction > 0.005 ? `${payMoney(m.deduction, cur)} to take off for days off or deductions: <button type="button" class="dm-link" onclick="payOneTakeOff(${m.deduction})">take it off</button>` : ''].filter(Boolean).join('. ') + '.';
+    if ((first || !o.touched) && owed > 0.005) amount.value = owed.toFixed(2);
+  } else if (row) text = `${esc(row.name || '')} is not on the books for ${MONTHS[o.month]} ${o.year}. You can still log a payment.`;
+  hint.innerHTML = text;
+  amount.oninput = () => { o.touched = true; };
+  // (a month holds one payslip, and a payslip is only filed with the month's first payment:
+  // one attached to a second payment would replace the month's own and log nothing)
+  const canAttach = row && payIsPayroll(row) && !o.topUp && !(m && m.paid && !m.covered);
+  if (!canAttach) o.slip = null;
+  if (attach) attach.innerHTML = canAttach
+    ? (o.slip ? `<span class="pay-attached">${esc(o.slip.file_name)} <button type="button" class="dm-link" onclick="_payOne.slip=null;payOneChanged()">remove</button></span>${m && m.payslip ? '<span class="pay-attach-note">Replaces the payslip already on file for this month.</span>' : ''}`
+      : `<label class="btn btn-ghost btn-sm">Attach the payslip<input type="file" accept=".pdf,application/pdf" hidden onchange="payOneAttach(this.files[0]);this.value=''"></label><span class="pay-attach-note">The amount is read from it.</span>`)
+    : '';
+}
+function payOneTakeOff(amount) {
+  const el = document.getElementById('payOneAmount');
+  el.value = Math.max(0, (parseFloat(el.value) || 0) - amount).toFixed(2);
+  _payOne.touched = true;
+}
+
+// A payslip attached while paying one person: read it, and take the amount from it
+async function payOneAttach(file) {
+  const o = _payOne, read = await payReadFile(file);
+  if (!o || !read) return;
+  if (read.error) { showToast(read.error, 'error'); return; }
+  const res = await fetch('/api/payslips/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(read) }).catch(() => null);
+  const info = res && res.ok ? await res.json().catch(() => null) : null;
+  if (!info) { showToast('Could not read that payslip', 'error'); return; }
+  const row = payPerson(o.id, o.year), who = row ? row.name : 'this person';
+  if (info.several) { showToast('That file has more than one payslip in it. Upload one payslip per file.', 'error'); return; }
+  if (info.year && (info.year !== o.year || info.month !== o.month)) { showToast(`That payslip is for ${MONTHS[info.month]} ${info.year}, not ${MONTHS[o.month]} ${o.year}`, 'error'); return; }
+  // Somebody else's name is on it: refused. A name that is only a guess at this person, that
+  // was filed under somebody else before, or that fits nobody: asked, because filing it puts
+  // it in this person's portal (and a wrong answer given before can be put right here).
+  const theirs = Number(info.employee_id) === Number(o.id);
+  if (info.employee_id && !theirs && info.sure && info.named) { showToast(`That payslip is for ${info.name}, not ${who}`, 'error'); return; }
+  if (!(theirs && info.sure)) {
+    if (!await showConfirm(info.name ? `This payslip says “${info.name}”. Is it ${who}’s? It will be filed where they can open it.` : `The name on this payslip could not be read. Is it ${who}’s? It will be filed where they can open it.`)) return;
+    if (_payOne !== o) return;
+  }
+  o.slip = read;
+  if (info.amount > 0) {
+    document.getElementById('payOneAmount').value = Number(info.amount).toFixed(2); o.touched = true;
+    if (info.adds_up === false) showToast('The figures on that payslip do not add up to the amount paid, so check the amount', 'warning');
+    else if (info.printed === false) showToast('The amount paid is not printed on that payslip, so it was worked out from the other figures: check it', 'warning');
+  } else showToast('The amount could not be read from that payslip, so type it in', 'warning');
+  payOneChanged();
+}
+
+async function submitPayOne() {
+  const o = _payOne;
+  if (!o) return;
+  const amount = Math.round((parseFloat(document.getElementById('payOneAmount').value) || 0) * 100) / 100, notes = document.getElementById('payOneNote').value.trim();
+  const when = document.getElementById('payOneMonth');
+  if (when && /^\d{4}-\d{2}$/.test(when.value)) { o.year = Number(when.value.slice(0, 4)); o.month = Number(when.value.slice(5, 7)); }
+  if (!o.id) return showToast('Choose who the payment is for', 'error');
+  if (!(amount > 0)) return showToast('Enter the amount paid', 'error');
+  const btn = document.getElementById('payOneGo');
+  btn.disabled = true;
+  let ok, said = o.editId ? 'Payment changed' : `Payment logged for ${MONTHS[o.month]} ${o.year}`, tone = 'success';
+  if (o.editId) ok = await spSend('PUT', `/api/payments/${o.editId}`, { amount, payment_year: o.year, payment_month: o.month, notes });
+  else if (o.slip) {
+    const res = await fetch('/api/payslips/file', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...o.slip, employee_id: o.id, pay_year: o.year, pay_month: o.month, amount, pay: 'log', notes, even_if_later: true }) }).catch(() => null);
+    const out = res ? await res.json().catch(() => null) : null;
+    ok = !!(res && res.ok && out);
+    if (!ok) showToast((out && out.error) || 'Could not save', 'error');
+    // (somebody may have logged this month in the meantime: say what really happened)
+    else if (out.payment.action === 'already') said = `Payslip filed. ${MONTHS[o.month]} was already logged as paid.`;
+    else if (out.payment.action !== 'logged') { said = `Payslip filed, but no payment was logged: ${payMoney(out.payment.total, payCur(payPerson(o.id, o.year)))} is already logged for ${MONTHS[o.month]}.`; tone = 'warning'; }
+  } else {
+    const row = payPerson(o.id, o.year), m = payMonthOf(row, o.month);
+    // A month still to pay is paid once; anything else (a top-up, a second payment) is deliberate
+    ok = await spSend('POST', '/api/payments', { employee_id: o.id, payment_year: o.year, payment_month: o.month, amount, notes, only_if_unpaid: !!(m && !m.paid && !o.topUp) });
+  }
+  btn.disabled = false;
+  if (!ok) return;
+  closeModal('payOneModal');
+  showToast(said, tone);
+  loadSalaryPage();
+}
+
+async function deleteSalaryPayment(id) {
+  if (!await showConfirm('Delete this payment? The month goes back to not paid.')) return;
+  if (await spSend('DELETE', `/api/payments/${id}`)) loadSalaryPage();
+}
+
+// ── Paying a whole group at once (people without payslips) ──
+function openPayAll(groupKey) {
+  const { year, month } = _pay;
+  const items = payMonthList(year, month).filter(x => payGroupOf(x.row).key === groupKey && x.m.status === 'due' && x.m.left > 0.005)
+    .sort((a, b) => String(a.row.name).localeCompare(String(b.row.name)));
+  if (!items.length) return;
+  const cur = payCur(items[0].row);
+  _pay.bulk = { cur, items };
+  payDialog('payAllModal', `
+    <div class="modal-header"><h2>Mark all paid · ${esc(payGroupOf(items[0].row).label)} · ${MONTHS[month]} ${year}</h2><button class="modal-close" onclick="closeModal('payAllModal')">✕</button></div>
+    <p class="pay-lead">These are logged as paid. Change any amount that was different this month, and untick anyone you have not paid.</p>
+    <div><div class="bp-list">${items.map((x, i) => `<label class="bp-row"><input type="checkbox" class="bp-check" data-i="${i}" checked onchange="payAllTotal()">
+        <div class="bp-who"><b>${esc(x.row.name || '')}</b><small>${x.m.deduction > 0.005 ? `<span class="bp-ded">${payMoney(x.m.deduction, cur)} to take off <button type="button" class="dm-link" onclick="event.preventDefault();payAllTakeOff(${i})">take it off</button></span>` : payMoney(x.m.due, cur) + ' a month'}</small></div>
+        <span class="bp-amt">${esc(currencySymbol(cur).trim())}<input type="number" min="0" step="0.01" inputmode="decimal" id="payAllAmt${i}" value="${x.m.left.toFixed(2)}" oninput="payAllTotal()"></span>
+      </label>`).join('')}</div></div>
+    <div class="form-group pay-note"><label>Note <span class="dm-opt">optional</span></label><input id="payAllNote" class="form-control" type="text" maxlength="200" placeholder="e.g. Paid via Wise"></div>
+    <div><span id="payAllSum" class="pay-sum"></span><button class="btn btn-ghost" onclick="closeModal('payAllModal')">Cancel</button><button class="btn btn-primary" id="payAllGo" onclick="submitPayAll()">Mark as paid</button></div>`, 620);
+  payAllTotal();
+}
+function payAllPicked() {
+  return [...document.querySelectorAll('#payAllModal input.bp-check:checked')].map(cb => {
+    const i = Number(cb.dataset.i);
+    return { employee_id: _pay.bulk.items[i].row.employee_id, amount: Math.round((parseFloat(document.getElementById('payAllAmt' + i).value) || 0) * 100) / 100 };
+  }).filter(p => p.amount > 0);
+}
+function payAllTakeOff(i) {
+  const x = _pay.bulk.items[i];
+  document.getElementById('payAllAmt' + i).value = Math.max(0, x.m.left - x.m.deduction).toFixed(2);
+  payAllTotal();
+}
+function payAllTotal() {
+  const picked = payAllPicked(), total = picked.reduce((a, p) => a + p.amount, 0), btn = document.getElementById('payAllGo');
+  document.getElementById('payAllSum').innerHTML = picked.length ? `<b>${picked.length}</b> ${picked.length === 1 ? 'person' : 'people'} · <b>${payMoney(total, _pay.bulk.cur)}</b>` : 'Nobody ticked';
+  btn.disabled = !picked.length;
+  btn.textContent = picked.length ? `Mark ${picked.length} as paid` : 'Mark as paid';
+}
+async function submitPayAll() {
+  const payments = payAllPicked();
+  if (!payments.length) return;
+  const btn = document.getElementById('payAllGo');
+  btn.disabled = true;
+  const res = await fetch('/api/payments/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ payment_year: _pay.year, payment_month: _pay.month, payments, notes: document.getElementById('payAllNote').value.trim() }) }).catch(() => null);
+  const data = res ? await res.json().catch(() => ({})) : {};
+  btn.disabled = false;
+  if (!res || !res.ok) { showToast(data.error || 'Could not log the payments', 'error'); return; }
+  closeModal('payAllModal');
+  showToast(`Logged ${data.created.length} payment${data.created.length === 1 ? '' : 's'} for ${MONTHS[_pay.month]} ${_pay.year}` + (data.skipped.length ? ` (${data.skipped.length} already paid, left alone)` : ''), 'success');
+  loadSalaryPage();
+}
+
+// ── Payslips: read, check, file, and log the payments ──
+function payReadFile(file) {
+  return new Promise(resolve => {
+    if (!file) return resolve(null);
+    if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') return resolve({ file_name: file.name, error: 'Not a PDF' });
+    if (file.size > 3 * 1024 * 1024) return resolve({ file_name: file.name, error: 'Over 3 MB' });
+    const reader = new FileReader();
+    reader.onload = e => resolve({ file_name: file.name, file_data: String(e.target.result).split(',')[1] });
+    reader.onerror = () => resolve({ file_name: file.name, error: 'Could not be opened' });
+    reader.readAsDataURL(file);
+  });
+}
+
+// Files chosen or dropped. `forMonth` ({ id, year, month }) pins them to one person and month.
+async function payTakeFiles(files, forMonth) {
+  const list = [...(files || [])];
+  if (!list.length) return;
+  if (!document.getElementById('paySlipsModal')?.classList.contains('open')) _pay.slips = [];
+  const fresh = list.map(f => ({ file: f, file_name: f.name, state: 'reading', log: true }));
+  _pay.slips.push(...fresh);
+  renderPaySlips();
+  for (const item of fresh) {
+    const read = await payReadFile(item.file);
+    delete item.file;
+    if (!read || read.error) { item.state = 'bad'; item.problem = (read && read.error) || 'Could not be opened'; renderPaySlips(); continue; }
+    item.file_data = read.file_data;
+    const res = await fetch('/api/payslips/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(read) }).catch(() => null);
+    const info = res ? await res.json().catch(() => null) : null;
+    if (!res || !res.ok || !info) { item.state = 'bad'; item.problem = (info && info.error) || 'Could not be read'; renderPaySlips(); continue; }
+    if (info.several) { item.state = 'bad'; item.problem = 'It has more than one payslip in it. Upload one payslip per file, so nobody is shown someone else’s'; renderPaySlips(); continue; }
+    Object.assign(item, { state: 'ready', name: info.name || '', problems: info.problems || [], readable: !!info.ok, sure: !!info.sure, adds_up: info.adds_up, printed: info.printed !== false, named: !!info.named,
+      id: info.employee_id || null, year: info.year || null, month: info.month || null, amount: info.amount > 0 ? info.amount : null, candidates: info.candidates || [],
+      zero: !!info.ok && info.amount === 0 });
+    if (forMonth) {
+      // Added to one person's month: it is for them, unless the name on it plainly says
+      // somebody else. (A match that rests only on who it was filed under before does not
+      // count as plain: this is where a wrong answer given once gets put right.) When the
+      // name on it fits them, that settles it; when it does not, they are asked.
+      const mine = Number(item.id) === Number(forMonth.id);
+      if (!(item.id && item.sure && item.named && !mine)) {
+        item.sure = mine || item.candidates.map(Number).includes(Number(forMonth.id));
+        item.id = forMonth.id;
+      }
+      if (!item.year) { item.year = forMonth.year; item.month = forMonth.month; }
+      const other = payPerson(item.id, item.year) || payPerson(item.id);
+      if (Number(item.id) !== Number(forMonth.id)) item.aside = `This one is ${other ? other.name + '’s' : 'someone else’s'}, so it is filed for them.`;
+      else if (item.year !== forMonth.year || item.month !== forMonth.month) item.aside = `This one is for ${MONTHS[item.month]} ${item.year}, not ${MONTHS[forMonth.month]} ${forMonth.year}, so it is filed under ${MONTHS[item.month]}.`;
+    }
+    if (item.year && !_pay.data[item.year]) { try { await payFetchYear(item.year); } catch {} }
+    renderPaySlips();
   }
 }
 
-function toggleSection(btn) {
-  btn.closest('.sc-section').classList.toggle('open');
+// What will happen to one payslip, given what is already on record for that person and month
+function paySlipPlan(item) {
+  if (item.state !== 'ready') return { kind: item.state };
+  if (!item.id) return { kind: 'who' };
+  // A guess at whose it is has to be confirmed: filed under the wrong person, they could open it
+  if (!item.sure) return { kind: 'confirm', row: payPerson(item.id, item.year) || payPerson(item.id) || Object.values(_pay.data).flat().find(r => Number(r.employee_id) === Number(item.id)) || null };
+  if (!item.year || !item.month) return { kind: 'when' };
+  const row = payPerson(item.id, item.year), m = payMonthOf(row, item.month), cur = payCur(row);
+  if (!(item.amount > 0)) return item.zero ? { kind: 'zero', row, cur, replaces: !!(m && m.payslip) } : { kind: 'amount' };
+  const logged = row ? (row.payments || []).filter(p => Number(p.payment_month) === item.month) : [];
+  const total = Math.round(logged.reduce((a, p) => a + (parseFloat(p.amount) || 0), 0) * 100) / 100;
+  const twin = _pay.slips.find(s => s !== item && s.state === 'ready' && Number(s.id) === Number(item.id) && s.year === item.year && s.month === item.month && _pay.slips.indexOf(s) < _pay.slips.indexOf(item));
+  const plan = { kind: 'log', row, cur, total, logged, twin: !!twin, replaces: !!(m && m.payslip), expected: m && m.source !== 'payslip' && !m.paid && m.due > 0 ? m.due : null, source: m ? m.source : null,
+    later: !!(m && m.status === 'later' && !logged.length) };
+  if (logged.length) plan.kind = Math.abs(total - item.amount) <= 0.005 ? 'already' : 'differs';
+  return plan;
 }
 
-function showSalaryBreakdown(key) {
-  const rows = window._salaryRows || [];
-  const BD_FX = { GBP: 1, AED: window._salaryAedRate || (1/4.67), PHP: 0.0138 };
-  const toGBP = (v, cur) => v * (BD_FX[cur] || 1);
-  const fmtGBP = v => '£' + Math.abs(v).toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2});
-  const fmtCur = (v, cur) => currencySymbol(cur) + Math.abs(v).toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2});
-
-  const titles = { paid: 'Total Paid — Breakdown', due: 'Total Salaries — Breakdown', outstanding: 'Outstanding Balance — Breakdown', bonuses: 'Total Bonuses — Breakdown' };
-  const notes  = { paid: 'Payments logged this year per employee', due: 'Net annual salary target incl. PAYE/NI deductions', outstanding: 'Remaining balance after payments & deductions (excl. bonuses)', bonuses: 'Bonus payments logged per employee' };
-
-  // Build per-employee rows
-  const empRows = rows.map(emp => {
-    const cur = emp.currency || 'GBP';
-    let nativeVal, gbpVal, label;
-    if (key === 'paid') {
-      nativeVal = parseFloat(emp.total_paid) || 0;
-      gbpVal    = toGBP(nativeVal, cur);
-      label     = nativeVal;
-    } else if (key === 'due') {
-      nativeVal = parseFloat(emp.salary_target ?? emp.annual_salary) || 0;
-      gbpVal    = toGBP(nativeVal, cur);
-    } else if (key === 'outstanding') {
-      nativeVal = parseFloat(emp.net_remaining) || 0;
-      gbpVal    = toGBP(nativeVal, cur);
-    } else { // bonuses
-      nativeVal = parseFloat(emp.total_bonuses) || 0;
-      gbpVal    = toGBP(nativeVal, cur);
+function renderPaySlips() {
+  const items = _pay.slips, people = Object.values(_pay.data).flat().filter(r => payIsPayroll(r))
+    .filter((r, i, all) => all.findIndex(x => Number(x.employee_id) === Number(r.employee_id)) === i).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const reading = items.filter(i => i.state === 'reading').length;
+  let toLog = 0, sum = 0, ready = 0, blocked = 0;
+  const rows = items.map((item, i) => {
+    const plan = paySlipPlan(item), cur = plan.cur || 'GBP';
+    const who = `<select class="form-control pay-slip-who" onchange="_pay.slips[${i}].id=Number(this.value)||null;_pay.slips[${i}].sure=true;renderPaySlips()"><option value="">Whose is it?</option>${people.map(r => `<option value="${Number(r.employee_id)}"${Number(r.employee_id) === Number(item.id) ? ' selected' : ''}>${esc(r.name || '')}</option>`).join('')}</select>`;
+    const when = `<input class="form-control pay-slip-when" type="month" value="${item.year && item.month ? `${item.year}-${String(item.month).padStart(2, '0')}` : ''}" onchange="paySlipMonth(${i}, this.value)">`;
+    const amt = `<input class="form-control pay-slip-amt" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Amount paid" value="${item.amount > 0 ? Number(item.amount).toFixed(2) : ''}" onchange="_pay.slips[${i}].amount=Math.round((parseFloat(this.value)||0)*100)/100||null;_pay.slips[${i}].typed=true;renderPaySlips()">`;
+    const remove = `<button class="pay-x" onclick="_pay.slips.splice(${i},1);renderPaySlips()" aria-label="Remove this file" title="Remove">×</button>`;
+    if (item.state === 'reading') return `<div class="pay-slip-item"><div class="pay-slip-main"><b>${esc(item.file_name)}</b><small>Reading…</small></div>${remove}</div>`;
+    if (item.state === 'bad') { return `<div class="pay-slip-item is-bad"><div class="pay-slip-main"><b>${esc(item.file_name)}</b><small>${esc(item.problem)}. It will be left out.</small></div>${remove}</div>`; }
+    if (item.state === 'done') return `<div class="pay-slip-item is-done"><div class="pay-slip-main"><b>${esc(item.doneName || item.file_name)}</b><small>${esc(item.doneText)}</small></div><span class="co-chip is-ok">Done</span></div>`;
+    if (item.state === 'failed') blocked++;
+    // What was read, and anything that needs the owner's eye
+    const notes = [];
+    let chip = '', fields = '';
+    const person = plan.row ? esc(plan.row.name || '') : '';
+    const title = person ? `${person} · ${MONTHS[item.month] || '?'} ${item.year || ''}` : esc(item.file_name);
+    if (!item.readable) notes.push(item.problems[0] || 'This payslip could not be read.');
+    else if (item.adds_up === false) notes.push('The figures on it do not add up to the amount paid, so check the amount.');
+    else if (!item.printed && item.amount > 0 && !item.typed) notes.push('The amount paid is not printed on it, so it was worked out from the other figures: check it.');
+    if (plan.kind === 'who') { chip = '<span class="co-chip is-late">Whose is it?</span>'; notes.push(item.name ? `It says “${item.name}”, which matches nobody on payroll.` : 'Choose whose payslip this is.'); fields = who + (item.year ? '' : when) + (item.amount > 0 ? '' : amt); blocked++; }
+    else if (plan.kind === 'confirm') {
+      chip = '<span class="co-chip is-late">Check who</span>';
+      notes.push(item.name ? `It says “${item.name}”. Is this ${plan.row ? plan.row.name + '’s' : 'their'} payslip?` : `The name on it could not be read. Is this ${plan.row ? plan.row.name + '’s' : 'their'} payslip?`);
+      fields = `<button class="btn btn-primary btn-sm" onclick="_pay.slips[${i}].sure=true;renderPaySlips()">Yes${plan.row ? ', ' + person : ''}</button>` + who;
+      blocked++;
     }
-    return { emp, cur, nativeVal, gbpVal };
-  }).filter(r => Math.abs(r.nativeVal) > 0.005)
-    .sort((a, b) => Math.abs(b.gbpVal) - Math.abs(a.gbpVal));
-
-  const totalGBP = empRows.reduce((s, r) => s + r.gbpVal, 0);
-
-  const rowsHtml = empRows.map(({ emp, cur, nativeVal, gbpVal }) => {
-    const isNeg = nativeVal < 0;
-    const valColor = key === 'outstanding' ? (isNeg ? 'var(--positive)' : 'var(--negative)') : 'var(--text)';
-    const deductHtml = key === 'outstanding' ? (() => {
-      const od  = parseFloat(emp.total_office_deductions) || 0;
-      const ed  = parseFloat(emp.excess_deduction) || 0;
-      const paid = parseFloat(emp.total_paid) || 0;
-      const target = parseFloat(emp.salary_target ?? emp.annual_salary) || 0;
-      const parts = [];
-      if (paid > 0)  parts.push('<span style="color:var(--positive)">−' + fmtCur(paid, cur) + ' paid</span>');
-      if (od > 0)    parts.push('<span style="color:var(--negative)">−' + fmtCur(od, cur) + ' deductions</span>');
-      if (ed > 0)    parts.push('<span style="color:var(--negative)">−' + fmtCur(ed, cur) + ' excess days</span>');
-      return parts.length ? '<div style="font:500 10px/1.4 var(--font-mono);color:var(--muted);margin-top:3px">' + parts.join(' · ') + '</div>' : '';
-    })() : '';
-    return '<div style="display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)">' +
-      '<div style="width:32px;height:32px;border-radius:50%;background:var(--primary);display:flex;align-items:center;justify-content:center;font:700 11px/1 var(--font-mono);color:#000;flex-shrink:0">' +
-        (emp.name||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase() +
-      '</div>' +
-      '<div style="flex:1;min-width:0">' +
-        '<div style="font:600 13px/1 var(--font-sans);color:var(--text)">' + esc(emp.name||'') + '</div>' +
-        '<div style="font:500 10px/1 var(--font-mono);color:var(--muted);margin-top:2px">' + esc(emp.job_title||emp.department||'') + '</div>' +
-        deductHtml +
-      '</div>' +
-      '<div style="text-align:right;flex-shrink:0">' +
-        '<div style="font:700 14px/1 var(--font-mono);color:' + valColor + '">' + (isNeg ? '−' : '') + fmtCur(nativeVal, cur) + '</div>' +
-        (cur !== 'GBP' ? '<div style="font:500 10px/1 var(--font-mono);color:var(--muted);margin-top:3px">≈ ' + fmtGBP(gbpVal) + ' GBP</div>' : '') +
-      '</div>' +
-    '</div>';
+    else if (plan.kind === 'when') { chip = '<span class="co-chip is-late">Which month?</span>'; fields = when + (item.amount > 0 ? '' : amt); blocked++; }
+    else if (plan.kind === 'amount') { chip = '<span class="co-chip is-late">How much?</span>'; notes.push('Type the amount that was paid.'); fields = amt; blocked++; }
+    else {
+      ready++;
+      if (item.aside) notes.push(item.aside);
+      // (whose it was taken to be is always on show, so a wrong match can be seen and changed)
+      if (item.name && plan.row && item.name.replace(/\s+/g, ' ').trim().toLowerCase() !== String(plan.row.name || '').replace(/\s+/g, ' ').trim().toLowerCase()) notes.push(`The payslip says “${item.name}”.`);
+      if (plan.twin) notes.push('Another file in this list is for the same person and month; the later one is kept.');
+      if (plan.replaces) notes.push('Replaces the payslip already on file for that month.');
+      if (item.typed || !item.readable) fields = amt;
+      if (plan.kind === 'zero') { chip = '<span class="co-chip">File only</span>'; notes.push('This payslip pays nothing, so it is filed and no payment is logged.'); }
+      else if (plan.kind === 'already') { chip = '<span class="co-chip is-ok">Already paid</span>'; notes.push(`${payMoney(plan.total, cur)} is already logged, so only the payslip is filed.`); }
+      else if (plan.kind === 'differs') {
+        chip = '<span class="co-chip is-soon">Check</span>';
+        const diff = item.amount - plan.total;
+        notes.push(`${payMoney(plan.total, cur)} is already logged for this month; the payslip says ${payMoney(item.amount, cur)}.`);
+        fields += `<div class="pay-slip-pick">
+            <label><input type="radio" name="paySlipFix${i}" ${item.fix ? '' : 'checked'} onchange="_pay.slips[${i}].fix=false;renderPaySlips()"> Leave ${payMoney(plan.total, cur)} as logged${diff > 0 ? ` (${payMoney(diff, cur)} will show as still owed)` : ''}</label>
+            <label><input type="radio" name="paySlipFix${i}" ${item.fix ? 'checked' : ''} onchange="_pay.slips[${i}].fix=true;renderPaySlips()"> ${payMoney(item.amount, cur)} is what was really paid: correct it</label>
+          </div>`;
+      } else if (plan.later && !item.evenIfLater) {
+        // Set aside to pay later: a payslip arriving does not mean the money has gone
+        chip = '<span class="co-chip is-soon">Pay later</span>';
+        notes.push(`${MONTHS[item.month]} is set aside to pay later, so the payslip is filed and nothing is logged.`);
+        fields += `<button class="dm-link" onclick="_pay.slips[${i}].evenIfLater=true;renderPaySlips()">It has been paid: log it</button>`;
+      } else {
+        chip = item.log && _pay.slipsLog !== false ? '<span class="co-chip is-ok">Will be logged</span>' : '<span class="co-chip">File only</span>';
+        if (plan.expected !== null) notes.push(Math.abs(plan.expected - item.amount) <= 0.005 ? 'Matches what the tracker expected.' : `The tracker expected ${payMoney(plan.expected, cur)}; the payslip is what counts.`);
+        if (_pay.slipsLog !== false) { toLog++; sum += item.amount; }
+      }
+    }
+    if (item.state === 'failed') notes.unshift(`Not saved: ${item.problem}`);
+    return `<div class="pay-slip-item${['log', 'already', 'zero'].includes(plan.kind) ? '' : ' is-check'}${item.state === 'failed' ? ' is-bad' : ''}">
+        <div class="pay-slip-main"><b>${title}</b>${notes.length ? `<small>${notes.map(n => esc(n)).join(' ')}</small>` : ''}${fields ? `<div class="pay-slip-fields">${fields}</div>` : ''}
+          ${plan.row && !['who', 'confirm'].includes(plan.kind) && item.state !== 'failed' ? `<button class="dm-link pay-slip-change" onclick="_pay.slips[${i}].id=null;renderPaySlips()">Not ${person}?</button>` : ''}</div>
+        <strong class="pay-fig">${item.amount > 0 ? payMoney(item.amount, cur) : ''}</strong>${chip}${remove}
+      </div>`;
   }).join('');
+  // The ones that are ready can go ahead; any that still need an answer stay in the list
+  const canGo = ready > 0 && !reading && !_pay.slipsBusy;
+  const goText = _pay.slipsBusy ? 'Saving…' : reading ? 'Reading…' : toLog ? `File ${ready} and log ${toLog} payment${toLog === 1 ? '' : 's'}` : `File ${ready || ''} payslip${ready === 1 ? '' : 's'}`;
+  const allDone = items.length && items.every(i => i.state === 'done' || i.state === 'bad');
+  const html = `
+    <div class="modal-header"><h2>Payslips</h2><button class="modal-close" onclick="closePaySlips()">✕</button></div>
+    <p class="pay-lead">${allDone ? 'All done.' : 'Check each one is the right person, month and amount. Each payslip is filed where they can see it in their own portal.'}</p>
+    <div><div class="pay-slips">${rows || '<div class="ep-empty">No files yet.</div>'}</div></div>
+    ${allDone ? '' : `<label class="pay-slips-log"><input type="checkbox" ${_pay.slipsLog !== false ? 'checked' : ''} onchange="_pay.slipsLog=this.checked;renderPaySlips()"> Log these as paid <span>Untick to file the payslips now and log the payments once the money has gone.</span></label>`}
+    <div><span class="pay-sum">${allDone ? '' : [toLog ? `<b>${toLog}</b> payment${toLog === 1 ? '' : 's'} · <b>${payMoney(sum, 'GBP')}</b>` : '', blocked ? `${blocked} still need${blocked === 1 ? 's' : ''} an answer` : ''].filter(Boolean).join(' · ')}</span>
+      ${allDone ? `<button class="btn btn-primary" onclick="closePaySlips()">Close</button>`
+        : `<label class="btn btn-ghost">Add more<input type="file" accept=".pdf,application/pdf" multiple hidden onchange="payTakeFiles(this.files);this.value=''"></label><button class="btn btn-primary" ${canGo ? '' : 'disabled'} onclick="submitPaySlips()">${goText}</button>`}</div>`;
+  const open = document.getElementById('paySlipsModal')?.classList.contains('open');
+  if (open) document.querySelector('#paySlipsModal .modal').innerHTML = html;
+  else payDialog('paySlipsModal', html, 680);
+}
+function paySlipMonth(i, value) {
+  const item = _pay.slips[i];
+  if (!/^\d{4}-\d{2}$/.test(value)) { item.year = null; item.month = null; }
+  else { item.year = Number(value.slice(0, 4)); item.month = Number(value.slice(5, 7)); }
+  if (item.year && !_pay.data[item.year]) payFetchYear(item.year).then(renderPaySlips, renderPaySlips);
+  renderPaySlips();
+}
+function closePaySlips() {
+  closeModal('paySlipsModal');
+  _pay.slips = []; _pay.slipsBusy = false; _pay.afterSlips = null;
+}
 
-  const modal = document.createElement('div');
-  modal.className = 'modal-overlay';
-  modal.innerHTML =
-    '<div class="modal" style="max-width:520px;max-height:80vh;display:flex;flex-direction:column">' +
-      '<div class="modal-header" style="flex-shrink:0">' +
-        '<h3 class="modal-title">' + titles[key] + '</h3>' +
-        '<button class="modal-close" onclick="this.closest(\'.modal-overlay\').remove()">×</button>' +
-      '</div>' +
-      '<div style="padding:0 20px 8px;flex-shrink:0">' +
-        '<div style="font:500 11px/1 var(--font-mono);color:var(--muted)">' + notes[key] + '</div>' +
-        (key === 'outstanding' ? '<div style="font:500 11px/1 var(--font-mono);color:var(--muted);margin-top:4px">Excludes bonuses · AED @ ' + BD_FX.AED.toFixed(4) + ' · PHP @ 0.0138 GBP</div>' : '') +
-      '</div>' +
-      '<div style="overflow-y:auto;padding:0 20px 8px;flex:1">' +
-        (rowsHtml || '<div style="color:var(--muted);padding:20px 0;font:500 12px/1 var(--font-mono)">No data.</div>') +
-      '</div>' +
-      '<div style="padding:16px 20px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;flex-shrink:0;background:var(--surface)">' +
-        '<span style="font:600 11px/1 var(--font-mono);color:var(--muted)">TOTAL (' + empRows.length + ' employee' + (empRows.length !== 1 ? 's' : '') + ')</span>' +
-        '<span style="font:700 18px/1 var(--font-mono);color:var(--text)">' + fmtGBP(totalGBP) + '</span>' +
-      '</div>' +
-    '</div>';
-  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
-  document.body.appendChild(modal);
-  requestAnimationFrame(() => modal.classList.add('open'));
+async function submitPaySlips() {
+  if (_pay.slipsBusy) return;
+  _pay.slipsBusy = true;
+  renderPaySlips();
+  let filed = 0, logged = 0, total = 0;
+  for (const item of _pay.slips) {
+    if (item.state !== 'ready' && item.state !== 'failed') continue;
+    const plan = paySlipPlan(item);
+    if (!['log', 'already', 'differs', 'zero'].includes(plan.kind)) continue;
+    const pay = _pay.slipsLog === false || plan.kind === 'zero' || (plan.later && !item.evenIfLater) ? 'none' : plan.kind === 'differs' && item.fix ? 'fix' : 'log';
+    const body = { file_name: item.file_name, file_data: item.file_data, employee_id: item.id, pay_year: item.year, pay_month: item.month, pay };
+    if (item.typed || !item.readable) body.amount = item.amount;
+    if (item.evenIfLater) body.even_if_later = true;
+    const res = await fetch('/api/payslips/file', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null);
+    const out = res ? await res.json().catch(() => null) : null;
+    if (!res || !res.ok || !out) { item.state = 'failed'; item.problem = (out && out.error) || 'no connection'; renderPaySlips(); continue; }
+    filed++;
+    const cur = plan.cur || 'GBP', act = out.payment.action;
+    if (act === 'logged') { logged++; total += out.payment.amount; }
+    item.state = 'done';
+    item.doneName = `${out.name} · ${MONTHS[item.month]} ${item.year}`;
+    item.doneText = act === 'logged' ? `Payslip filed and ${payMoney(out.payment.amount, cur)} logged as paid.`
+      : act === 'corrected' ? `Payslip filed and the payment corrected to ${payMoney(out.payment.amount, cur)}.`
+      : act === 'differs' ? `Payslip filed. ${payMoney(out.payment.total, cur)} stays logged; the difference shows under Needs attention.`
+      : act === 'already' ? 'Payslip filed. The payment was already logged.'
+      : act === 'later' || (plan.later && !item.evenIfLater) ? 'Payslip filed. The month is still set aside to pay later.' : 'Payslip filed. No payment logged.';
+    delete item.file_data;
+    renderPaySlips();
+  }
+  _pay.slipsBusy = false;
+  renderPaySlips();
+  if (filed) showToast(`${filed} payslip${filed === 1 ? '' : 's'} filed` + (logged ? `, ${logged} payment${logged === 1 ? '' : 's'} logged (${payMoney(total, 'GBP')})` : ''), 'success');
+  if (_pay.afterSlips) _pay.afterSlips();   // (opened from somewhere else, which has its own list to refresh)
+  await loadSalaryPage();
+  if (document.getElementById('paySlipsModal')?.classList.contains('open')) renderPaySlips();
+}
+
+// Payslips dropped anywhere on the Salary page
+document.addEventListener('dragover', e => {
+  if (!document.getElementById('page-salary')?.classList.contains('active') || !e.dataTransfer || ![...e.dataTransfer.types].includes('Files')) return;
+  e.preventDefault();
+  document.getElementById('payDrop')?.classList.add('is-over');
+});
+document.addEventListener('dragleave', e => { if (!e.relatedTarget) document.getElementById('payDrop')?.classList.remove('is-over'); });
+document.addEventListener('drop', e => {
+  if (!document.getElementById('page-salary')?.classList.contains('active') || !e.dataTransfer || !e.dataTransfer.files.length) return;
+  e.preventDefault();
+  document.getElementById('payDrop')?.classList.remove('is-over');
+  if (document.querySelector('.modal-overlay.open:not(#paySlipsModal)')) return;
+  payTakeFiles(e.dataTransfer.files);
+});
+
+// ── One person's year ──
+function openPayPerson(id, year) {
+  _pay.person = { id: Number(id), year: year || _pay.year };
+  _pay.open = {};
+  payDialog('payPersonModal', '<div class="ep-loading" style="padding:24px">Loading…</div>', 720);
+  if (_pay.data[_pay.person.year]) renderPayPerson();
+  else payFetchYear(_pay.person.year).then(renderPayPerson, () => { document.querySelector('#payPersonModal .modal').innerHTML = '<div class="ep-empty" style="padding:24px">Could not load.</div>'; });
+}
+function payPersonYear(by) { _pay.person.year += by; openPayPerson(_pay.person.id, _pay.person.year); }
+function payToggle(key) { _pay.open[key] = !_pay.open[key]; renderPayPerson(); if (key === 'notes' && _pay.open.notes) loadNotesList(_pay.person.id); if (key === 'log' && _pay.open.log) payLoadLog(); }
+
+function renderPayPerson() {
+  const box = document.querySelector('#payPersonModal .modal');
+  if (!box || !_pay.person) return;
+  const { id, year } = _pay.person, row = payPerson(id, year);
+  if (!row) { box.innerHTML = `<div class="modal-header"><h2>${year}</h2><button class="modal-close" onclick="closeModal('payPersonModal')">✕</button></div><div class="ep-empty">Nothing recorded for ${year}.</div><div class="pay-foot"><button class="btn btn-ghost" onclick="payPersonYear(${payNow().year - year})">Back to ${payNow().year}</button></div>`; return; }
+  const cur = payCur(row), payroll = payIsPayroll(row), now = payNow();
+  const annual = parseFloat(row.annual_salary) || 0, rem = parseFloat(row.net_remaining) || 0;
+  const monthly = payroll ? parseFloat(row.monthly_pay) || 0 : annual / 12;
+  const monthlyNote = !payroll ? 'before tax, they invoice' : row.pay_exact ? 'worked out from their payslips' : row.monthly_pay_from === 'payslip' ? 'going by what they have been paid' : 'an estimate until a payslip is uploaded';
+  const ded = (parseFloat(row.excess_deduction) || 0) + (parseFloat(row.total_office_deductions) || 0);
+  const pays = row.payments || [];
+  const months = (row.months || []).map(m => {
+    const mine = pays.filter(p => Number(p.payment_month) === m.month), late = !m.paid && m.status !== 'none' && (year < now.year || (year === now.year && m.month < now.month));
+    const chip = m.status === 'none' ? '<span class="co-chip">Nothing owed</span>' : m.short > 0.005 ? `<span class="co-chip is-late">${payMoney(m.short, cur)} short</span>`
+      : m.covered ? '<span class="co-chip is-ok">Covered</span>' : m.paid ? '<span class="co-chip is-ok">Paid</span>'
+      : m.status === 'later' ? '<span class="co-chip is-soon">Pay later</span>' : late ? '<span class="co-chip is-late">Not paid</span>' : '<span class="co-chip is-soon">To pay</span>';
+    const fig = m.status === 'none' || m.covered ? '—' : payMoney(m.paid ? m.logged : m.left, cur);
+    const act = m.status === 'none' ? (m.skip_id ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();payUnskip(${m.skip_id})">Undo</button>` : '')
+      : m.short > 0.005 ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openPayModal({ id: ${id}, year: ${year}, month: ${m.month}, topUp: true })">Pay the rest</button>`
+      : !m.paid ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openPayModal({ id: ${id}, year: ${year}, month: ${m.month} })">Mark paid</button>` : '';
+    const f = m.figures;
+    // Why an unpaid month is the figure it is: always on show. The rest folds away.
+    const how = payroll && f && !m.paid && m.status !== 'none' ? `<div class="pay-how">${payMoney(f.gross, cur)} pay, less tax ${payMoney(f.tax, cur)}, National Insurance ${payMoney(f.ni, cur)}${f.student_loan ? `, student loan ${payMoney(f.student_loan, cur)}` : ''}${f.postgrad_loan ? `, postgraduate loan ${payMoney(f.postgrad_loan, cur)}` : ''}${f.pension ? `, pension ${payMoney(f.pension, cur)}` : ''}</div>` : '';
+    const note = m.skip_note && (m.status === 'none' || m.status === 'later') ? `<div class="pay-how">${esc(m.skip_note)}</div>` : '';
+    const lines = mine.map(p => `<div class="pay-line"><span>${payMoney(p.amount, cur)}${p.notes ? ` · ${esc(p.notes)}` : ''}<small>entered ${p.created_at ? new Date(p.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : ''}</small></span>
+        <span><button class="dm-link" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${m.month}, editId: ${Number(p.id)} })">Change</button><button class="dm-link pay-del" onclick="deleteSalaryPayment(${Number(p.id)})">Delete</button></span></div>`).join('');
+    const slip = m.payslip ? `<div class="pay-line"><span><a class="pay-slip" href="/api/payslips/${m.payslip.id}/file" target="_blank" rel="noopener">Open the payslip</a>${m.payslip.amount != null ? ` · it says ${payMoney(m.payslip.amount, cur)}` : m.payslip.read ? '' : ' · it could not be read'}</span>
+        <span><button class="dm-link pay-del" onclick="payDeleteSlip(${m.payslip.id})">Remove</button></span></div>`
+      : payroll && m.status !== 'none' ? `<div class="pay-line"><span class="pay-dim">No payslip on file</span><span><label class="dm-link">Add it<input type="file" accept=".pdf,application/pdf" hidden onchange="payTakeFiles(this.files, { id: ${id}, year: ${year}, month: ${m.month} });this.value=''"></label></span></div>` : '';
+    const more = m.paid && !m.covered && !(m.short > 0.005) ? `<div class="pay-line"><span></span><span><button class="dm-link" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${m.month} })">Add another payment</button></span></div>` : '';
+    const detail = lines + slip + more, open = !!_pay.open['m' + m.month];
+    return `<div class="pay-month is-${m.status}${late ? ' is-late' : ''}${open ? ' open' : ''}">
+        <div class="pay-month-top${detail ? ' can-open' : ''}"${detail ? ` onclick="payToggle('m${m.month}')" role="button" tabindex="0" onkeydown="if(event.key==='Enter')payToggle('m${m.month}')"` : ''}>
+          <b>${MONTHS[m.month]}${m.payslip ? '<i class="pay-has-slip">payslip</i>' : ''}</b><strong class="pay-fig">${fig}</strong>${chip}<span class="pay-btns">${act}</span><span class="pay-chev">${detail ? '›' : ''}</span>
+        </div>
+        ${note}${how}${open ? `<div class="pay-month-more">${detail}</div>` : ''}
+      </div>`;
+  }).join('');
+  // Payments logged against a month they were not on the books for
+  const stray = pays.filter(p => !(row.months || []).some(m => m.month === Number(p.payment_month)));
+  const strayHtml = stray.map(p => `<div class="pay-month"><div class="pay-month-top"><b>${MONTHS[p.payment_month] || p.payment_month}</b><strong class="pay-fig">${payMoney(p.amount, cur)}</strong><span class="co-chip">Outside their dates</span><span class="pay-btns"></span></div>
+      <div class="pay-line"><span>${esc(p.notes || '')}</span><span><button class="dm-link" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${Number(p.payment_month)}, editId: ${Number(p.id)} })">Change</button><button class="dm-link pay-del" onclick="deleteSalaryPayment(${Number(p.id)})">Delete</button></span></div></div>`).join('');
+
+  const bonuses = (row.bonuses || []).filter(b => String(b.bonus_date || '').startsWith(year + '-'));
+  const offices = (row.office_deductions || []).filter(o => String(o.deduction_date || '').startsWith(year + '-'));
+  const history = row.salary_history || [];
+  const sec = (key, title, count, inner) => `<div class="pay-sec${_pay.open[key] ? ' open' : ''}">
+      <button class="pay-sec-head" onclick="payToggle('${key}')"><span>${title}${count !== null ? ` <i>${count}</i>` : ''}</span><span class="pay-chev">›</span></button>
+      ${_pay.open[key] ? `<div class="pay-sec-body">${inner}</div>` : ''}
+    </div>`;
+  const excess = parseFloat(row.excess_deduction) || 0;
+  const sections = [
+    sec('ded', 'Deductions', offices.length + (excess > 0 ? 1 : 0), `
+      ${excess > 0 ? `<div class="pay-line"><span>Days off over the allowance (${parseFloat(row.excess_days) || 0} day${row.excess_days == 1 ? '' : 's'})</span><span>${payMoney(-excess, cur)}</span></div>` : ''}
+      ${offices.map(o => `<div class="pay-line"><span>${esc(o.description || 'Deduction')}<small>${esc(o.deduction_date || '')}${o.notes ? ' · ' + esc(o.notes) : ''}</small></span><span>${payMoney(-(parseFloat(o.amount) || 0), cur)} <button class="dm-link pay-del" onclick="deleteOfficeDeduction(${Number(o.id)})">Delete</button></span></div>`).join('')}
+      ${!offices.length && !(excess > 0) ? '<div class="pay-dim">Nothing taken off this year.</div>' : ''}
+      <button class="btn btn-ghost btn-sm" onclick="openOfficeDeductModal(${id})">Add a deduction</button>`),
+    sec('bonus', 'Bonuses', bonuses.length, `
+      ${bonuses.map(b => `<div class="pay-line"><span>${esc(b.reason || 'Bonus')}<small>${esc(b.bonus_date || '')}${b.notes ? ' · ' + esc(b.notes) : ''}</small></span><span>${payMoney(parseFloat(b.amount) || 0, cur)} <button class="dm-link pay-del" onclick="deleteBonus(${Number(b.id)})">Delete</button></span></div>`).join('') || '<div class="pay-dim">No bonuses this year.</div>'}
+      <button class="btn btn-ghost btn-sm" onclick="openBonusModal(${id})">Add a bonus</button>`),
+    history.length ? sec('hist', 'Salary changes', history.length, `
+      ${history.map(h => `<div class="pay-line"><span>${payMoney(parseFloat(h.annual_salary) || 0, h.currency || cur)} a year<small>from ${esc(fmtDateShort(h.effective_from || ''))}${h.reason ? ' · ' + esc(h.reason) : ''}</small></span><span><button class="dm-link pay-del" onclick="deleteSalaryHistory(${Number(h.id)})">Delete</button></span></div>`).join('')}
+      <div class="pay-dim">Each line is a salary and the day it started. If an earlier figure was simply wrong (not a real rise or cut): <button class="dm-link" onclick="correctSalaryHistory(${id}, ${esc(JSON.stringify(row.name || ''))}, ${esc(JSON.stringify(payMoney(annual, cur)))})">use ${payMoney(annual, cur)} for the whole time</button>.</div>`) : '',
+    sec('notes', 'Notes', null, `<div id="notes-list-${id}" class="sc-notes-list"><div class="sc-empty">Loading…</div></div><button class="btn btn-ghost btn-sm" onclick="openNoteModal(${id})">Add a note</button>`),
+    sec('log', 'Changes to payments', null, `<div id="payLogBox"><div class="pay-dim">Loading…</div></div>`),
+  ].join('');
+
+  const differs = row.pay_differs;
+  box.innerHTML = `
+    <div class="modal-header"><h2>${esc(row.name || '')}</h2><button class="modal-close" onclick="closeModal('payPersonModal')">✕</button></div>
+    <div class="pay-person-sub">
+      <span>${payroll ? 'Payroll' : 'Self-employed'}${annual > 0 ? ` · ${payMoney(annual, cur)} a year` : ' · no salary set'}${row.is_terminated ? ` · left ${esc(fmtDateShort(row.termination_date || ''))}` : ''}</span>
+      <span class="pay-year-switch"><button class="pay-arrow" onclick="payPersonYear(-1)" aria-label="Previous year">‹</button><b>${year}</b><button class="pay-arrow" onclick="payPersonYear(1)" aria-label="Next year">›</button></span>
+    </div>
+    <div class="pay-tiles">
+      <div class="pay-tile"><small>${payroll ? 'Monthly pay' : 'A month'}</small><strong>${payMoney(monthly, cur)}</strong><span>${monthlyNote}</span></div>
+      <div class="pay-tile"><small>Paid in ${year}</small><strong>${payMoney(parseFloat(row.total_paid) || 0, cur)}</strong><span>${pays.length} payment${pays.length === 1 ? '' : 's'}</span></div>
+      <div class="pay-tile"><small>${rem < -0.005 ? 'Paid ahead by' : `Left in ${year}`}</small><strong class="${rem > 0.005 ? '' : 'is-none'}">${payMoney(Math.abs(rem), cur)}</strong><span>${ded > 0.005 ? `after ${payMoney(ded, cur)} of deductions` : rem > 0.005 ? 'still to pay' : 'nothing left'}</span></div>
+    </div>
+    ${differs ? `<p class="pay-warn">The ${MONTHS[differs.month]} payslip pays ${payMoney(differs.payslip, cur)} a month before tax, but the salary on record gives ${payMoney(differs.tracker, cur)}. The payslip figure is used. If their pay has changed, update the salary on their profile.</p>` : ''}
+    <div><div class="pay-months">${months || '<div class="ep-empty">Not on the books this year.</div>'}${strayHtml}</div></div>
+    <div><div class="pay-secs">${sections}</div></div>
+    <div class="pay-foot"><button class="btn btn-ghost" onclick="closeModal('payPersonModal');openEmployeeProfile(${id})">Open their profile</button><button class="btn btn-ghost" onclick="openPayModal({ id: ${id}, year: ${year} })">Log a payment</button></div>`;
+  if (_pay.open.notes) loadNotesList(id);
+  if (_pay.open.log) payLoadLog();
+}
+
+async function payDeleteSlip(slipId) {
+  if (!await showConfirm('Remove this payslip? They will no longer see it in their portal. The payment stays logged.')) return;
+  if (await spSend('DELETE', `/api/payslips/${slipId}`)) loadSalaryPage();
+}
+
+// What has happened to this person's payments: added, changed, removed
+async function payLoadLog() {
+  const box = document.getElementById('payLogBox');
+  if (!box || !_pay.person) return;
+  const res = await fetch(`/api/payment-log/${_pay.person.id}`).catch(() => null);
+  const rows = res && res.ok ? await res.json().catch(() => null) : null;
+  const here = document.getElementById('payLogBox');
+  if (!here) return;
+  if (!rows) { here.innerHTML = '<div class="pay-dim">Could not load.</div>'; return; }
+  const row = payPerson(_pay.person.id, _pay.person.year), cur = payCur(row);
+  const when = d => new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  here.innerHTML = rows.length ? rows.map(r => {
+    const month = `${MONTHS[r.pay_month] || ''} ${r.pay_year || ''}`.trim();
+    const what = r.action === 'added' ? `Logged ${payMoney(r.amount, cur)} for ${month}`
+      : r.action === 'removed' ? `Deleted the ${payMoney(r.amount, cur)} payment for ${month}`
+      : `Changed ${MONTHS[r.was_month] || ''} ${r.was_year || ''} ${payMoney(r.was_amount, cur)} to ${month} ${payMoney(r.amount, cur)}`;
+    return `<div class="pay-line"><span>${esc(what)}<small>${when(r.at)}${r.by_name ? ' · ' + esc(r.by_name) : ''}</small></span></div>`;
+  }).join('') : '<div class="pay-dim">Nothing yet. Payments added, changed or deleted from now on are listed here.</div>';
 }
 
 // ─── HR NOTES ─────────────────────────────────────────────────────────────────
-async function toggleNotesSection(btn, empId) {
-  const section = btn.closest('.sc-section');
-  const wasOpen = section.classList.contains('open');
-  section.classList.toggle('open');
-  if (!wasOpen) await loadNotesList(empId);
-}
-
 async function loadNotesList(empId) {
   const container = document.getElementById(`notes-list-${empId}`);
   if (!container) return;
@@ -4024,151 +4134,6 @@ async function deleteNote(id, empId) {
   if (!await showConfirm('Delete this note?')) return;
   await fetch(`/api/employee-notes/${id}`, { method: 'DELETE' });
   await loadNotesList(empId);
-}
-
-// ─── PAYROLL CSV EXPORT ───────────────────────────────────────────────────────
-async function exportPayrollCSV() {
-  const year = document.getElementById('salaryYear')?.value || new Date().getFullYear();
-  showToast('Generating CSV…', 'info');
-  const a = document.createElement('a');
-  a.href = `/api/export/payroll-csv?year=${year}`;
-  a.download = `payroll-${year}.csv`;
-  a.click();
-}
-
-// ─── PRINT PAYSLIP ────────────────────────────────────────────────────────────
-async function printPayslip(empId, empName) {
-  const year  = document.getElementById('salaryYear')?.value || new Date().getFullYear();
-  const month = new Date().getMonth() + 1;
-  showToast('Preparing payslip…', 'info');
-  const res = await fetch(`/api/salary-overview?year=${year}`);
-  if (!res.ok) return showToast('Failed to load salary data', 'error');
-  const data = await res.json();
-  const emp  = data.find(e => e.employee_id === empId);
-  if (!emp)  return showToast('Employee data not found', 'error');
-
-  const sym   = currencySymbol(emp.currency || 'GBP');
-  const paye  = emp.paye_breakdown;
-  const annSal = parseFloat(emp.annual_salary) || 0;
-  const grossM = paye ? paye.gross_monthly : annSal / 12;
-  const netM   = paye ? paye.net_monthly   : annSal / 12;
-  const monthName = MONTHS[month];
-
-  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
-  <title>Payslip – ${empName} – ${monthName} ${year}</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px; color: #0d1326; padding: 40px; max-width: 700px; margin: 0 auto; }
-    .ps-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #4f46e5; padding-bottom: 16px; margin-bottom: 24px; }
-    .ps-company { font-size: 1.4rem; font-weight: 800; color: #4f46e5; letter-spacing: -0.5px; }
-    .ps-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; color: #566880; margin-top: 2px; }
-    .ps-period { text-align: right; }
-    .ps-period-val { font-size: 1.1rem; font-weight: 700; }
-    .ps-period-sub { font-size: 0.75rem; color: #566880; }
-    .ps-employee { background: #f0eeff; border-radius: 10px; padding: 16px 20px; margin-bottom: 20px; display: flex; gap: 40px; flex-wrap: wrap; }
-    .ps-emp-field label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.5px; color: #7c6fcd; font-weight: 700; display: block; margin-bottom: 3px; }
-    .ps-emp-field span { font-weight: 600; }
-    .ps-table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
-    .ps-table th { background: #e9eef6; padding: 9px 14px; text-align: left; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px; color: #566880; }
-    .ps-table td { padding: 9px 14px; border-bottom: 1px solid #e4eaf3; }
-    .ps-table tr:last-child td { border-bottom: none; }
-    .ps-table .pos { color: #059669; font-weight: 700; }
-    .ps-table .neg { color: #e11d48; font-weight: 700; }
-    .ps-net { display: flex; justify-content: space-between; align-items: center; background: linear-gradient(135deg, #3730a3, #4f46e5); color: #fff; border-radius: 10px; padding: 16px 20px; margin-top: 16px; }
-    .ps-net-label { font-size: 0.8rem; opacity: 0.8; text-transform: uppercase; letter-spacing: 0.5px; }
-    .ps-net-val { font-size: 1.5rem; font-weight: 800; }
-    .ps-footer { margin-top: 32px; padding-top: 16px; border-top: 1px solid #e4eaf3; font-size: 0.72rem; color: #8698b2; text-align: center; }
-    @media print { body { padding: 20px; } }
-  </style></head><body>
-  <div class="ps-header">
-    <div>
-      <div class="ps-company">EmpTracker</div>
-      <div class="ps-title">Payslip</div>
-    </div>
-    <div class="ps-period">
-      <div class="ps-period-val">${monthName} ${year}</div>
-      <div class="ps-period-sub">Pay Period</div>
-    </div>
-  </div>
-  <div class="ps-employee">
-    <div class="ps-emp-field"><label>Employee</label><span>${esc(emp.name)}</span></div>
-    ${emp.job_title ? `<div class="ps-emp-field"><label>Job Title</label><span>${esc(emp.job_title)}</span></div>` : ''}
-    ${emp.department ? `<div class="ps-emp-field"><label>Department</label><span>${esc(emp.department)}</span></div>` : ''}
-    <div class="ps-emp-field"><label>Employment Type</label><span>${emp.employment_type === 'self_employed' ? 'Self-Employed' : 'Payroll'}</span></div>
-    <div class="ps-emp-field"><label>Currency</label><span>${emp.currency || 'GBP'}</span></div>
-    ${emp.start_date ? `<div class="ps-emp-field"><label>Start Date</label><span>${emp.start_date}</span></div>` : ''}
-  </div>
-  <table class="ps-table">
-    <thead><tr><th>Description</th><th style="text-align:right">Amount</th></tr></thead>
-    <tbody>
-      <tr><td>Gross Monthly Salary</td><td class="pos" style="text-align:right">${sym}${grossM.toLocaleString('en-GB',{minimumFractionDigits:2})}</td></tr>
-      ${paye ? `
-      <tr><td>Income Tax (PAYE)</td><td class="neg" style="text-align:right">−${sym}${(paye.income_tax/12).toLocaleString('en-GB',{minimumFractionDigits:2})}</td></tr>
-      <tr><td>National Insurance</td><td class="neg" style="text-align:right">−${sym}${(paye.national_insurance/12).toLocaleString('en-GB',{minimumFractionDigits:2})}</td></tr>
-      ${paye.pension > 0 ? `<tr><td>Pension (${emp.pension_rate}%)</td><td class="neg" style="text-align:right">−${sym}${(paye.pension/12).toLocaleString('en-GB',{minimumFractionDigits:2})}</td></tr>` : ''}
-      ` : ''}
-    </tbody>
-  </table>
-  <div class="ps-net">
-    <div><div class="ps-net-label">Net Monthly Pay</div></div>
-    <div class="ps-net-val">${sym}${netM.toLocaleString('en-GB',{minimumFractionDigits:2})}</div>
-  </div>
-  <div class="ps-footer">Generated ${new Date().toLocaleDateString('en-GB',{day:'2-digit',month:'long',year:'numeric'})} · EmpTracker · Confidential</div>
-  </body></html>`;
-
-  const w = window.open('', '_blank', 'width=800,height=700');
-  w.document.write(html);
-  w.document.close();
-  setTimeout(() => w.print(), 400);
-}
-
-function togglePaymentsList(btn) {
-  const list = btn.nextElementSibling;
-  const open = list.classList.toggle('open');
-  btn.textContent = (open ? '▼' : '▶') + btn.textContent.slice(1);
-}
-
-function openSalaryPaymentModal(empId = '') {
-  const now = new Date();
-  const sel = document.getElementById('spEmpId');
-  sel.innerHTML = '';
-  employees.forEach(e => {
-    const opt = document.createElement('option');
-    opt.value = e.id; opt.textContent = e.name; sel.appendChild(opt);
-  });
-  if (empId) sel.value = empId;
-  document.getElementById('spYear').value  = now.getFullYear();
-  document.getElementById('spMonth').value = now.getMonth() + 1;
-  document.getElementById('spAmount').value = '';
-  document.getElementById('spNotes').value  = '';
-  // Auto-set currency from selected employee
-  const emp = employees.find(e => String(e.id) === String(empId));
-  document.getElementById('spCurrency').value = emp?.currency || 'GBP';
-  openModal('salaryPayModal');
-}
-
-async function saveSalaryPayment() {
-  const employee_id   = document.getElementById('spEmpId').value;
-  const payment_year  = document.getElementById('spYear').value;
-  const payment_month = document.getElementById('spMonth').value;
-  const amount        = document.getElementById('spAmount').value;
-  const notes         = document.getElementById('spNotes').value;
-  const currency      = document.getElementById('spCurrency').value;
-  if (!amount || parseFloat(amount) <= 0) return showToast('Enter a valid amount', 'error');
-  const res = await fetch('/api/payments', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ employee_id, payment_year, payment_month, amount, notes, currency })
-  });
-  if (!res.ok) { const e = await res.json(); return showToast(e.error, 'error'); }
-  closeModal('salaryPayModal');
-  loadSalaryPage();
-}
-
-async function deleteSalaryPayment(id) {
-  if (!await showConfirm('Delete this payment?')) return;
-  await fetch(`/api/payments/${id}`, { method: 'DELETE' });
-  loadSalaryPage();
 }
 
 function openOfficeDeductModal(empId) {
@@ -4773,160 +4738,6 @@ async function refreshCalendarBadge() {
     const res = await fetch('/api/day-off-requests');
     if (res.ok) updateCalendarBadge((await res.json()).length);
   } catch {}
-}
-
-// ─── SALARY REMINDER PANEL ────────────────────────────────────────────────────
-// ── Bulk monthly pay (Salary page) ──
-// Logs the usual monthly pay for everyone in a group (e.g. self-employed, PHP) in one go.
-// The usual amount is their salary for that month: annual ÷ 12 at the salary in force,
-// or the part-month amount in the month they started. Each one can be changed or left
-// out first, and anyone already paid for the month is skipped.
-let _bulkPay = { type: 'self_employed', currency: 'PHP', rows: [] };
-
-function bulkUsualAmount(emp, year, month) {
-  const ym = `${year}-${String(month).padStart(2, '0')}`;
-  const fm = emp.first_month_full;
-  if (fm && emp.start_date && emp.start_date.slice(0, 7) === ym && fm.first_month_days < fm.first_month_total_days) return parseFloat(fm.first_month_pay) || 0;
-  const band = (emp.pay_bands || []).find(b => b.from.slice(0, 7) <= ym && b.to.slice(0, 7) >= ym);
-  const monthly = band ? band.monthly : (parseFloat(emp.annual_salary) || 0) / 12;
-  return Math.round(monthly * 100) / 100;
-}
-
-async function openBulkPayModal(type, currency) {
-  _bulkPay.type = type; _bulkPay.currency = currency;
-  const now = new Date();
-  let m = document.getElementById('bulkPayModal');
-  if (!m) {
-    m = document.createElement('div');
-    m.className = 'modal-overlay';
-    m.id = 'bulkPayModal';
-    m.addEventListener('click', e => { if (e.target === m) closeModal('bulkPayModal'); });
-    document.body.appendChild(m);
-  }
-  const monthOpts = MONTHS.slice(1).map((n, i) => `<option value="${i + 1}"${i + 1 === now.getMonth() + 1 ? ' selected' : ''}>${n}</option>`).join('');
-  const y = now.getFullYear();
-  m.innerHTML = `<div class="modal" style="max-width:640px">
-    <div class="modal-header"><h2>Pay all ${type === 'self_employed' ? 'self-employed' : 'payroll'} · ${esc(currency)}</h2><button class="modal-close" onclick="closeModal('bulkPayModal')">✕</button></div>
-    <p class="bp-note">Each person's usual monthly pay is filled in. Change any amount that is different this month, or untick anyone you are not paying, then log them all at once.</p>
-    <div class="bp-when">
-      <div class="form-group"><label>Month</label><select id="bpMonth" onchange="renderBulkPay()">${monthOpts}</select></div>
-      <div class="form-group"><label>Year</label><select id="bpYear" onchange="renderBulkPay()">${[y - 1, y, y + 1].map(v => `<option${v === y ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
-      <div class="form-group bp-notes"><label>Note <span class="dm-opt">optional</span></label><input id="bpNotes" type="text" maxlength="200" placeholder="e.g. Paid via Wise"></div>
-    </div>
-    <div id="bpList" class="bp-list"><div class="ep-loading">Loading…</div></div>
-    <div class="bp-foot"><span id="bpTotal"></span>
-      <div><button class="btn btn-ghost" onclick="closeModal('bulkPayModal')">Cancel</button>
-      <button class="btn btn-primary" id="bpGo" onclick="submitBulkPay()">Log payments</button></div></div>
-  </div>`;
-  openModal('bulkPayModal');
-  renderBulkPay();
-}
-
-async function renderBulkPay() {
-  const year = parseInt(document.getElementById('bpYear').value, 10), month = parseInt(document.getElementById('bpMonth').value, 10);
-  const list = document.getElementById('bpList');
-  const res = await fetch(`/api/salary-overview?year=${year}`).catch(() => null);
-  const data = res && res.ok ? await res.json() : null;
-  if (!data) { list.innerHTML = '<div class="ep-empty">Could not load the team.</div>'; return; }
-  const ym = `${year}-${String(month).padStart(2, '0')}`;
-  const sym = { GBP: '£', USD: '$', AED: 'AED ', PHP: '₱', EUR: '€' }[_bulkPay.currency] || '';
-  const money = n => sym + Number(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  _bulkPay.rows = data.filter(e => !e.is_terminated && e.employment_type === _bulkPay.type && (e.currency || 'GBP') === _bulkPay.currency
-      && parseFloat(e.annual_salary) > 0 && (!e.start_date || e.start_date.slice(0, 7) <= ym))
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map(e => {
-      const paid = (e.payments || []).filter(p => parseInt(p.payment_year) === year && parseInt(p.payment_month) === month);
-      const prior = (e.payments || []).filter(p => `${p.payment_year}-${String(p.payment_month).padStart(2, '0')}` < ym)
-        .sort((a, b) => (b.payment_year - a.payment_year) || (b.payment_month - a.payment_month))[0];
-      const ded = (e.breakdown || []).find(b => b.year === year && b.month === month);
-      return { id: e.employee_id, name: e.name, usual: bulkUsualAmount(e, year, month), paid: paid.reduce((t, p) => t + parseFloat(p.amount), 0), already: paid.length > 0,
-               last: prior ? parseFloat(prior.amount) : null, deduction: ded ? ded.deduction : 0 };
-    });
-  if (!_bulkPay.rows.length) { list.innerHTML = `<div class="ep-empty">No active self-employed ${esc(_bulkPay.currency)} staff for ${MONTHS[month]} ${year}.</div>`; bulkPayTotal(); return; }
-  list.innerHTML = _bulkPay.rows.map((r, i) => r.already
-    ? `<div class="bp-row is-paid"><span class="bp-check">✓</span><div class="bp-who"><b>${esc(r.name)}</b><small>Already paid ${money(r.paid)} for ${MONTHS[month]}</small></div></div>`
-    : `<label class="bp-row"><input type="checkbox" class="bp-check" data-i="${i}" checked onchange="bulkPayTotal()">
-        <div class="bp-who"><b>${esc(r.name)}</b><small>Usual ${money(r.usual)}${r.last != null && Math.abs(r.last - r.usual) > 0.005 ? ` · last paid ${money(r.last)}` : ''}${r.deduction > 0 ? ` · <span class="bp-ded">${money(r.deduction)} day-off deduction this month <button type="button" class="dm-link" onclick="event.preventDefault();bulkTakeOff(${i})">take it off</button></span>` : ''}</small></div>
-        <span class="bp-amt">${esc(sym.trim())}<input type="number" min="0" step="0.01" id="bpAmt${i}" value="${r.usual.toFixed(2)}" oninput="bulkPayTotal()"></span>
-      </label>`).join('');
-  bulkPayTotal();
-}
-
-function bulkTakeOff(i) {
-  const r = _bulkPay.rows[i], el = document.getElementById('bpAmt' + i);
-  el.value = Math.max(0, r.usual - r.deduction).toFixed(2);
-  bulkPayTotal();
-}
-
-function bulkPaySelection() {
-  return [...document.querySelectorAll('#bpList input.bp-check:checked')].map(cb => {
-    const i = +cb.dataset.i;
-    return { employee_id: _bulkPay.rows[i].id, amount: parseFloat(document.getElementById('bpAmt' + i).value) || 0 };
-  }).filter(p => p.amount > 0);
-}
-
-function bulkPayTotal() {
-  const sel = bulkPaySelection();
-  const sym = { GBP: '£', USD: '$', AED: 'AED ', PHP: '₱', EUR: '€' }[_bulkPay.currency] || '';
-  const total = sel.reduce((t, p) => t + p.amount, 0);
-  document.getElementById('bpTotal').innerHTML = sel.length ? `<b>${sel.length}</b> ${sel.length === 1 ? 'person' : 'people'} · <b>${sym}${total.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b>` : 'Nobody selected';
-  const btn = document.getElementById('bpGo');
-  btn.disabled = !sel.length;
-  btn.textContent = sel.length ? `Log ${sel.length} payment${sel.length === 1 ? '' : 's'}` : 'Log payments';
-}
-
-async function submitBulkPay() {
-  const payments = bulkPaySelection();
-  if (!payments.length) return;
-  const year = document.getElementById('bpYear').value, month = document.getElementById('bpMonth').value;
-  const btn = document.getElementById('bpGo');
-  btn.disabled = true;
-  const res = await fetch('/api/payments/bulk', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ payment_year: year, payment_month: month, payments, notes: document.getElementById('bpNotes').value.trim() }) }).catch(() => null);
-  const data = res ? await res.json().catch(() => ({})) : {};
-  btn.disabled = false;
-  if (!res || !res.ok) { showToast(data.error || 'Could not log the payments', 'error'); return; }
-  closeModal('bulkPayModal');
-  showToast(`Logged ${data.created.length} payment${data.created.length === 1 ? '' : 's'} for ${MONTHS[month]} ${year}` + (data.skipped.length ? ` (${data.skipped.length} already paid, skipped)` : ''), 'success');
-  loadSalaryPage();
-}
-
-function getUnpaidThisMonth(overview, year, month) {
-  return (overview || []).filter(emp => {
-    if (emp.is_terminated || !emp.annual_salary || parseFloat(emp.annual_salary) <= 0) return false;
-    if (emp.start_date) {
-      const [sy, sm] = emp.start_date.slice(0, 7).split('-').map(Number);
-      if (sy > year || (sy === year && sm > month)) return false;
-    }
-    const skipKey = `paySkip_${year}_${month}_${emp.employee_id}`;
-    if (localStorage.getItem(skipKey)) return false;
-    const paid = (emp.payments || []).some(p =>
-      parseInt(p.payment_year) === year && parseInt(p.payment_month) === month
-    );
-    return !paid;
-  });
-}
-
-// Expand/collapse a group's "to pay" list inside the salary summary table
-function toggleSalaryGroup(key) {
-  window._salGrpOpen = window._salGrpOpen || {};
-  const open = !window._salGrpOpen[key];
-  window._salGrpOpen[key] = open;
-  const detail = document.getElementById('salgrp-detail-' + key);
-  const head   = document.getElementById('salgrp-head-' + key);
-  if (detail) detail.style.display = open ? '' : 'none';
-  if (head) {
-    head.classList.toggle('sal-grp-open', open);
-    const chev = head.querySelector('.sal-grp-chevron');
-    if (chev) chev.textContent = open ? '▼' : '▶';
-  }
-}
-
-// Skip a single employee for the current month from the merged summary list
-function skipGroupReminder(empId) {
-  const now = new Date();
-  localStorage.setItem(`paySkip_${now.getFullYear()}_${now.getMonth() + 1}_${empId}`, '1');
-  loadSalaryPage();
 }
 
 // ─── CALENDAR REMINDERS ───────────────────────────────────────────────────────
