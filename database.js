@@ -599,6 +599,12 @@ async function runMigrations() {
     )
   `);
 
+  // When the Salary page began keeping watch. Months from before it are history, not
+  // reminders: the page it replaced only ever asked about the month in hand, so nothing
+  // older is dug up the first time the new one opens. Stamped once, the first time this runs.
+  await sql(`CREATE TABLE IF NOT EXISTS app_marks (name TEXT PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+  await sql(`INSERT INTO app_marks (name) VALUES ('salary_reminders_from') ON CONFLICT (name) DO NOTHING`);
+
   // Every payment added, changed or removed, so "was this always that amount?" has an answer
   await sql(`
     CREATE TABLE IF NOT EXISTS payment_log (

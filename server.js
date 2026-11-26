@@ -1551,6 +1551,14 @@ app.post('/api/payments', requireAuth, requireAdmin, async (req, res) => {
       const { rows: done } = await q('SELECT id FROM monthly_payments WHERE employee_id = ? AND payment_year = ? AND payment_month = ? LIMIT 1', [employee_id, payment_year, payment_month]);
       if (done.length) return res.status(409).json({ error: 'A payment is already logged for that month' });
     }
+    // "Pay the rest" tops a month up from what the page believed was logged. If that has
+    // changed (the rest was already paid from another window, or from a view that had not
+    // caught up), it is refused rather than paid twice.
+    if (req.body.only_if_total !== undefined && req.body.only_if_total !== null) {
+      const { rows: sum } = await q('SELECT COALESCE(SUM(amount), 0) AS total FROM monthly_payments WHERE employee_id = ? AND payment_year = ? AND payment_month = ?', [employee_id, payment_year, payment_month]);
+      if (Math.abs(parseFloat(sum[0].total) - parseFloat(req.body.only_if_total)) > 0.005)
+        return res.status(409).json({ error: 'The payments logged for that month have changed since this was opened. Check the month again before paying the rest.' });
+    }
     const id = await addPayment(req, { employee_id, payment_year, payment_month, amount, notes: String(req.body.notes || '').slice(0, 300), currency: cur });
     res.json({ id });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1647,6 +1655,7 @@ app.post('/api/pay-skips', requireAuth, requireAdmin, async (req, res) => {
 
 // Months set aside to pay later in an earlier year that still have no payment. The Salary
 // page keeps them on its list until they are paid or marked nothing owed, however long ago.
+// Also the month from which unpaid months are chased at all (`since`).
 app.get('/api/pay-skips/later', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { rows } = await q(
@@ -1654,7 +1663,9 @@ app.get('/api/pay-skips/later', requireAuth, requireAdmin, async (req, res) => {
        WHERE s.kind = 'later' AND s.pay_year < ?
          AND NOT EXISTS (SELECT 1 FROM monthly_payments p WHERE p.employee_id = s.employee_id AND p.payment_year = s.pay_year AND p.payment_month = s.pay_month)
        GROUP BY s.pay_year ORDER BY s.pay_year DESC LIMIT 5`, [new Date().getFullYear()]);
-    res.json({ years: rows.map(r => Number(r.pay_year)), count: rows.reduce((a, r) => a + Number(r.months), 0) });
+    // ...and the month reminders start from (see database.js: app_marks), as 'YYYY-MM'
+    const { rows: mark } = await q(`SELECT to_char(at, 'YYYY-MM') AS since FROM app_marks WHERE name = 'salary_reminders_from'`).catch(() => ({ rows: [] }));
+    res.json({ years: rows.map(r => Number(r.pay_year)), count: rows.reduce((a, r) => a + Number(r.months), 0), since: mark[0] ? mark[0].since : null });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1739,10 +1750,26 @@ app.post('/api/payslips/file', requireAuth, requireAdmin, async (req, res) => {
 
     const slip = readPayslip(up.buf, up.name);
     if (slip.several) return res.status(400).json({ error: slip.problems[0] });
-    const figures = figuresToKeep(slip, year, month);
+    // Filed under one person with another's name plainly on it, the other person's pay is
+    // theirs to open. The page checks before it gets here; this is the second lock, opened
+    // only by the owner choosing the person by hand.
+    if (!req.body.confirmed_person && slip.name) {
+      const { rows: payroll } = await q(`SELECT id, name FROM employees WHERE employment_type = 'payroll'`);
+      const named = matchPerson(slip.name, payroll);
+      if (named.id && named.sure && Number(named.id) !== Number(emp.id)) {
+        return res.status(409).json({ check: 'name', error: `That payslip has ${payroll.find(p => p.id === named.id).name}\u2019s name on it, not ${emp.name}\u2019s. Choose who it is for again.` });
+      }
+    }
     const typed = req.body.amount === undefined || req.body.amount === null || req.body.amount === '' ? null : round2(parseFloat(req.body.amount));
     if (typed !== null && !(typed > 0)) return res.status(400).json({ error: 'Enter the amount paid' });
     const amount = typed !== null ? typed : (slip.payment > 0 ? slip.payment : null);
+    // An amount typed because the one read off the payslip was wrong or doubtful
+    // (`amount_is_payslip`) is the payslip's figure from here on, and nothing further is
+    // worked out from that payslip. (An amount typed in the pay box is only what was paid:
+    // less than the payslip says when a deduction was taken off.)
+    const figures = figuresToKeep(slip, year, month);
+    const corrected = !!req.body.amount_is_payslip && typed !== null && slip.payment !== null && Math.abs(typed - slip.payment) > 0.005;
+    if (figures && corrected) { figures.payment = typed; figures.adds_up = false; }
 
     const { rows: saved } = await q(
       `INSERT INTO employee_payslips (employee_id, pay_year, pay_month, file_name, file_data, file_size, uploaded_by, figures, payment_amount)
@@ -1750,7 +1777,7 @@ app.post('/api/payslips/file', requireAuth, requireAdmin, async (req, res) => {
        ON CONFLICT (employee_id, pay_year, pay_month) DO UPDATE SET file_name = EXCLUDED.file_name, file_data = EXCLUDED.file_data,
          file_size = EXCLUDED.file_size, uploaded_by = EXCLUDED.uploaded_by, figures = EXCLUDED.figures, payment_amount = EXCLUDED.payment_amount, created_at = NOW()
        RETURNING id, (xmax = 0) AS is_new`,
-      [emp.id, year, month, up.name, up.data, up.buf.length, adminName(req), figures ? JSON.stringify(figures) : null, slip.payment]);
+      [emp.id, year, month, up.name, up.data, up.buf.length, adminName(req), figures ? JSON.stringify(figures) : null, corrected ? typed : slip.payment]);
     // They see it in their own portal, as with a payslip uploaded from their profile
     if (saved[0].is_new) await q('INSERT INTO emp_notifications (employee_id, message, type) VALUES (?, ?, ?)',
       [emp.id, `Your payslip for ${MONTH_LONG[month - 1]} ${year} is now available in Payslips.`, 'info']);

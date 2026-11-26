@@ -8452,7 +8452,7 @@ body:has(.modal-overlay.open) .wm-launcher, body:has(.modal-overlay.active) .wm-
 .pay-slip-pick { display: flex; flex-direction: column; gap: 6px; width: 100%; font: 400 13px/1.4 var(--font-sans); color: var(--text); }
 .pay-slip-pick label { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
 .pay-slip-pick input { margin-top: 3px; }
-.pay-slip-change { margin-top: 4px; font-size: 12px; }
+.pay-slip-change { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; font-size: 12px; }
 .pay-x { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; background: none; color: var(--muted); font: 400 18px/1 var(--font-sans); cursor: pointer; }
 .pay-x:hover { background: var(--negative-soft); color: var(--negative); }
 .pay-slips-log { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 14px; font: 500 13.5px/1.4 var(--font-sans); color: var(--text); cursor: pointer; }
@@ -8504,9 +8504,9 @@ body:has(.modal-overlay.open) .wm-launcher, body:has(.modal-overlay.active) .wm-
 @media (max-width: 760px) {
   :root .pay-card { padding: 18px 14px; }
   .pay-top { gap: 10px; }
-  .pay-switch { width: 100%; justify-content: space-between; margin-right: 0; }
+  .pay-switch { width: 100%; justify-content: space-between; margin-right: 0; flex-wrap: wrap; }
   .pay-switch h2 { flex: 1; font-size: 20px; }
-  .pay-back { display: none; }
+  .pay-back { flex-basis: 100%; margin-left: 0; text-align: left; }
   .pay-acts { width: 100%; }
   .pay-acts .btn { flex: 1; text-align: center; justify-content: center; }
   .pay-hero { font-size: 30px; }
