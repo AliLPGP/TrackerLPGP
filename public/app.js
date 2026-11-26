@@ -3329,7 +3329,7 @@ function payAttentionHtml(all) {
         <button class="btn btn-ghost btn-sm" onclick="payFixShort(${id}, ${year}, ${m.month})" title="The full amount did go out: correct what was logged">It was paid in full</button>`;
     } else {
       text = it.kind === 'later' ? `${when}: set aside to pay later` : `${when}: no payment logged`;
-      btns = `<button class="btn btn-primary btn-sm" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${m.month} })">Pay</button>
+      btns = `<button class="btn btn-primary btn-sm" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${m.month} })">Mark paid</button>
         <button class="btn btn-ghost btn-sm" onclick="paySkip(${id}, ${year}, ${m.month}, 'none')">Nothing owed</button>`;
     }
     return `<div class="pay-att is-${it.kind}">
@@ -3359,7 +3359,7 @@ function payGroupsHtml(list, year, month) {
     return `<div class="pay-group">
         <div class="pay-group-head">
           <h3>${esc(g.label)} <span>${g.items.length} ${g.items.length === 1 ? 'person' : 'people'}${due.length ? ` · ${payMoney(total, cur)} to pay` : ' · all done'}</span></h3>
-          ${canBulk ? `<button class="btn btn-ghost btn-sm" onclick="openPayAll('${g.key}')">Pay all ${due.length}</button>` : ''}
+          ${canBulk ? `<button class="btn btn-ghost btn-sm" onclick="openPayAll('${g.key}')">Mark all ${due.length} paid</button>` : ''}
         </div>
         ${rows}
       </div>`;
@@ -3390,16 +3390,19 @@ function payRowHtml(row, m, year, month) {
       chip = '<span class="co-chip is-ok">Paid</span>';
       if (m.over > 0.005) notes.push(`${payMoney(m.over, cur)} more than the payslip says`);
     }
+    const count = (row.payments || []).filter(p => Number(p.payment_month) === month).length;
+    if (count > 1) notes.push(`${count} payments this month`);
     if (payroll && !m.payslip && !m.covered) btns += `<label class="btn btn-ghost btn-sm" title="File the payslip for this month">Add payslip<input type="file" accept=".pdf,application/pdf" hidden onchange="payTakeFiles(this.files, { id: ${id}, year: ${year}, month: ${month} });this.value=''"></label>`;
   } else {
-    fig = payMoney(m.left, cur);
+    fig = (payroll && (m.source === 'estimate' || m.source === 'rough') ? '<span class="pay-about">about</span> ' : '') + payMoney(m.left, cur);
+    const now = payNow(), gone = year < now.year || (year === now.year && month < now.month);
     if (m.status === 'later') { chip = '<span class="co-chip is-soon">Pay later</span>'; if (m.skip_note) notes.push(m.skip_note); }
-    else chip = '<span class="co-chip is-soon">To pay</span>';
+    else chip = gone ? '<span class="co-chip is-late">Not paid</span>' : '<span class="co-chip is-soon">To pay</span>';
     const src = paySourceNote(row, m);
     if (src) notes.push(src);
     if (!payroll && m.left + 0.005 < m.due) notes.push(`${payMoney(m.due, cur)} a month, part already paid`);
     if (m.deduction > 0.005) notes.push(`${payMoney(m.deduction, cur)} to take off for days off or deductions`);
-    btns = `<button class="btn btn-primary btn-sm" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${month} })">Pay</button>`
+    btns = `<button class="btn btn-primary btn-sm" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${month} })">Mark paid</button>`
       + (m.status === 'later' ? `<button class="btn btn-ghost btn-sm" onclick="payUnskip(${m.skip_id})">Undo</button>`
         : `<button class="btn btn-ghost btn-sm" onclick="openPaySkip(${id}, ${year}, ${month})">Skip</button>`);
   }
@@ -3546,7 +3549,7 @@ function openPayModal(opts) {
   const people = payRows(year).filter(r => (r.months || []).length || !r.is_terminated).sort((a, b) => String(a.name).localeCompare(String(b.name)));
   const row = opts.id ? payPerson(opts.id, year) : null;
   const pay = opts.editId && row ? (row.payments || []).find(p => Number(p.id) === Number(opts.editId)) : null;
-  const title = pay ? 'Change a payment' : opts.topUp ? 'Pay the rest' : row ? `Pay ${esc(row.name || '')}` : 'Log a payment';
+  const title = pay ? 'Change a payment' : opts.topUp ? 'Pay the rest' : row ? `Mark ${esc(row.name || '')} as paid` : 'Log a payment';
   payDialog('payOneModal', `
     <div class="modal-header"><h2>${title}</h2><button class="modal-close" onclick="closeModal('payOneModal')">✕</button></div>
     ${row && _payOne.fixed ? `<p class="pay-lead">${pay || opts.topUp ? esc(row.name || '') + ' · ' : ''}${MONTHS[month]} ${year}</p>` : `
@@ -3559,7 +3562,7 @@ function openPayModal(opts) {
     <p class="pay-hint" id="payOneHint"></p>
     ${pay ? '' : `<div class="pay-attach" id="payOneAttach"></div>`}
     <div class="form-group"><label>Note <span class="dm-opt">optional</span></label><input id="payOneNote" class="form-control" type="text" maxlength="200" value="${pay ? esc(pay.notes || '') : ''}" placeholder="e.g. Bank transfer"></div>
-    <div><button class="btn btn-ghost" onclick="closeModal('payOneModal')">Cancel</button><button class="btn btn-primary" id="payOneGo" onclick="submitPayOne()">${pay ? 'Save' : 'Log payment'}</button></div>`);
+    <div><button class="btn btn-ghost" onclick="closeModal('payOneModal')">Cancel</button><button class="btn btn-primary" id="payOneGo" onclick="submitPayOne()">${pay ? 'Save' : row && !opts.topUp ? 'Mark as paid' : 'Log payment'}</button></div>`);
   if (!pay) payOneChanged(true);
   setTimeout(() => document.getElementById(row || pay ? 'payOneAmount' : 'payOneWho')?.focus(), 60);
 }
@@ -3572,10 +3575,15 @@ function payOneChanged(first) {
   if (who) o.id = Number(who.value) || null;
   if (when && /^\d{4}-\d{2}$/.test(when.value)) { o.year = Number(when.value.slice(0, 4)); o.month = Number(when.value.slice(5, 7)); }
   const hint = document.getElementById('payOneHint'), amount = document.getElementById('payOneAmount'), attach = document.getElementById('payOneAttach');
+  // A month in a year that has not been looked at yet: fetch that year, then fill in
+  if (o.id && !_pay.data[o.year] && !o.fetching) {
+    o.fetching = true;
+    payFetchYear(o.year).catch(() => {}).then(() => { o.fetching = false; if (_payOne === o && document.getElementById('payOneModal')?.classList.contains('open')) payOneChanged(); });
+  }
   const row = o.id ? payPerson(o.id, o.year) : null, m = payMonthOf(row, o.month), cur = payCur(row);
   document.getElementById('payOneCur').textContent = row ? `in ${cur}` : '';
   let text = '';
-  if (row && o.year !== _pay.year && !_pay.data[o.year]) text = 'Figures for that year are not loaded, so type the amount.';
+  if (o.id && !_pay.data[o.year]) text = o.fetching ? 'Looking up that month…' : 'That year could not be loaded, so type the amount.';
   else if (row && m) {
     const owed = o.topUp ? m.short : m.left;
     if (o.topUp) text = `${payMoney(m.logged, cur)} is logged for ${MONTHS[o.month]}; ${payMoney(m.short, cur)} is still owed.`;
@@ -3653,14 +3661,14 @@ function openPayAll(groupKey) {
   const cur = payCur(items[0].row);
   _pay.bulk = { cur, items };
   payDialog('payAllModal', `
-    <div class="modal-header"><h2>Pay all · ${esc(payGroupOf(items[0].row).label)} · ${MONTHS[month]} ${year}</h2><button class="modal-close" onclick="closeModal('payAllModal')">✕</button></div>
-    <p class="pay-lead">Change any amount that is different this month, or untick anyone you are not paying now.</p>
+    <div class="modal-header"><h2>Mark all paid · ${esc(payGroupOf(items[0].row).label)} · ${MONTHS[month]} ${year}</h2><button class="modal-close" onclick="closeModal('payAllModal')">✕</button></div>
+    <p class="pay-lead">These are logged as paid. Change any amount that was different this month, and untick anyone you have not paid.</p>
     <div><div class="bp-list">${items.map((x, i) => `<label class="bp-row"><input type="checkbox" class="bp-check" data-i="${i}" checked onchange="payAllTotal()">
         <div class="bp-who"><b>${esc(x.row.name || '')}</b><small>${x.m.deduction > 0.005 ? `<span class="bp-ded">${payMoney(x.m.deduction, cur)} to take off <button type="button" class="dm-link" onclick="event.preventDefault();payAllTakeOff(${i})">take it off</button></span>` : payMoney(x.m.due, cur) + ' a month'}</small></div>
         <span class="bp-amt">${esc(currencySymbol(cur).trim())}<input type="number" min="0" step="0.01" inputmode="decimal" id="payAllAmt${i}" value="${x.m.left.toFixed(2)}" oninput="payAllTotal()"></span>
       </label>`).join('')}</div></div>
     <div class="form-group pay-note"><label>Note <span class="dm-opt">optional</span></label><input id="payAllNote" class="form-control" type="text" maxlength="200" placeholder="e.g. Paid via Wise"></div>
-    <div><span id="payAllSum" class="pay-sum"></span><button class="btn btn-ghost" onclick="closeModal('payAllModal')">Cancel</button><button class="btn btn-primary" id="payAllGo" onclick="submitPayAll()">Log payments</button></div>`, 620);
+    <div><span id="payAllSum" class="pay-sum"></span><button class="btn btn-ghost" onclick="closeModal('payAllModal')">Cancel</button><button class="btn btn-primary" id="payAllGo" onclick="submitPayAll()">Mark as paid</button></div>`, 620);
   payAllTotal();
 }
 function payAllPicked() {
@@ -3678,7 +3686,7 @@ function payAllTotal() {
   const picked = payAllPicked(), total = picked.reduce((a, p) => a + p.amount, 0), btn = document.getElementById('payAllGo');
   document.getElementById('payAllSum').innerHTML = picked.length ? `<b>${picked.length}</b> ${picked.length === 1 ? 'person' : 'people'} · <b>${payMoney(total, _pay.bulk.cur)}</b>` : 'Nobody ticked';
   btn.disabled = !picked.length;
-  btn.textContent = picked.length ? `Log ${picked.length} payment${picked.length === 1 ? '' : 's'}` : 'Log payments';
+  btn.textContent = picked.length ? `Mark ${picked.length} as paid` : 'Mark as paid';
 }
 async function submitPayAll() {
   const payments = payAllPicked();
@@ -3729,9 +3737,12 @@ async function payTakeFiles(files, forMonth) {
       id: info.employee_id || null, year: info.year || null, month: info.month || null, amount: info.amount > 0 ? info.amount : null, candidates: info.candidates || [],
       zero: !!info.ok && info.amount === 0 });
     if (forMonth) {
-      // Dropped on one person's month: it is for them, unless it says otherwise
+      // Added to one person's month: it is for them, unless it says otherwise
       if (!item.id || (!item.sure && Number(item.id) !== Number(forMonth.id))) item.id = forMonth.id;
       if (!item.year) { item.year = forMonth.year; item.month = forMonth.month; }
+      const other = payPerson(item.id, item.year) || payPerson(item.id);
+      if (Number(item.id) !== Number(forMonth.id)) item.aside = `This one is ${other ? other.name + '’s' : 'someone else’s'}, so it is filed for them.`;
+      else if (item.year !== forMonth.year || item.month !== forMonth.month) item.aside = `This one is for ${MONTHS[item.month]} ${item.year}, not ${MONTHS[forMonth.month]} ${forMonth.year}, so it is filed under ${MONTHS[item.month]}.`;
     }
     if (item.year && !_pay.data[item.year]) { try { await payFetchYear(item.year); } catch {} }
     renderPaySlips();
@@ -3780,6 +3791,7 @@ function renderPaySlips() {
     else if (plan.kind === 'amount') { chip = '<span class="co-chip is-late">How much?</span>'; notes.push('Type the amount that was paid.'); fields = amt; blocked++; }
     else {
       ready++;
+      if (item.aside) notes.push(item.aside);
       if (!item.sure && item.name) notes.push(`It says “${item.name}”: check this is the right person.`);
       if (plan.twin) notes.push('Another file in this list is for the same person and month; the later one is kept.');
       if (plan.replaces) notes.push('Replaces the payslip already on file for that month.');
@@ -3914,7 +3926,7 @@ function renderPayPerson() {
     const fig = m.status === 'none' || m.covered ? '—' : payMoney(m.paid ? m.logged : m.left, cur);
     const act = m.status === 'none' ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();payUnskip(${m.skip_id})">Undo</button>`
       : m.short > 0.005 ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openPayModal({ id: ${id}, year: ${year}, month: ${m.month}, topUp: true })">Pay the rest</button>`
-      : !m.paid ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openPayModal({ id: ${id}, year: ${year}, month: ${m.month} })">Pay</button>` : '';
+      : !m.paid ? `<button class="btn btn-primary btn-sm" onclick="event.stopPropagation();openPayModal({ id: ${id}, year: ${year}, month: ${m.month} })">Mark paid</button>` : '';
     const f = m.figures;
     // Why an unpaid month is the figure it is: always on show. The rest folds away.
     const how = payroll && f && !m.paid && m.status !== 'none' ? `<div class="pay-how">${payMoney(f.gross, cur)} pay, less tax ${payMoney(f.tax, cur)}, National Insurance ${payMoney(f.ni, cur)}${f.student_loan ? `, student loan ${payMoney(f.student_loan, cur)}` : ''}${f.postgrad_loan ? `, postgraduate loan ${payMoney(f.postgrad_loan, cur)}` : ''}${f.pension ? `, pension ${payMoney(f.pension, cur)}` : ''}</div>` : '';

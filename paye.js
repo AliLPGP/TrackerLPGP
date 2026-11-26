@@ -59,13 +59,13 @@ const YEARS = {
   2024: {
     bands: { ruk: RUK_BANDS, scot: scot(2306, 11685, 17101) },
     ni: { primary: 1048, upper: 4189, secondary: 758, zone: 2083, employer: 1380 },
-    loans: { 1: 24990, 2: 27295, 4: 31395, 5: 25000, pg: 21000 },
+    loans: { 1: 24990, 2: 27295, 4: 31395, pg: 21000 },
     pension: { lower: 520, upper: 4189 },
   },
   2025: {
     bands: { ruk: RUK_BANDS, scot: scot(2827, 12094, 16171) },
     ni: { primary: 1048, upper: 4189, secondary: 417, zone: 2083, employer: 1500 },
-    loans: { 1: 26065, 2: 28470, 4: 32745, 5: 25000, pg: 21000 },
+    loans: { 1: 26065, 2: 28470, 4: 32745, pg: 21000 },   // (Plan 5 deductions began in April 2026)
     pension: { lower: 520, upper: 4189 },
   },
   2026: {
@@ -202,17 +202,21 @@ function niEmployer(gross, letter, taxYear) {
 }
 
 // ─── Student and postgraduate loans ──────────────────────────────────────────
-// 9% (6% postgraduate) of the month's pay above a twelfth of the plan's yearly threshold,
-// rounded DOWN to a whole pound. With more than one plan, the lowest threshold is used.
+// 9% (6% postgraduate) of the month's pay above a twelfth of the plan's yearly threshold.
+// Two rounding steps and no others: the monthly threshold is rounded DOWN to the penny,
+// and the deduction DOWN to a whole pound. Each month stands alone. Payroll runs one plan
+// at a time (with more than one, the lowest threshold); a postgraduate loan is a second,
+// separate deduction.
+const loanPounds = (grossPence, yearlyThreshold, percent) => {
+  const threshold = Math.floor((yearlyThreshold * 100) / 12);
+  return grossPence > threshold ? Math.floor(((grossPence - threshold) * percent) / 10000) : 0;
+};
 function studentLoan(gross, plans, taxYear) {
   const t = tables(taxYear).loans, list = (plans || []).map(p => t[String(p)]).filter(v => v > 0);
-  if (!list.length) return 0;
-  const threshold = floor2(Math.min(...list) / 12);
-  return Math.max(0, Math.floor((gross - threshold) * 0.09 + 1e-9));
+  return list.length ? loanPounds(pence(gross), Math.min(...list), 9) : 0;
 }
 function postgradLoan(gross, taxYear) {
-  const threshold = floor2(tables(taxYear).loans.pg / 12);
-  return Math.max(0, Math.floor((gross - threshold) * 0.06 + 1e-9));
+  return loanPounds(pence(gross), tables(taxYear).loans.pg, 6);
 }
 
 // ─── Workplace pension ───────────────────────────────────────────────────────

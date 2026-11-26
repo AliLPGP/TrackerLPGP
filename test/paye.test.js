@@ -119,6 +119,13 @@ assert.strictEqual(P.studentLoan(2500, ['1', '2'], 2026), 23, 'two plans: the lo
 assert.strictEqual(P.studentLoan(2500, [], 2026), 0);
 assert.strictEqual(P.postgradLoan(2500, 2026), 45);
 assert.strictEqual(P.postgradLoan(1700, 2026), 0);
+assert.strictEqual(P.studentLoan(3200, ['2'], 2026) + P.postgradLoan(3200, 2026), 154, 'a plan and a postgraduate loan: two separate deductions');
+assert.strictEqual(P.studentLoan(3200, ['2'], 2025), 74, 'the year before had a lower threshold');
+assert.strictEqual(P.studentLoan(2500, ['5'], 2025), 0, 'Plan 5 deductions only began in April 2026');
+// HMRC's own penny-boundary cases (2026 to 2027, Plan 2, monthly)
+for (const [pay, loan] of [[2459.86, 0], [2459.87, 1], [2459.97, 1], [2493.2, 4], [2948.86, 45], [5137.64, 242], [8793.2, 571]]) {
+  assert.strictEqual(P.studentLoan(pay, ['2'], 2026), loan, `Plan 2 on ${pay}`);
+}
 
 // ── Pension: the rule is read off a payslip ──
 {

@@ -113,7 +113,7 @@ const TOPICS = [
 const HOWTO = [
   [/\b(add|create|new) (an? |the )?(new )?(employee|staff|person|team member)/, 'Go to Employees and press "+ Add employee" at the top right.'],
   [/\b(delete|remove) (an? |the )?(employee|staff|person)/, 'Open their profile from Employees and press the red Delete button. If they have left the company, use Terminate instead, which keeps their history.'],
-  [/\b(log|record|add|make) (a |the )?(salary )?payment|\bpay (someone|an employee|staff|them|him|her)\b/, 'On the Salary page, press "Pay" beside their name. If you have their payslip, drop the PDF on the page instead and it is logged for you. To pay a whole group without payslips at once, use "Pay all" above the group.'],
+  [/\b(log|record|add|make) (a |the )?(salary )?payment|\bpay (someone|an employee|staff|them|him|her)\b/, 'On the Salary page, press "Mark paid" beside their name once the money has gone. If you have their payslip, drop the PDF on the page instead and it is logged for you. To mark a whole group without payslips at once, use "Mark all paid" above the group.'],
   [/\b(add|create|new|log) (a |the )?(new )?deal/, 'Deal Tracker, then "+ Add deal" at the top right.'],
   [/\b(set|add|change|edit) (a |the )?target/, 'Portfolio, in Revenue by series: open a series and press "Set target" on the event.'],
   [/\b(add|log|record) (an? |the )?(new )?(expense|cost|bill)/, 'Use the Expenses page for one-off bills, or the Spending page for yearly costs such as rent and cars.'],
