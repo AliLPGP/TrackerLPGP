@@ -230,7 +230,7 @@ const slip = (over = {}) => ({
   // The payslip pays a different monthly amount from the salary on record, and no pay change is recorded: the payslip wins, and says so
   const other = payslipDues({ slips: [slip()], gross: trackerGross({ history, annual: 31200, startDate: '2024-03-01', endDate: null, years: [2026] }), history, annual: 31200, months });
   assert.strictEqual(other.dues['2026-12'].figures.gross, 2500);
-  assert.deepStrictEqual(other.differs, { payslip: 2500, tracker: 2600, year: 2026, month: 11 });
+  assert.deepStrictEqual(other.differs, { payslip: 2500, tracker: 2600, year: 2026, month: 11, used: 'payslip' });
 
   // A pay rise recorded from December: December is worked out on the new pay
   const rise = [{ id: 1, effective_from: '2024-03-01', annual_salary: 30000 }, { id: 2, effective_from: '2026-12-01', annual_salary: 36000 }];
@@ -276,7 +276,7 @@ const slip = (over = {}) => ({
   assert.deepStrictEqual(due(other, '2026-12'), [2500, 'rough']);
   const twoAgree = payslipDues({ slips: [made(2026, 10), made(2026, 11)], gross: grossAt(31200), history, annual: 31200, months });
   assert.deepStrictEqual(due(twoAgree, '2026-12'), [2500, 'worked']);
-  assert.deepStrictEqual(twoAgree.differs, { payslip: 2500, tracker: 2600, year: 2026, month: 11 });
+  assert.deepStrictEqual(twoAgree.differs, { payslip: 2500, tracker: 2600, year: 2026, month: 11, used: 'payslip' });
 
   // A rise entered after October's payslip and dated back to 1 October: that payslip is
   // still at the old pay, so the salary on record speaks for the months after it. An
@@ -291,7 +291,11 @@ const slip = (over = {}) => ({
   // One odd month (two unpaid days in September) among ordinary ones is not the new pay
   const oddMonth = payslipDues({ slips: [made(2026, 8), made(2026, 9, { gross: 2269.23 })], gross: grossAt(30000), history, annual,
     months: [{ year: 2026, month: 10 }] });
-  assert.deepStrictEqual([due(oddMonth, '2026-10'), oddMonth.differs], [[2500, 'rough'], null]);
+  assert.deepStrictEqual([due(oddMonth, '2026-10'), oddMonth.differs], [[2500, 'rough'], { payslip: 2269.23, tracker: 2500, year: 2026, month: 9, used: 'record' }]);
+  // (it may instead be a change of pay nobody has put on record: the page says the two
+  // disagree, and a second payslip at the new amount settles it)
+  const unrecorded = payslipDues({ slips: [made(2026, 8), made(2026, 9, { gross: 2800 }), made(2026, 10, { gross: 2800 })], gross: grossAt(30000), history, annual, months });
+  assert.deepStrictEqual([due(unrecorded, '2026-11'), unrecorded.differs.used], [[2800, 'worked'], 'payslip']);
 
   // An allowance on the last two payslips running comes every month; a bonus on the
   // latest one only is a one-off; and one payslip cannot say which it is

@@ -3442,7 +3442,8 @@ function payDiffersHtml(year) {
       return `<p class="sp-foot">${esc(r.name || '')}’s ${MONTHS[d.month]} payslip is at ${payMoney(d.payslip, cur)} a month, the pay from before their rise. On the salary on record ${MONTHS[d.month]} should have been ${payMoney(d.tracker, cur)}, so ${payMoney(d.tracker - d.payslip, cur)} before tax is still owed for it. Payroll usually adds it to the next payslip. ${look}</p>`;
     }
     const d = r.pay_differs;
-    return `<p class="sp-foot">${esc(r.name || '')}’s ${MONTHS[d.month]} payslip pays ${payMoney(d.payslip, cur)} a month before tax, but the salary on record gives ${payMoney(d.tracker, cur)}. The payslip is used. ${look}</p>`;
+    return `<p class="sp-foot">${esc(r.name || '')}’s ${MONTHS[d.month]} payslip pays ${payMoney(d.payslip, cur)} a month before tax, but the salary on record gives ${payMoney(d.tracker, cur)}. ${d.used === 'record'
+      ? 'One payslip out of line with the ones before it is taken for a one-off, so the salary on record is still used. If their pay has changed, update it on their profile.' : 'The payslip is used.'} ${look}</p>`;
   }).join('');
 }
 

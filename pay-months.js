@@ -70,10 +70,11 @@ function trackerGross({ history, annual, startDate, endDate, years }) {
  *   'rough'    worked out from a payslip, but only an estimate (a new tax year, a month from
  *              before the first payslip, a part month, pay that may have changed)
  * `regular` says the figure is an ordinary month's pay (a payslip with a one-off bonus on
- * it is not), and `differs` describes a payslip whose monthly pay is being used in place
- * of the salary on record: { payslip, tracker, year, month }. `behind` is the same shape,
- * for a latest payslip run at the pay from before a rise that covers its month: the
- * difference is still owed for that month.
+ * it is not), and `differs` describes a latest payslip whose monthly pay is not what the
+ * salary on record gives, and which of the two is being used: { payslip, tracker, year,
+ * month, used: 'payslip' | 'record' }. `behind` is { payslip, tracker, year, month } for a
+ * latest payslip run at the pay from before a rise that covers its month: the difference
+ * is still owed for that month.
  *
  * A month is left out altogether (the caller then goes by the usual amount paid, see
  * payrollYear) when the payslip it would be worked out from is one the calculator cannot
@@ -86,8 +87,10 @@ function trackerGross({ history, annual, startDate, endDate, years }) {
  * two of them running agree with each other and not with it (the salary on record is out
  * of date, and `differs` says so). One payslip on its own is believed too, but only as an
  * estimate. A payslip still at the pay from before a change recorded since (a rise entered
- * after the payslip and dated back before it) and one odd month among ordinary ones (unpaid
- * days) do not overrule it: the salary on record is used, as an estimate.
+ * after the payslip and dated back before it) and one payslip out of line with the ones
+ * before it (unpaid days, arrears; or a change of pay not yet put on record, which the
+ * next payslip will confirm) do not overrule it: the salary on record is used, as an
+ * estimate, and `differs` or `behind` says so.
  */
 function payslipDues({ slips, gross, history, annual, months, none = [] }) {
   const usable = (slips || []).filter(s => s && s.period && s.payment != null && settingsFrom(s))
@@ -131,7 +134,7 @@ function payslipDues({ slips, gross, history, annual, months, none = [] }) {
   const standing = s => {
     if (standings.has(s)) return standings.get(s);
     const t = trackerOf(s), extra = everyMonth(s);
-    const out = { use: 'tracker', sure: extra.sure, extra: extra.amount, counted: false, old: false };
+    const out = { use: 'tracker', sure: extra.sure, extra: extra.amount, counted: false, old: false, odd: false };
     const settle = more => { const v = { ...out, ...more }; standings.set(s, v); return v; };
     if (!t || !t.whole || near(t.full, s.basic)) return settle({});   // they agree (a part month's payslip says nothing of a whole one)
     if (extra.amount && near(t.full, round2(s.basic + extra.amount))) return settle({ counted: true });   // the salary on record has the allowance in it
@@ -139,7 +142,7 @@ function payslipDues({ slips, gross, history, annual, months, none = [] }) {
     if (periods.some(p => Math.abs(p.annual - here) > 0.005 && near(round2(p.annual / 12), s.basic))) return settle({ sure: false, old: true });   // still at the pay from before a change
     const last = before(s), lastT = last && trackerOf(last);
     if (last && near(last.basic, s.basic)) return settle({ use: 'payslip' });                                    // two running agree
-    if (last && lastT && lastT.whole && near(lastT.full, last.basic)) return settle({ sure: false });           // one odd month
+    if (last && lastT && lastT.whole && near(lastT.full, last.basic)) return settle({ sure: false, odd: true });   // one odd month
     return settle({ use: 'payslip', sure: false });
   };
 
@@ -175,7 +178,10 @@ function payslipDues({ slips, gross, history, annual, months, none = [] }) {
   }
   const latest = withBasic[withBasic.length - 1];
   const about = latest ? { payslip: latest.basic, tracker: (trackerOf(latest) || {}).full, year: latest.period.year, month: latest.period.month } : null;
-  const differs = latest && standing(latest).use === 'payslip' && Math.abs(annual - salaryAt(latest.period.year, latest.period.month)) < 0.005 ? about : null;
+  // (`used` says which of the two the months to come go by: 'payslip', or 'record' when one
+  // payslip out of line with the ones before it is being taken for a one-off)
+  const stood = latest && Math.abs(annual - salaryAt(latest.period.year, latest.period.month)) < 0.005 ? standing(latest) : null;
+  const differs = stood && stood.use === 'payslip' ? { ...about, used: 'payslip' } : stood && stood.odd ? { ...about, used: 'record' } : null;
   // The latest payslip was run at the pay from before a rise that covers its month: the
   // difference is still owed for that month (payroll usually adds it to the next payslip)
   const behind = latest && standing(latest).old && about.tracker > latest.basic + 0.011 ? about : null;
