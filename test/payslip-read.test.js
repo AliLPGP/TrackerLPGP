@@ -260,9 +260,12 @@ function checkFigures(r, where) {
   assert.strictEqual(w.ok, true); assert.strictEqual(w.adds_up, false); assert.strictEqual(w.payment, 2110.44);
   assert.ok(w.problems.some(p => /do not add up/.test(p)));
 
-  // No PAYMENT box: pay less deductions
+  // No PAYMENT box: pay less deductions, and it says the amount was worked out, not printed
   const noBox = JSON.parse(JSON.stringify(SLIP)); noBox.boxes.pop();
-  assert.strictEqual(readPayslip(skiaStylePdf(noBox)).payment, 2010.44);
+  const worked = readPayslip(skiaStylePdf(noBox));
+  assert.deepStrictEqual([worked.payment, worked.payment_printed, worked.ok], [2010.44, false, true]);
+  assert.ok(worked.problems.some(p => /not printed on this payslip/.test(p)));
+  assert.strictEqual(readPayslip(skia).payment_printed, true);
 
   // The month and the name can come from the document title or the file name when the page has no heading
   const bare = JSON.parse(JSON.stringify(SLIP)); bare.heading = 'Pay advice';
@@ -288,6 +291,20 @@ function checkFigures(r, where) {
   }
   assert.ok(/password/.test(readPayslip(Buffer.from('%PDF-1.7\n1 0 obj\n<</Type/Catalog>>\nendobj\ntrailer<</Root 1 0 R/Encrypt 9 0 R>>')).problems[0]));
 
+  // A file made to be slow or enormous is given up on at once, with nothing kept of it:
+  // far more text than any payslip holds, and a document title a third of a megabyte long
+  const flood = JSON.parse(JSON.stringify(SLIP));
+  flood.boxes[1][1] = Array.from({ length: 4000 }, (_, i) => [`Line ${i} ${'x'.repeat(60)}`, '£1.00']);
+  const started = Date.now(), flooded = readPayslip(skiaStylePdf(flood));
+  assert.deepStrictEqual([flooded.ok, flooded.payment, flooded.additions.length, flooded.problems], [false, null, 0, ['This PDF could not be read.']]);
+  assert.ok(Date.now() - started < 1500, 'and quickly');
+  const longTitle = readPayslip(skiaStylePdf(SLIP, { title: 'a' + ' '.repeat(300000) + 'b' }));
+  assert.strictEqual(longTitle.payment, 2010.44);
+  // What is kept from an odd file stays small
+  const wordy = JSON.parse(JSON.stringify(SLIP)); wordy.name = 'N'.repeat(300); wordy.boxes[2][1][3] = ['NEST ' + 'pension '.repeat(40), '£79.20'];
+  const kept = readPayslip(skiaStylePdf(wordy));
+  assert.ok(kept.name.length <= 120 && kept.deductions.every(d => d.label.length <= 80));
+
   // Amounts
   assert.strictEqual(money('£2,375.00'), 2375); assert.strictEqual(money('£0.00'), 0); assert.strictEqual(money('-£12.50'), -12.5);
   assert.strictEqual(money('(£12.50)'), -12.5); assert.strictEqual(money('£-12.50'), -12.5); assert.strictEqual(money('1,234,567.89'), 1234567.89);
@@ -312,15 +329,22 @@ function checkFigures(r, where) {
   assert.deepStrictEqual(matchPerson('JANE  EXAMPLE', people), { id: 1, sure: true });
   assert.deepStrictEqual(matchPerson('Jane Mary Example', people), { id: 1, sure: true }, 'a middle name on the payslip');
   assert.deepStrictEqual(matchPerson('Jose Pena Ruiz', people), { id: 3, sure: true }, 'accents do not matter');
-  assert.deepStrictEqual(matchPerson('Jose Pena', people), { id: 3, sure: true }, 'the payslip has the shorter name');
-  assert.deepStrictEqual(matchPerson('Sam Sample-Smith', people), { id: 2, sure: true });
+  assert.deepStrictEqual(matchPerson('Jose Maria Pena Ruiz', people), { id: 3, sure: true });
   assert.deepStrictEqual(matchPerson('Alex Stone', people), { id: 4, sure: true }, 'an exact match wins over a longer name');
   assert.deepStrictEqual(matchPerson('Alex Stone Hart', people), { id: 5, sure: true });
+  // Further off than a middle name is a guess, for the owner to confirm
+  assert.deepStrictEqual(matchPerson('Jose Pena', people), { id: 3, sure: false }, 'a surname fewer');
+  assert.deepStrictEqual(matchPerson('Sam Sample-Smith', people), { id: 2, sure: false }, 'a surname more');
+  assert.deepStrictEqual(matchPerson('Example Jane', people), { id: 1, sure: false }, 'the other way round');
+  assert.deepStrictEqual(matchPerson('Jane Smith Example-Jones', people), { id: 1, sure: false });
   assert.deepStrictEqual(matchPerson('Jane', people), { id: null, candidates: [] }, 'a first name alone is not enough');
   assert.deepStrictEqual(matchPerson('Nobody Here', people), { id: null, candidates: [] });
   assert.deepStrictEqual(matchPerson('', people), { id: null, candidates: [] });
   const twins = [{ id: 7, name: 'Pat Lee' }, { id: 8, name: 'Pat Lee' }];
   assert.deepStrictEqual(matchPerson('Pat Lee', twins), { id: null, candidates: [7, 8] }, 'two people with the same name: ask');
+  // A name with the same word twice is not matched by one of them
+  assert.deepStrictEqual(matchPerson('Rhys Owen', [{ id: 1, name: 'Owen Owen' }]), { id: null, candidates: [] });
+  assert.deepStrictEqual(matchPerson('Owen Price', [{ id: 1, name: 'Owen Owen' }]), { id: null, candidates: [] });
 
   // Names that do not come apart into plain letters, joined-up letters, and other scripts
   assert.strictEqual(nameKey('\u0141ukasz \u017b\u00f3\u0142\u0107'), 'lukasz zolc');

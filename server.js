@@ -413,7 +413,7 @@ const DAY_OFF_ALLOWANCE = { payroll: 20, self_employed: 5 };
 const { allowanceFor: allowanceForYear } = require('./allowance');
 const { selfEmployedYearTarget, salaryOnDate, payBands, periodsFrom, payrollMonths, payrollYear } = require('./salary-periods');
 const { trackerGross, payslipDues, contractorMonths } = require('./pay-months');
-const { readPayslip, whosePayslip, figuresToKeep, nameKey } = require('./payslip-read');
+const { readPayslip, whosePayslip, matchPerson, figuresToKeep, nameKey } = require('./payslip-read');
 const allowanceFor = (emp, year) => allowanceForYear(emp, year, DAY_OFF_ALLOWANCE);
 
 // Count Mon–Fri days in a given month (no bank holidays — add if needed)
@@ -1670,6 +1670,17 @@ function payslipUpload(body) {
   return { buf, name, data: buf.toString('base64') };
 }
 
+// The name printed on a payslip is remembered against the person it was filed under when
+// it is not their name on record, so next month's matches by itself. Filed under the
+// person whose own name it is, anything remembered for that name is forgotten (it was
+// once filed under somebody else, by mistake).
+async function rememberPayslipName(printed, emp) {
+  const key = nameKey(printed);
+  if (!key) return;
+  if (key !== nameKey(emp.name)) await q(`INSERT INTO payslip_names (name_key, employee_id) VALUES (?, ?) ON CONFLICT (name_key) DO UPDATE SET employee_id = EXCLUDED.employee_id`, [key, emp.id]).catch(() => {});
+  else await q('DELETE FROM payslip_names WHERE name_key = ?', [key]).catch(() => {});
+}
+
 // Read a payslip without keeping anything: whose it is, which month, and how much was paid.
 // (The page compares that with what it already shows for the person and month.)
 app.post('/api/payslips/read', requireAuth, requireAdmin, async (req, res) => {
@@ -1683,11 +1694,15 @@ app.post('/api/payslips/read', requireAuth, requireAdmin, async (req, res) => {
     const key = nameKey(slip.name);
     const { rows: known } = key ? await q('SELECT employee_id FROM payslip_names WHERE name_key = ?', [key]) : { rows: [] };
     const match = whosePayslip(slip.name, people, known[0] ? known[0].employee_id : null);
+    // (`named`: the printed name itself says it is this person, where a match can also rest
+    // on who a payslip with that name was filed under before)
+    const byName = matchPerson(slip.name, people);
     res.json({
       file_name: up.name, ok: slip.ok, problems: slip.problems, name: slip.name, several: slip.several,
       employee_id: match.id || null, sure: !!match.sure, candidates: match.candidates || [],
+      named: !!match.id && !!byName.sure && byName.id === match.id,
       year: slip.period ? slip.period.year : null, month: slip.period ? slip.period.month : null,
-      amount: slip.payment, paid_on: slip.paid_on, adds_up: slip.adds_up,
+      amount: slip.payment, paid_on: slip.paid_on, adds_up: slip.adds_up, printed: slip.payment_printed,
       parts: { gross: slip.gross, tax: slip.tax, ni: slip.ni, student_loan: slip.student_loan, postgrad_loan: slip.postgrad_loan_amount, pension: slip.pension, other: slip.other_deductions },
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1728,11 +1743,7 @@ app.post('/api/payslips/file', requireAuth, requireAdmin, async (req, res) => {
       [emp.id, `Your payslip for ${MONTH_LONG[month - 1]} ${year} is now available in Payslips.`, 'info']);
     // A payslip for a month marked "nothing owed" says otherwise: the mark goes
     await q(`DELETE FROM pay_skips WHERE employee_id = ? AND pay_year = ? AND pay_month = ? AND kind = 'none'`, [emp.id, year, month]);
-    // The name printed on it is remembered when it is not the name on record, so next month matches by itself
-    const key = nameKey(slip.name);
-    if (key && key !== nameKey(emp.name)) {
-      await q(`INSERT INTO payslip_names (name_key, employee_id) VALUES (?, ?) ON CONFLICT (name_key) DO UPDATE SET employee_id = EXCLUDED.employee_id`, [key, emp.id]).catch(() => {});
-    }
+    await rememberPayslipName(slip.name, emp);
 
     const mode = ['log', 'fix', 'none'].includes(req.body.pay) ? req.body.pay : 'log';
     const { rows: logged } = await q('SELECT * FROM monthly_payments WHERE employee_id = ? AND payment_year = ? AND payment_month = ? ORDER BY id', [emp.id, year, month]);

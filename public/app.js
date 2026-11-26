@@ -2218,11 +2218,25 @@ async function epUploadPayslip(empId, input) {
   if (!/^\d{4}-\d{2}$/.test(ym)) { showToast('Choose the month this payslip is for', 'error'); return; }
   const doc = await readPdfFile(file);
   if (!doc) return;
-  const [pay_year, pay_month] = ym.split('-').map(Number);
-  const res = await fetch(`/api/employees/${empId}/payslips`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...doc, pay_year, pay_month })
-  }).catch(() => null);
+  let [pay_year, pay_month] = ym.split('-').map(Number), confirm_name = false, res = null;
+  // The server reads what is printed on it. A different month or name comes back as a question.
+  for (let asked = 0; asked < 3; asked++) {
+    res = await fetch(`/api/employees/${empId}/payslips`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...doc, pay_year, pay_month, confirm_name })
+    }).catch(() => null);
+    if (!res || res.status !== 409) break;
+    const ask = await res.json().catch(() => ({}));
+    if (ask.check === 'month' && ask.says) {
+      if (!await showConfirm(`${ask.error} File it under ${MONTHS[ask.says.month]} ${ask.says.year} instead?`)) return;
+      pay_year = ask.says.year; pay_month = ask.says.month;
+      const box = document.getElementById('epSlipMonth');
+      if (box) box.value = `${pay_year}-${String(pay_month).padStart(2, '0')}`;
+    } else if (ask.check === 'name') {
+      if (!await showConfirm(`${ask.error} File it for them anyway? They will be able to open it.`)) return;
+      confirm_name = true;
+    } else { showToast(ask.error || 'Upload failed', 'error'); return; }
+  }
   if (!res || !res.ok) {
     const err = res ? await res.json().catch(() => ({})) : {};
     showToast(err.error || 'Upload failed', 'error');
@@ -3595,8 +3609,12 @@ function payOneChanged(first) {
   } else if (row) text = `${esc(row.name || '')} is not on the books for ${MONTHS[o.month]} ${o.year}. You can still log a payment.`;
   hint.innerHTML = text;
   amount.oninput = () => { o.touched = true; };
-  if (attach) attach.innerHTML = row && payIsPayroll(row) && !o.topUp
-    ? (o.slip ? `<span class="pay-attached">${esc(o.slip.file_name)} <button type="button" class="dm-link" onclick="_payOne.slip=null;payOneChanged()">remove</button></span>`
+  // (a month holds one payslip, and a payslip is only filed with the month's first payment:
+  // one attached to a second payment would replace the month's own and log nothing)
+  const canAttach = row && payIsPayroll(row) && !o.topUp && !(m && m.paid && !m.covered);
+  if (!canAttach) o.slip = null;
+  if (attach) attach.innerHTML = canAttach
+    ? (o.slip ? `<span class="pay-attached">${esc(o.slip.file_name)} <button type="button" class="dm-link" onclick="_payOne.slip=null;payOneChanged()">remove</button></span>${m && m.payslip ? '<span class="pay-attach-note">Replaces the payslip already on file for this month.</span>' : ''}`
       : `<label class="btn btn-ghost btn-sm">Attach the payslip<input type="file" accept=".pdf,application/pdf" hidden onchange="payOneAttach(this.files[0]);this.value=''"></label><span class="pay-attach-note">The amount is read from it.</span>`)
     : '';
 }
@@ -3614,12 +3632,24 @@ async function payOneAttach(file) {
   const res = await fetch('/api/payslips/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(read) }).catch(() => null);
   const info = res && res.ok ? await res.json().catch(() => null) : null;
   if (!info) { showToast('Could not read that payslip', 'error'); return; }
-  const row = payPerson(o.id, o.year);
-  if (info.employee_id && Number(info.employee_id) !== Number(o.id)) { showToast(`That payslip is for ${info.name}, not ${row ? row.name : 'this person'}`, 'error'); return; }
+  const row = payPerson(o.id, o.year), who = row ? row.name : 'this person';
+  if (info.several) { showToast('That file has more than one payslip in it. Upload one payslip per file.', 'error'); return; }
   if (info.year && (info.year !== o.year || info.month !== o.month)) { showToast(`That payslip is for ${MONTHS[info.month]} ${info.year}, not ${MONTHS[o.month]} ${o.year}`, 'error'); return; }
+  // Somebody else's name is on it: refused. A name that is only a guess at this person, that
+  // was filed under somebody else before, or that fits nobody: asked, because filing it puts
+  // it in this person's portal (and a wrong answer given before can be put right here).
+  const theirs = Number(info.employee_id) === Number(o.id);
+  if (info.employee_id && !theirs && info.sure && info.named) { showToast(`That payslip is for ${info.name}, not ${who}`, 'error'); return; }
+  if (!(theirs && info.sure)) {
+    if (!await showConfirm(info.name ? `This payslip says “${info.name}”. Is it ${who}’s? It will be filed where they can open it.` : `The name on this payslip could not be read. Is it ${who}’s? It will be filed where they can open it.`)) return;
+    if (_payOne !== o) return;
+  }
   o.slip = read;
-  if (info.amount > 0) { document.getElementById('payOneAmount').value = Number(info.amount).toFixed(2); o.touched = true; }
-  else showToast('The amount could not be read from that payslip, so type it in', 'warning');
+  if (info.amount > 0) {
+    document.getElementById('payOneAmount').value = Number(info.amount).toFixed(2); o.touched = true;
+    if (info.adds_up === false) showToast('The figures on that payslip do not add up to the amount paid, so check the amount', 'warning');
+    else if (info.printed === false) showToast('The amount paid is not printed on that payslip, so it was worked out from the other figures: check it', 'warning');
+  } else showToast('The amount could not be read from that payslip, so type it in', 'warning');
   payOneChanged();
 }
 
@@ -3633,10 +3663,18 @@ async function submitPayOne() {
   if (!(amount > 0)) return showToast('Enter the amount paid', 'error');
   const btn = document.getElementById('payOneGo');
   btn.disabled = true;
-  let ok;
+  let ok, said = o.editId ? 'Payment changed' : `Payment logged for ${MONTHS[o.month]} ${o.year}`, tone = 'success';
   if (o.editId) ok = await spSend('PUT', `/api/payments/${o.editId}`, { amount, payment_year: o.year, payment_month: o.month, notes });
-  else if (o.slip) ok = await spSend('POST', '/api/payslips/file', { ...o.slip, employee_id: o.id, pay_year: o.year, pay_month: o.month, amount, pay: 'log', notes });
-  else {
+  else if (o.slip) {
+    const res = await fetch('/api/payslips/file', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...o.slip, employee_id: o.id, pay_year: o.year, pay_month: o.month, amount, pay: 'log', notes }) }).catch(() => null);
+    const out = res ? await res.json().catch(() => null) : null;
+    ok = !!(res && res.ok && out);
+    if (!ok) showToast((out && out.error) || 'Could not save', 'error');
+    // (somebody may have logged this month in the meantime: say what really happened)
+    else if (out.payment.action === 'already') said = `Payslip filed. ${MONTHS[o.month]} was already logged as paid.`;
+    else if (out.payment.action !== 'logged') { said = `Payslip filed, but no payment was logged: ${payMoney(out.payment.total, payCur(payPerson(o.id, o.year)))} is already logged for ${MONTHS[o.month]}.`; tone = 'warning'; }
+  } else {
     const row = payPerson(o.id, o.year), m = payMonthOf(row, o.month);
     // A month still to pay is paid once; anything else (a top-up, a second payment) is deliberate
     ok = await spSend('POST', '/api/payments', { employee_id: o.id, payment_year: o.year, payment_month: o.month, amount, notes, only_if_unpaid: !!(m && !m.paid && !o.topUp) });
@@ -3644,7 +3682,7 @@ async function submitPayOne() {
   btn.disabled = false;
   if (!ok) return;
   closeModal('payOneModal');
-  showToast(o.editId ? 'Payment changed' : `Payment logged for ${MONTHS[o.month]} ${o.year}`, 'success');
+  showToast(said, tone);
   loadSalaryPage();
 }
 
@@ -3734,7 +3772,7 @@ async function payTakeFiles(files, forMonth) {
     const info = res ? await res.json().catch(() => null) : null;
     if (!res || !res.ok || !info) { item.state = 'bad'; item.problem = (info && info.error) || 'Could not be read'; renderPaySlips(); continue; }
     if (info.several) { item.state = 'bad'; item.problem = 'It has more than one payslip in it. Upload one payslip per file, so nobody is shown someone else’s'; renderPaySlips(); continue; }
-    Object.assign(item, { state: 'ready', name: info.name || '', problems: info.problems || [], readable: !!info.ok, sure: !!info.sure, adds_up: info.adds_up,
+    Object.assign(item, { state: 'ready', name: info.name || '', problems: info.problems || [], readable: !!info.ok, sure: !!info.sure, adds_up: info.adds_up, printed: info.printed !== false,
       id: info.employee_id || null, year: info.year || null, month: info.month || null, amount: info.amount > 0 ? info.amount : null, candidates: info.candidates || [],
       zero: !!info.ok && info.amount === 0 });
     if (forMonth) {
@@ -3793,6 +3831,7 @@ function renderPaySlips() {
     const title = person ? `${person} · ${MONTHS[item.month] || '?'} ${item.year || ''}` : esc(item.file_name);
     if (!item.readable) notes.push(item.problems[0] || 'This payslip could not be read.');
     else if (item.adds_up === false) notes.push('The figures on it do not add up to the amount paid, so check the amount.');
+    else if (!item.printed && item.amount > 0 && !item.typed) notes.push('The amount paid is not printed on it, so it was worked out from the other figures: check it.');
     if (plan.kind === 'who') { chip = '<span class="co-chip is-late">Whose is it?</span>'; notes.push(item.name ? `It says “${item.name}”, which matches nobody on payroll.` : 'Choose whose payslip this is.'); fields = who + (item.year ? '' : when) + (item.amount > 0 ? '' : amt); blocked++; }
     else if (plan.kind === 'confirm') {
       chip = '<span class="co-chip is-late">Check who</span>';
@@ -3805,6 +3844,8 @@ function renderPaySlips() {
     else {
       ready++;
       if (item.aside) notes.push(item.aside);
+      // (whose it was taken to be is always on show, so a wrong match can be seen and changed)
+      if (item.name && plan.row && item.name.replace(/\s+/g, ' ').trim().toLowerCase() !== String(plan.row.name || '').replace(/\s+/g, ' ').trim().toLowerCase()) notes.push(`The payslip says “${item.name}”.`);
       if (plan.twin) notes.push('Another file in this list is for the same person and month; the later one is kept.');
       if (plan.replaces) notes.push('Replaces the payslip already on file for that month.');
       if (item.typed || !item.readable) fields = amt;

@@ -84,6 +84,8 @@ const squeeze = text => String(text).replace(/\s+/g, '');
 const HEADINGS = {};
 for (const [heading, box] of Object.entries(SECTIONS)) HEADINGS[squeeze(heading)] = box;
 const FIGURE_BOXES = new Set(['additions', 'deductions', 'period', 'ytd']);
+// No payslip comes near these: they keep what is read from a strange file, and stored, small
+const MAX_NAME = 120, MAX_LABEL = 80, MAX_ROWS = 40;
 
 // A tax code as HMRC writes them: 1257L, K475, BR, D0, NT, 0T, with S or C in front for
 // Scotland or Wales, and W1, M1 or X on the end when it is not cumulative
@@ -155,12 +157,13 @@ function readPayslip(buffer, fileName = '') {
     basic: null, gross: null, taxable_gross: null, tax: null, ni: null, student_loan: null, postgrad_loan_amount: null, pension: null, other_deductions: null,
     employer_ni: null, net_pay: null, payment: null,
     ytd: { gross: null, tax: null, employee_ni: null, employer_ni: null, student_loan: null, postgrad_loan: null, employee_pension: null, employer_pension: null },
-    employer: '', paye_ref: '', adds_up: null, several: false,
+    employer: '', paye_ref: '', adds_up: null, several: false, payment_printed: false,
   };
   const pdf = readPdfText(buffer);
   if (!pdf.ok) {
     out.problems.push(pdf.error === 'password protected' ? 'This PDF is password protected, so it cannot be read.'
-      : pdf.error === 'not a PDF' ? 'This file is not a PDF.' : 'No text could be read from this PDF (it may be a scan or a photo).');
+      : pdf.error === 'not a PDF' ? 'This file is not a PDF.'
+        : pdf.error === 'no text found' ? 'No text could be read from this PDF (it may be a scan or a photo).' : 'This PDF could not be read.');
   }
   const lines = pdf.lines || [];
   // A box heading is the name of a box on a line of its own. This payroll software prints
@@ -184,18 +187,18 @@ function readPayslip(buffer, fileName = '') {
   }
 
   // Whose it is and which month: the heading on the page, else the document title, else the file name
-  const titleSources = [pdf.title || '', String(fileName || '').replace(/\.pdf$/i, '').replace(/^[0-9a-f]{6,}-/i, '').replace(/_/g, ' ')];
+  const titleSources = [String(pdf.title || '').slice(0, 300), String(fileName || '').slice(0, 300).replace(/\.pdf$/i, '').replace(/^[0-9a-f]{6,}-/i, '').replace(/_/g, ' ')];
   const headingAt = lines.findIndex(isHeading);
   let period = headingAt >= 0 ? periodFrom(lines[headingAt]) : null;
   if (headingAt > 0) {
     // (a double-barrelled name can be split at its hyphen; a printed page header is not part of the name)
     out.name = lines.slice(0, headingAt).filter(l => !boxOf(l) && !anywhere(l) && !/^(?:file|https?):\/\/|^\d{1,2}\/\d{1,2}\/\d{2,4},/i.test(l.trim()))
-      .reduce((name, l) => name + (/[A-Za-z]-$/.test(name) ? '' : ' ') + l.replace(/\t/g, ' '), '').replace(/\s+/g, ' ').trim();
+      .reduce((name, l) => name + (/[A-Za-z]-$/.test(name) ? '' : ' ') + l.replace(/\t/g, ' '), '').replace(/\s+/g, ' ').trim().slice(0, MAX_NAME);
   }
   for (const t of titleSources) {
     const m = /^(.*?)\s+[-–—]\s+(payslip\s+for\b.*)$/i.exec(t.trim());
     if (!m) continue;
-    if (!out.name) out.name = m[1].trim();
+    if (!out.name) out.name = m[1].trim().slice(0, MAX_NAME);
     if (!period) period = periodFrom(m[2]);
   }
 
@@ -208,26 +211,26 @@ function readPayslip(buffer, fileName = '') {
     const raw = lines[i], head = boxOf(raw);
     if (head) { section = head; seen[head] = true; waiting = []; continue; }
     const footer = /^(.*?)\s*[·|•-]\s*PAYE\s+ref(?:erence)?\.?:?\s*([0-9]{3}\s*\/\s*[A-Za-z0-9]+)/i.exec(raw.replace(/\t/g, ' '));
-    if (footer) { out.employer = footer[1].trim(); out.paye_ref = footer[2].replace(/\s/g, ''); waiting = []; continue; }
+    if (footer) { out.employer = footer[1].trim().slice(0, MAX_NAME); out.paye_ref = footer[2].replace(/\s/g, '').slice(0, 20); waiting = []; continue; }
     const { label: own, value } = split(raw);
     const amount = money(value);
 
     if (section === 'details') {
-      details.push(raw);
+      if (details.length < MAX_ROWS) details.push(raw);
     } else if (FIGURE_BOXES.has(section)) {
       // A long label runs over two or three lines, with its figure after them or beside
       // the last of them
-      if (value === '') { waiting.push(own); continue; }
+      if (value === '') { if (waiting.length < 6) waiting.push(own); continue; }
       if (amount === null) { waiting = []; continue; }   // (a row that is not money: hours, a rate)
       const total = /^total\b/i.test(own);
-      const label = (total ? own : [...waiting, own].join(' ')).replace(/\s+/g, ' ').trim(), low = label.toLowerCase();
+      const label = (total ? own : [...waiting, own].join(' ')).replace(/\s+/g, ' ').trim().slice(0, MAX_LABEL), low = label.toLowerCase();
       waiting = [];
       if (section === 'additions') {
         if (total) out.additions_total = amount;
-        else out.additions.push({ label, amount, kind: additionKind(own) === 'basic' ? 'basic' : additionKind(label) });
+        else if (out.additions.length < MAX_ROWS) out.additions.push({ label, amount, kind: additionKind(own) === 'basic' ? 'basic' : additionKind(label) });
       } else if (section === 'deductions') {
         if (total) out.deductions_total = amount;
-        else out.deductions.push({ label, amount, kind: deductionKind(own) !== 'other' ? deductionKind(own) : deductionKind(label) });
+        else if (out.deductions.length < MAX_ROWS) out.deductions.push({ label, amount, kind: deductionKind(own) !== 'other' ? deductionKind(own) : deductionKind(label) });
       } else if (section === 'period') {
         if (/taxable (gross )?pay|^gross pay/.test(low)) out.taxable_gross = amount;
         else if (/employer.*national insurance|employer.*\bni\b/.test(low)) out.employer_ni = amount;
@@ -270,9 +273,14 @@ function readPayslip(buffer, fileName = '') {
   else if (period) out.problems.push('This payslip is not for a calendar month, so pick the month it should count for.');
   else if (pdf.ok) out.problems.push('Could not find which month this payslip is for.');
 
-  // The amount that left the bank: the PAYMENT box, else pay less deductions
+  // The amount that left the bank: the PAYMENT box, else pay less deductions. Worked out
+  // like that it is only as good as the lines that were read (a page cut short loses some),
+  // so it is said to be worked out.
+  const printed = out.payment !== null;
   if (out.payment === null && out.gross !== null && out.deductions_total !== null && seen.deductions) out.payment = round2(out.gross - out.deductions_total);
   if (out.payment === null && out.net_pay !== null) out.payment = out.net_pay;
+  out.payment_printed = printed;
+  if (!printed && out.payment !== null) out.problems.push('The amount paid is not printed on this payslip, so it was worked out from the other figures: check it before logging it.');
   if (out.payment === null && pdf.ok) out.problems.push('Could not find the amount paid on this payslip.');
   if (out.payment !== null && out.payment < 0) { out.problems.push('The amount paid on this payslip is negative.'); }
 
@@ -301,33 +309,41 @@ const plain = s => String(s || '').normalize('NFKD').replace(/[\u0300-\u036f]/g,
 
 /**
  * Match the name on a payslip to one of `people` ([{ id, name }]).
- * Returns { id, sure } for one clear match, { id: null, candidates: [ids] } when more than
- * one person fits, or { id: null, candidates: [] } when nobody does.
- * A payslip often carries a fuller name than the tracker does (a middle name, a second
- * surname), so a person matches when every part of the shorter name appears in the longer.
+ * Returns { id, sure } for one match, { id: null, candidates: [ids] } when more than one
+ * person fits, or { id: null, candidates: [] } when nobody does.
+ *
+ * `sure` only for the same name, or the same name with middle names more or fewer (a
+ * payslip often carries a fuller name than the tracker does): the first and last words
+ * agree and the shorter name's words are all in the longer, in order. Anything further
+ * off (the words in another order, a surname more or fewer, only the first name and one
+ * surname in common) is a guess for the owner to confirm.
  */
 function matchPerson(name, people) {
   const target = plain(name);
   if (!target) return { id: null, candidates: [] };
-  const list = (people || []).map(p => ({ id: p.id, key: plain(p.name) })).filter(p => p.key);
-  const exact = list.filter(p => p.key === target);
-  if (exact.length === 1) return { id: exact[0].id, sure: true };
-  if (exact.length > 1) return { id: null, candidates: exact.map(p => p.id) };
+  const list = (people || []).map(p => ({ id: p.id, key: plain(p.name), words: plain(p.name).split(' ') })).filter(p => p.key);
+  const answer = (found, sure) => (found.length === 1 ? { id: found[0].id, sure } : found.length ? { id: null, candidates: found.map(p => p.id) } : null);
   const words = target.split(' ');
-  const fits = list.filter(p => {
-    const w = p.key.split(' ');
-    const [small, big] = w.length <= words.length ? [w, words] : [words, w];
-    return small.length >= 2 && small.every(x => big.includes(x));
-  });
-  if (fits.length === 1) return { id: fits[0].id, sure: true };
-  if (fits.length > 1) return { id: null, candidates: fits.map(p => p.id) };
-  // First name and last name agree, whatever is in between (or the surname is doubled up)
-  const loose = list.filter(p => {
-    const w = p.key.split(' ');
-    return w.length >= 2 && words.length >= 2 && w[0] === words[0] && (w[w.length - 1] === words[words.length - 1] || words.includes(w[w.length - 1]) || w.includes(words[words.length - 1]));
-  });
-  if (loose.length === 1) return { id: loose[0].id, sure: false };
-  return { id: null, candidates: loose.map(p => p.id) };
+  const ordered = (a, b) => (a.length <= b.length ? [a, b] : [b, a]);
+  // (a word used twice in a name has to be there twice)
+  const within = (small, big) => { const left = [...big]; return small.every(w => { const i = left.indexOf(w); if (i < 0) return false; left.splice(i, 1); return true; }); };
+  const inOrder = (small, big) => { let i = 0; for (const w of big) if (w === small[i]) i++; return i === small.length; };
+
+  const exact = answer(list.filter(p => p.key === target), true);
+  if (exact) return exact;
+  const middleNames = answer(list.filter(p => {
+    const [small, big] = ordered(p.words, words);
+    return small.length >= 2 && small[0] === big[0] && small[small.length - 1] === big[big.length - 1] && inOrder(small, big);
+  }), true);
+  if (middleNames) return middleNames;
+  const fits = answer(list.filter(p => { const [small, big] = ordered(p.words, words); return small.length >= 2 && within(small, big); }), false);
+  if (fits) return fits;
+  // First name and a surname agree, whatever else is there
+  const loose = answer(list.filter(p => {
+    const w = p.words;
+    return w.length >= 2 && words.length >= 2 && w[0] === words[0] && (words.slice(1).includes(w[w.length - 1]) || w.slice(1).includes(words[words.length - 1]));
+  }), false);
+  return loose || { id: null, candidates: [] };
 }
 
 /**
