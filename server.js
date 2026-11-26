@@ -1645,6 +1645,19 @@ app.post('/api/pay-skips', requireAuth, requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Months set aside to pay later in an earlier year that still have no payment. The Salary
+// page keeps them on its list until they are paid or marked nothing owed, however long ago.
+app.get('/api/pay-skips/later', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await q(
+      `SELECT s.pay_year, COUNT(*)::INT AS months FROM pay_skips s
+       WHERE s.kind = 'later' AND s.pay_year < ?
+         AND NOT EXISTS (SELECT 1 FROM monthly_payments p WHERE p.employee_id = s.employee_id AND p.payment_year = s.pay_year AND p.payment_month = s.pay_month)
+       GROUP BY s.pay_year ORDER BY s.pay_year DESC LIMIT 5`, [new Date().getFullYear()]);
+    res.json({ years: rows.map(r => Number(r.pay_year)), count: rows.reduce((a, r) => a + Number(r.months), 0) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.delete('/api/pay-skips/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
     await q('DELETE FROM pay_skips WHERE id = ?', [parseInt(req.params.id, 10) || 0]);
@@ -1741,29 +1754,54 @@ app.post('/api/payslips/file', requireAuth, requireAdmin, async (req, res) => {
     // They see it in their own portal, as with a payslip uploaded from their profile
     if (saved[0].is_new) await q('INSERT INTO emp_notifications (employee_id, message, type) VALUES (?, ?, ?)',
       [emp.id, `Your payslip for ${MONTH_LONG[month - 1]} ${year} is now available in Payslips.`, 'info']);
-    // A payslip for a month marked "nothing owed" says otherwise: the mark goes
-    await q(`DELETE FROM pay_skips WHERE employee_id = ? AND pay_year = ? AND pay_month = ? AND kind = 'none'`, [emp.id, year, month]);
+    // A payslip that pays something for a month marked "nothing owed" says otherwise: the
+    // mark goes. (One that pays nothing agrees with it.)
+    if (amount !== null) await q(`DELETE FROM pay_skips WHERE employee_id = ? AND pay_year = ? AND pay_month = ? AND kind = 'none'`, [emp.id, year, month]);
     await rememberPayslipName(slip.name, emp);
 
     const mode = ['log', 'fix', 'none'].includes(req.body.pay) ? req.body.pay : 'log';
     const { rows: logged } = await q('SELECT * FROM monthly_payments WHERE employee_id = ? AND payment_year = ? AND payment_month = ? ORDER BY id', [emp.id, year, month]);
     const total = round2(logged.reduce((a, p) => a + (parseFloat(p.amount) || 0), 0));
     const currency = PAY_CURRENCIES.includes(emp.currency) ? emp.currency : 'GBP';
+    // A month set aside to pay later is not paid just because its payslip has arrived: the
+    // payslip is filed and the month stays owed, unless the owner says it has now been paid
+    const { rows: aside } = await q(`SELECT id FROM pay_skips WHERE employee_id = ? AND pay_year = ? AND pay_month = ? AND kind = 'later'`, [emp.id, year, month]);
     let payment = { action: 'none', amount, total };
     if (mode !== 'none' && amount !== null) {
       if (!logged.length) {
-        await addPayment(req, { employee_id: emp.id, payment_year: year, payment_month: month, amount, notes: String(req.body.notes || '').slice(0, 300), currency });
-        payment = { action: 'logged', amount, total: amount };
+        if (aside.length && !req.body.even_if_later) payment = { action: 'later', amount, total };
+        else {
+          await addPayment(req, { employee_id: emp.id, payment_year: year, payment_month: month, amount, notes: String(req.body.notes || '').slice(0, 300), currency });
+          payment = { action: 'logged', amount, total: amount };
+        }
       } else if (Math.abs(total - amount) <= 0.005) payment = { action: 'already', amount, total };
       else if (mode === 'fix') {
-        // Correct the record so the month adds up to the payslip: the last payment takes the difference
-        const last = logged[logged.length - 1], fixed = round2(parseFloat(last.amount) + (amount - total));
-        if (fixed > 0) {
+        // Correct the record so the month adds up to the payslip. Too little logged: the last
+        // payment takes the difference. Too much (the month logged twice): it comes off the
+        // latest payments, one swallowed whole being removed. Each change is in the trail.
+        if (amount > total) {
+          const last = logged[logged.length - 1], fixed = round2(parseFloat(last.amount) + (amount - total));
           await q('UPDATE monthly_payments SET amount = ? WHERE id = ?', [fixed, last.id]);
           await logPayment(req, 'changed', { id: last.id, employee_id: emp.id, payment_year: year, payment_month: month, amount: fixed, notes: 'Corrected to the payslip' },
             { payment_year: year, payment_month: month, amount: parseFloat(last.amount) });
-          payment = { action: 'corrected', amount, total: amount };
-        } else payment = { action: 'differs', amount, total };
+        } else {
+          let excess = round2(total - amount);
+          for (const p of [...logged].reverse()) {
+            if (excess <= 0.005) break;
+            const had = round2(parseFloat(p.amount));
+            if (had <= excess + 0.005) {
+              await q('DELETE FROM monthly_payments WHERE id = ?', [p.id]);
+              await logPayment(req, 'removed', { id: p.id, employee_id: emp.id, payment_year: year, payment_month: month, amount: had, notes: 'More was logged than the payslip says' });
+              excess = round2(excess - had);
+            } else {
+              await q('UPDATE monthly_payments SET amount = ? WHERE id = ?', [round2(had - excess), p.id]);
+              await logPayment(req, 'changed', { id: p.id, employee_id: emp.id, payment_year: year, payment_month: month, amount: round2(had - excess), notes: 'Corrected to the payslip' },
+                { payment_year: year, payment_month: month, amount: had });
+              excess = 0;
+            }
+          }
+        }
+        payment = { action: 'corrected', amount, total: amount };
       } else payment = { action: 'differs', amount, total };
     }
     res.json({ payslip: { id: saved[0].id, employee_id: emp.id, pay_year: year, pay_month: month, file_name: up.name, read: !!figures }, payment, name: emp.name });

@@ -238,7 +238,8 @@ function payrollYear({ months, payments, deductions = 0, lastYear = null, exact 
     const taken = onSlip && gap > 0.005 ? Math.min(gap, round2((deductionsByMonth && deductionsByMonth[m.month]) || 0)) : 0;
     const short = !paid ? 0 : onSlip ? (gap - taken > 0.005 ? round2(gap - taken) : 0) : (atOldPay(m, got, rate) ? Math.max(0, gap) : 0);
     const over = paid && onSlip && got > due + 0.005 ? round2(got - due) : 0;
-    const status = skip === 'none' ? 'none' : short ? 'short' : paid ? 'paid' : skip === 'later' ? 'later' : 'due';
+    // (a month whose own payslip pays nothing is settled: there is nothing to pay or to chase)
+    const status = skip === 'none' || (onSlip && !paid && due === 0) ? 'none' : short ? 'short' : paid ? 'paid' : skip === 'later' ? 'later' : 'due';
     return { month: m.month, due, logged: got, paid, short, over, taken: round2(taken), source, skip, status, left: paid ? short : due };
   });
   const totalPaid = round2((payments || []).reduce((a, p) => a + (parseFloat(p.amount) || 0), 0));

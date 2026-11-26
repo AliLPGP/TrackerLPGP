@@ -122,6 +122,7 @@ assert.strictEqual(y.remaining, -100); assert.strictEqual(y.pct, 100);
   const ms = payrollMonths({ history: [], year: 2026, startDate: '2025-01-01', endDate: null, annual: 30000, netMonthly: a => a / 15 });   // 2,000 a month by the estimate
   const pay = (m, amount) => ({ payment_month: m, amount });
   const exact = { 10: { due: 2010.24, source: 'payslip' }, 11: { due: 2010.44, source: 'payslip' }, 12: { due: 2010.24, source: 'worked' } };
+  const toOctober = () => [...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(m => pay(m, 2010.44)), pay(10, 2010.24)];
   const y = payrollYear({ months: ms, payments: [...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(m => pay(m, 2010.44)), pay(10, 2010.24), pay(11, 1900)], exact,
     skips: { 12: 'later' } });
   const row = m => y.months.find(r => r.month === m);
@@ -142,9 +143,13 @@ assert.strictEqual(y.remaining, -100); assert.strictEqual(y.pct, 100);
   const paidAnyway = payrollYear({ months: ms, payments: [pay(12, 2010.24)], exact, skips: { 12: 'none' } });
   assert.deepStrictEqual([paidAnyway.months.find(r => r.month === 12).status, paidAnyway.months.find(r => r.month === 12).skip], ['paid', null]);
 
+  // A month whose own payslip pays nothing (unpaid leave put through payroll) is settled
+  const nil = payrollYear({ months: ms, payments: toOctober(), exact: { ...exact, 11: { due: 0, source: 'payslip' } } });
+  assert.deepStrictEqual([nil.months.find(r => r.month === 11).status, nil.months.find(r => r.month === 11).left, nil.remaining], ['none', 0, 2010.24]);
+
   // A day off over the allowance in November costs 115.38. Paying November's payslip less
   // that is the deduction being taken: nothing is short, and it is not taken off December too
-  const toOct = [...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(m => pay(m, 2010.44)), pay(10, 2010.24)];
+  const toOct = toOctober();
   const taken = payrollYear({ months: ms, payments: [...toOct, pay(11, 1895.06)], exact, deductions: 115.38, deductionsByMonth: { 11: 115.38 } });
   const nov = taken.months.find(r => r.month === 11);
   assert.deepStrictEqual([nov.status, nov.short, nov.taken, nov.left], ['paid', 0, 115.38, 0]);
