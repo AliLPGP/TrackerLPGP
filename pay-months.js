@@ -206,48 +206,55 @@ function payslipDues({ slips, gross, history, annual, months, none = [] }) {
  * person's first month counts as an advance, and one logged after their last month goes to
  * whatever is still owing. A month marked 'none' is worth nothing.
  *
- * What a month needs is its pay less that month's deductions, to within 50p.
- * Each row: { month, due, logged, paid, covered, short, skip, status, left, deduction }
+ * Pay logged by hand is seldom to the penny (a bank fee, a rounded figure), so a month is
+ * settled within half a percent of its pay (never less than 1.00), and an overpayment that
+ * small is not carried forward.
+ *
+ * Each row: { month, due, logged, paid, covered, short, skip, status, left, deduction, ahead, from }
  *   paid      a payment is logged in the month, or other payments have settled it (`covered`)
  *   short     a payment is logged in it, but the month is still owed this much
  *   left      what to send: the shortfall, or for an unpaid month its pay less whatever
  *             other payments have already put towards it (before any deduction is taken off)
+ *   ahead     how much of this month's payments went on as pay in advance
+ *   from      the month whose pay in advance went towards this one, when one did
  */
 function contractorMonths({ months, payments, deductions = {}, skips = {} }) {
   const logged = {};
   (payments || []).forEach(p => { const m = Number(p.payment_month); logged[m] = (logged[m] || 0) + (parseFloat(p.amount) || 0); });
   const first = months.length ? months[0].month : 13, last = months.length ? months[months.length - 1].month : 0;
-  let ahead = 0;   // pay in advance, not yet used
-  for (let m = 1; m < first; m++) ahead += logged[m] || 0;
+  const near = due => Math.max(1, round2(due * 0.005));
+  let ahead = 0, aheadFrom = null;   // pay in advance not yet used, and the month it was paid in
+  for (let m = 1; m < first; m++) if (logged[m] > 0) { ahead += logged[m]; aheadFrom = m; }
   const rows = [];
   const payOff = spare => {   // put money towards the oldest months still owing; returns what is left of it
-    for (const r of rows) { if (spare <= 0) break; const use = Math.min(spare, r.owing); r.owing = round2(r.owing - use); spare = round2(spare - use); if (use > 0) r.helped = true; }
+    for (const r of rows) { if (spare <= 0) break; const use = Math.min(spare, r.owing); r.owing = round2(r.owing - use); spare = round2(spare - use); }
     return spare;
   };
   for (const row of months) {
     const got = round2(logged[row.month] || 0);
     const skip = got > 0 ? null : skips[row.month] || null;
     const due = skip === 'none' ? 0 : round2(row.due), off = Math.min(due, round2(deductions[row.month] || 0));
-    const r = { month: row.month, due, got, skip, off: round2(deductions[row.month] || 0), owing: round2(due - off), helped: false };
+    const r = { month: row.month, due, got, skip, off: round2(deductions[row.month] || 0), owing: round2(due - off), ahead: 0, from: null };
     const fromAhead = Math.min(ahead, r.owing);
-    if (fromAhead > 0) { r.owing = round2(r.owing - fromAhead); ahead = round2(ahead - fromAhead); r.helped = true; }
+    if (fromAhead > 0) { r.owing = round2(r.owing - fromAhead); ahead = round2(ahead - fromAhead); r.from = aheadFrom; }
     const own = Math.min(got, r.owing);
     r.owing = round2(r.owing - own);
-    ahead = round2(ahead + payOff(round2(got - own)));
+    const spare = payOff(round2(got - own));
+    if (spare > near(due || row.due)) { ahead = round2(ahead + spare); aheadFrom = row.month; r.ahead = spare; }
     rows.push(r);
   }
   let late = 0;
   for (let m = last + 1; m <= 12; m++) late += logged[m] || 0;
   if (rows.length) payOff(round2(late));
   return rows.map(r => {
-    const settled = r.owing <= 0.5;
+    const settled = r.owing <= near(r.due);
     const covered = !(r.got > 0) && r.due > 0 && settled;
     const paid = r.got > 0 || covered;
     const short = r.got > 0 && !settled ? r.owing : 0;
     // (an unpaid month's figure is before its deduction: the page offers to take that off)
     const left = r.skip === 'none' || settled ? 0 : short || round2(Math.min(r.due, r.owing + Math.min(r.due, r.off)));
     const status = r.skip === 'none' ? 'none' : short ? 'short' : paid ? 'paid' : r.skip === 'later' ? 'later' : 'due';
-    return { month: r.month, due: r.due, logged: r.got, paid, covered, short, over: 0, source: 'salary', skip: r.skip, status, left, deduction: r.off };
+    return { month: r.month, due: r.due, logged: r.got, paid, covered, short, over: 0, source: 'salary', skip: r.skip, status, left, deduction: r.off, ahead: r.ahead, from: r.from };
   });
 }
 

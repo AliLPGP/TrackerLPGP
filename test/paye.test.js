@@ -388,6 +388,18 @@ const slip = (over = {}) => ({
   // Someone who left in March, paid for March in April: March is settled
   const leaver = contractorMonths({ months: months.slice(0, 3), payments: [pay(1, 8000), pay(2, 8000), pay(4, 8000)] });
   assert.deepStrictEqual([leaver.map(r => r.status), leaver[2].covered], [['paid', 'paid', 'paid'], true]);
+  // Pay logged by hand is seldom to the penny: a month within half a percent of its pay is
+  // settled (a bank fee, a rounded figure), and that small an overpayment is not carried on
+  const fee = contractorMonths({ months, payments: [pay(1, 7990), pay(2, 8030), pay(3, 7900)] });
+  assert.deepStrictEqual(fee.map(r => r.status).slice(0, 4), ['paid', 'paid', 'short', 'due']);
+  assert.deepStrictEqual([fee[1].ahead, fee[2].short, fee[3].left], [0, 100, 8000]);
+  // Pay in advance says which month it was paid in, on the months it covers and on its own row
+  const named = contractorMonths({ months, payments: [pay(2, 20000)] });
+  assert.deepStrictEqual([named[0].status, named[1].ahead, named[2].from, named[2].covered, named[3].from, named[3].left], ['paid', 4000, 2, false, null, 8000]);
+  assert.deepStrictEqual([named[2].status, named[2].left], ['due', 4000], 'March: half already paid in February');
+  const whole = contractorMonths({ months, payments: [pay(1, 24000)] });
+  assert.deepStrictEqual([whole[0].ahead, whole[1].covered, whole[1].from, whole[2].covered, whole[3].status], [16000, true, 1, true, 'due']);
+
   // Paid before they started (an advance on January, logged in last... a month they were not working in)
   const early = contractorMonths({ months: months.slice(2), payments: [pay(2, 8000)] });
   assert.deepStrictEqual([early[0].status, early[0].covered, early[1].status], ['paid', true, 'due']);

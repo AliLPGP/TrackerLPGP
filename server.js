@@ -1611,6 +1611,40 @@ app.put('/api/payments/:id', requireAuth, requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// A payment above a self-employed person's monthly pay was counted as pay in advance, but
+// the extra was a one-off (a bonus, commission, expenses). It comes off that month's
+// payments, latest first, and is recorded as a bonus dated in that month, so the months
+// after are owed in full again and the year's figures agree.
+app.post('/api/payments/extra-is-bonus', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const employee_id = parseInt(req.body.employee_id, 10), year = parseInt(req.body.year, 10), month = parseInt(req.body.month, 10);
+    const amount = round2(parseFloat(req.body.amount));
+    if (!(employee_id > 0) || !validPayMonth(year, month) || !(amount > 0)) return res.status(400).json({ error: 'Choose the person, the month and the amount' });
+    const { rows: logged } = await q('SELECT * FROM monthly_payments WHERE employee_id = ? AND payment_year = ? AND payment_month = ? ORDER BY id', [employee_id, year, month]);
+    const total = round2(logged.reduce((a, p) => a + (parseFloat(p.amount) || 0), 0));
+    if (!logged.length || amount > total + 0.005) return res.status(409).json({ error: 'The payments for that month have changed. Reload and try again.' });
+    let excess = amount;
+    for (const p of [...logged].reverse()) {
+      if (excess <= 0.005) break;
+      const had = round2(parseFloat(p.amount));
+      if (had <= excess + 0.005) {
+        await q('DELETE FROM monthly_payments WHERE id = ?', [p.id]);
+        await logPayment(req, 'removed', { id: p.id, employee_id, payment_year: year, payment_month: month, amount: had, notes: 'Recorded as a bonus instead' });
+        excess = round2(excess - had);
+      } else {
+        await q('UPDATE monthly_payments SET amount = ? WHERE id = ?', [round2(had - excess), p.id]);
+        await logPayment(req, 'changed', { id: p.id, employee_id, payment_year: year, payment_month: month, amount: round2(had - excess), notes: 'The extra was recorded as a bonus' },
+          { payment_year: year, payment_month: month, amount: had });
+        excess = 0;
+      }
+    }
+    const last = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    await q('INSERT INTO bonuses (employee_id, amount, bonus_date, reason, notes, created_by) VALUES (?, ?, ?, ?, ?, ?)',
+      [employee_id, amount, `${year}-${String(month).padStart(2, '0')}-${String(last).padStart(2, '0')}`, `Paid with ${MONTH_LONG[month - 1]} pay`, 'Moved from that month’s pay on the Salary page', req.admin.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.delete('/api/payments/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { rows } = await q('DELETE FROM monthly_payments WHERE id = ? RETURNING *', [parseInt(req.params.id, 10) || 0]);
@@ -1839,7 +1873,23 @@ app.post('/api/payslips/file', requireAuth, requireAdmin, async (req, res) => {
 
 // Everyone's pay for a year: target, what is left, payments, deductions, days off.
 // The Salary page and Wasteman both read this, so they always agree.
+// Payslips filed before the tracker could read them are read once, a few at a time, when
+// the Salary page asks for its figures: what is printed on each is kept beside the file,
+// so those months show what their payslip says. Nothing is logged or changed besides.
+async function readUnreadPayslips(limit = 8) {
+  const { rows } = await q(`SELECT id, pay_year, pay_month, file_name, file_data FROM employee_payslips WHERE figures IS NULL AND read_at IS NULL ORDER BY pay_year DESC, pay_month DESC LIMIT ${Math.max(1, Math.min(20, limit | 0))}`);
+  for (const r of rows) {
+    let figures = null, amount = null;
+    try {
+      const slip = readPayslip(Buffer.from(String(r.file_data || ''), 'base64'), r.file_name);
+      if (!slip.several) { figures = figuresToKeep(slip, r.pay_year, r.pay_month); amount = slip.payment; }
+    } catch (e) { /* stays unread, and is not tried again */ }
+    await q('UPDATE employee_payslips SET figures = ?, payment_amount = COALESCE(?, payment_amount), read_at = NOW() WHERE id = ?', [figures ? JSON.stringify(figures) : null, amount, r.id]);
+  }
+}
+
 async function salaryOverview(year) {
+  await readUnreadPayslips().catch(e => console.warn('reading payslips on file failed:', e.message));
   // Include terminated employees so their final summary still shows
   const [{ rows: employees }, onFile] = await Promise.all([q('SELECT * FROM employees ORDER BY active DESC, name'), payslipsAndSkips(year)]);
   return Promise.all(employees.map(emp => salaryOverviewRow(emp, year, onFile)));
