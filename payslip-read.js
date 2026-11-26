@@ -21,23 +21,28 @@ const SECTIONS = {
   'THIS PAY PERIOD': 'period', 'THIS PERIOD': 'period', 'YEAR TO DATE': 'ytd', 'PAYMENT': 'payment',
 };
 
-// "£2,375.00", "-£12.50", "(£12.50)", "2,375.00" -> a number; anything else -> null
+// "£2,375.00", "-£12.50", "(£12.50)", "£12.50-", "£12.50 CR", "2,375.00" -> a number; anything else -> null
+// (brackets, a minus sign of any kind before or after, and CR all mean it is money back)
+const MINUS = '-−–';
+const MONEY = new RegExp(`^([${MINUS}])?(\\()?([${MINUS}])?(?:£|GBP)?([${MINUS}])?(\\d{1,3}(?:,\\d{3})*|\\d+)\\.(\\d{2})\\)?([${MINUS}]|CR)?$`, 'i');
 function money(text) {
-  const t = String(text == null ? '' : text).replace(/\s/g, '');
-  const m = /^(-|−|–)?(\()?(-|−)?(?:£|GBP)?(-|−)?(\d{1,3}(?:,\d{3})*|\d+)\.(\d{2})\)?$/.exec(t);
+  const m = MONEY.exec(String(text == null ? '' : text).replace(/\s/g, ''));
   if (!m) return null;
   const v = parseFloat(m[5].replace(/,/g, '') + '.' + m[6]);
-  return m[1] || m[2] || m[3] || m[4] ? -v : v;
+  return m[1] || m[2] || m[3] || m[4] || m[7] ? -v : v;
 }
 
 // A line as a label and what follows it. The reader puts a tab between pieces set apart
 // on the page; when a figure sits close to its label there is only a space.
+const CLOSE_FIGURE = new RegExp(`^(.*?)\\s*((?:[${MINUS}(]\\s?)?£\\s?[${MINUS}]?[\\d,]+\\.\\d{2}\\)?(?:\\s?(?:[${MINUS}]|CR))?)$`, 'i');
+const BARE_FIGURE = new RegExp(`^(.*?\\S)\\s+([${MINUS}(]?[\\d,]+\\.\\d{2}\\)?(?:\\s?(?:[${MINUS}]|CR))?)$`, 'i');
 function split(line) {
   const tab = line.indexOf('\t');
   if (tab >= 0) return { label: line.slice(0, tab).trim(), value: line.slice(tab + 1).replace(/\t/g, ' ').trim() };
-  // (a pound sign marks where the figure starts even when it is set hard against the label)
-  const m = /^(.*?)\s*((?:-|−|\()?\s?£\s?-?[\d,]+\.\d{2}\)?)$/.exec(line);
-  return m ? { label: m[1].trim(), value: m[2].trim() } : { label: line.trim(), value: '' };
+  // (a pound sign marks where the figure starts even when it is set hard against the label;
+  // without one, a figure with pence at the end of the line after a space)
+  const m = CLOSE_FIGURE.exec(line) || BARE_FIGURE.exec(line);
+  return m && money(m[2]) !== null ? { label: m[1].trim(), value: m[2].trim() } : { label: line.trim(), value: '' };
 }
 
 function isoDate(d, m, y) {
@@ -49,11 +54,11 @@ function isoDate(d, m, y) {
 }
 const monthNumber = word => { const i = MONTH_NAMES.findIndex(n => n.startsWith(String(word).toLowerCase().slice(0, 3))); return i < 0 ? 0 : i + 1; };
 
-// "Payslip for Month Ending 30 Nov 2026" -> { kind: 'month', end: '2026-11-30' }
+// "Payslip for Month Ending 30 Nov 2026" (or "... Ending 30/11/2026") -> { kind: 'month', end: '2026-11-30' }
 function periodFrom(text) {
-  const m = /payslip\s+for\s+(?:the\s+)?(month|week|fortnight|four weeks|4 weeks|quarter|period)?\s*ending\s+(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})/i.exec(text || '');
+  const m = /payslip\s+for\s+(?:the\s+)?(month|week|fortnight|four weeks|4 weeks|quarter|period)?\s*ending\s+(?:(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})|(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4}))/i.exec(text || '');
   if (!m) return null;
-  const end = isoDate(m[2], monthNumber(m[3]), m[4]);
+  const end = m[2] ? isoDate(m[2], monthNumber(m[3]), m[4]) : isoDate(m[5], m[6], m[7]);
   return end ? { kind: (m[1] || 'month').toLowerCase(), end } : null;
 }
 
@@ -287,7 +292,12 @@ function readPayslip(buffer, fileName = '') {
 }
 
 // ─── Whose payslip is it? ────────────────────────────────────────────────────
-const plain = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+// A name as it is compared: lower case, without accents or punctuation. Letters that do
+// not come apart into a plain letter and an accent are spelled out, joined-up letters
+// (fi) are separated, and names in other scripts are kept as they are.
+const SPELLED = { '\u0142': 'l', '\u00f8': 'o', '\u0111': 'd', '\u00f0': 'd', '\u00fe': 'th', '\u00df': 'ss', '\u00e6': 'ae', '\u0153': 'oe', '\u0131': 'i' };
+const plain = s => String(s || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  .replace(/[\u0142\u00f8\u0111\u00f0\u00fe\u00df\u00e6\u0153\u0131]/g, c => SPELLED[c]).replace(/[^\p{L}\p{N} ]+/gu, ' ').replace(/\s+/g, ' ').trim();
 
 /**
  * Match the name on a payslip to one of `people` ([{ id, name }]).
@@ -320,6 +330,39 @@ function matchPerson(name, people) {
   return { id: null, candidates: loose.map(p => p.id) };
 }
 
+/**
+ * Whose payslip a file is, for the upload page: `people` are [{ id, name, active }] and
+ * `remembered` is the person a payslip printed with this very name was filed under before
+ * (an id, or null). Returns what matchPerson() does.
+ *
+ * A wrong answer here files one person's payslip where another can open it, so only a
+ * plain case is `sure`:
+ *   - one person has exactly this name: them. With two of that name, the one still
+ *     working here is suggested, not assumed (it may be the leaver's final payslip); and
+ *     if a payslip with this name was filed under somebody else before, the owner chooses.
+ *   - else the person it was filed under before
+ *   - else the one person whose name fits (see matchPerson). When several fit and one of
+ *     them still works here, that one is suggested, not assumed.
+ */
+function whosePayslip(name, people, remembered = null) {
+  const target = plain(name);
+  if (!target) return { id: null, candidates: [] };
+  const list = (people || []).map(p => ({ id: p.id, key: plain(p.name), active: !!p.active })).filter(p => p.key);
+  const known = remembered != null && list.some(p => p.id === remembered) ? remembered : null;
+  const exact = list.filter(p => p.key === target);
+  if (exact.length) {
+    if (known !== null) return exact.some(p => p.id === known) ? { id: known, sure: true } : { id: null, candidates: [...new Set([...exact.map(p => p.id), known])] };
+    if (exact.length === 1) return { id: exact[0].id, sure: true };
+    const here = exact.filter(p => p.active), ids = exact.map(p => p.id);
+    return here.length === 1 ? { id: here[0].id, sure: false, candidates: ids } : { id: null, candidates: ids };
+  }
+  if (known !== null) return { id: known, sure: true };
+  const match = matchPerson(name, people);
+  if (match.id || !(match.candidates || []).length) return match;
+  const here = match.candidates.filter(id => list.some(p => p.id === id && p.active));
+  return here.length === 1 ? { id: here[0], sure: false, candidates: match.candidates } : match;
+}
+
 // ─── What is kept of a payslip once it has been read ─────────────────────────
 /**
  * The figures to store beside the PDF, filed under `year` and `month`: everything that
@@ -346,4 +389,4 @@ function figuresToKeep(slip, year, month) {
 // A name as it is compared and remembered: lower case, no accents or punctuation
 const nameKey = plain;
 
-module.exports = { readPayslip, matchPerson, money, figuresToKeep, nameKey };
+module.exports = { readPayslip, matchPerson, whosePayslip, money, figuresToKeep, nameKey };

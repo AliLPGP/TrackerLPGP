@@ -492,7 +492,9 @@ class Page {
     return this.fonts.get(key);
   }
 
-  // Text shown at (x, y), `size` high, ending at xEnd
+  // Text shown at (x, y), `size` high, ending at xEnd. Pieces that follow one another along
+  // a baseline make a line: a tab between pieces set well apart, a space across a small gap.
+  // (Lines are kept in the order they are drawn, which on a payslip is box by box.)
   put(text, x, y, size, xEnd) {
     if (!text) return;
     const L = this.line, tol = Math.max(0.5, size * 0.35);

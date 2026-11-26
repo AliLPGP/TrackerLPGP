@@ -3738,8 +3738,12 @@ async function payTakeFiles(files, forMonth) {
       id: info.employee_id || null, year: info.year || null, month: info.month || null, amount: info.amount > 0 ? info.amount : null, candidates: info.candidates || [],
       zero: !!info.ok && info.amount === 0 });
     if (forMonth) {
-      // Added to one person's month: it is for them, unless it says otherwise
-      if (!item.id || (!item.sure && Number(item.id) !== Number(forMonth.id))) item.id = forMonth.id;
+      // Added to one person's month: it is for them, unless it plainly says otherwise.
+      // (When the name on it fits them, that settles it; when it does not, they are asked.)
+      if (!item.id || !item.sure) {
+        if (Number(item.id) === Number(forMonth.id) || item.candidates.map(Number).includes(Number(forMonth.id))) item.sure = true;
+        item.id = forMonth.id;
+      }
       if (!item.year) { item.year = forMonth.year; item.month = forMonth.month; }
       const other = payPerson(item.id, item.year) || payPerson(item.id);
       if (Number(item.id) !== Number(forMonth.id)) item.aside = `This one is ${other ? other.name + '’s' : 'someone else’s'}, so it is filed for them.`;
@@ -3754,6 +3758,8 @@ async function payTakeFiles(files, forMonth) {
 function paySlipPlan(item) {
   if (item.state !== 'ready') return { kind: item.state };
   if (!item.id) return { kind: 'who' };
+  // A guess at whose it is has to be confirmed: filed under the wrong person, they could open it
+  if (!item.sure) return { kind: 'confirm', row: payPerson(item.id, item.year) || payPerson(item.id) || Object.values(_pay.data).flat().find(r => Number(r.employee_id) === Number(item.id)) || null };
   if (!item.year || !item.month) return { kind: 'when' };
   const row = payPerson(item.id, item.year), m = payMonthOf(row, item.month), cur = payCur(row);
   if (!(item.amount > 0)) return item.zero ? { kind: 'zero', row, cur, replaces: !!(m && m.payslip) } : { kind: 'amount' };
@@ -3788,12 +3794,17 @@ function renderPaySlips() {
     if (!item.readable) notes.push(item.problems[0] || 'This payslip could not be read.');
     else if (item.adds_up === false) notes.push('The figures on it do not add up to the amount paid, so check the amount.');
     if (plan.kind === 'who') { chip = '<span class="co-chip is-late">Whose is it?</span>'; notes.push(item.name ? `It says “${item.name}”, which matches nobody on payroll.` : 'Choose whose payslip this is.'); fields = who + (item.year ? '' : when) + (item.amount > 0 ? '' : amt); blocked++; }
+    else if (plan.kind === 'confirm') {
+      chip = '<span class="co-chip is-late">Check who</span>';
+      notes.push(item.name ? `It says “${item.name}”. Is this ${plan.row ? plan.row.name + '’s' : 'their'} payslip?` : `The name on it could not be read. Is this ${plan.row ? plan.row.name + '’s' : 'their'} payslip?`);
+      fields = `<button class="btn btn-primary btn-sm" onclick="_pay.slips[${i}].sure=true;renderPaySlips()">Yes${plan.row ? ', ' + person : ''}</button>` + who;
+      blocked++;
+    }
     else if (plan.kind === 'when') { chip = '<span class="co-chip is-late">Which month?</span>'; fields = when + (item.amount > 0 ? '' : amt); blocked++; }
     else if (plan.kind === 'amount') { chip = '<span class="co-chip is-late">How much?</span>'; notes.push('Type the amount that was paid.'); fields = amt; blocked++; }
     else {
       ready++;
       if (item.aside) notes.push(item.aside);
-      if (!item.sure && item.name) notes.push(`It says “${item.name}”: check this is the right person.`);
       if (plan.twin) notes.push('Another file in this list is for the same person and month; the later one is kept.');
       if (plan.replaces) notes.push('Replaces the payslip already on file for that month.');
       if (item.typed || !item.readable) fields = amt;
@@ -3816,7 +3827,7 @@ function renderPaySlips() {
     if (item.state === 'failed') notes.unshift(`Not saved: ${item.problem}`);
     return `<div class="pay-slip-item${['log', 'already', 'zero'].includes(plan.kind) ? '' : ' is-check'}${item.state === 'failed' ? ' is-bad' : ''}">
         <div class="pay-slip-main"><b>${title}</b>${notes.length ? `<small>${notes.map(n => esc(n)).join(' ')}</small>` : ''}${fields ? `<div class="pay-slip-fields">${fields}</div>` : ''}
-          ${plan.row && !item.sure && plan.kind !== 'who' ? `<button class="dm-link pay-slip-change" onclick="_pay.slips[${i}].id=null;renderPaySlips()">Not ${person}?</button>` : ''}</div>
+          ${plan.row && !['who', 'confirm'].includes(plan.kind) && item.state !== 'failed' ? `<button class="dm-link pay-slip-change" onclick="_pay.slips[${i}].id=null;renderPaySlips()">Not ${person}?</button>` : ''}</div>
         <strong class="pay-fig">${item.amount > 0 ? payMoney(item.amount, cur) : ''}</strong>${chip}${remove}
       </div>`;
   }).join('');

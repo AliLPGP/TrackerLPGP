@@ -413,7 +413,7 @@ const DAY_OFF_ALLOWANCE = { payroll: 20, self_employed: 5 };
 const { allowanceFor: allowanceForYear } = require('./allowance');
 const { selfEmployedYearTarget, salaryOnDate, payBands, periodsFrom, payrollMonths, payrollYear } = require('./salary-periods');
 const { trackerGross, payslipDues, contractorMonths } = require('./pay-months');
-const { readPayslip, matchPerson, figuresToKeep, nameKey } = require('./payslip-read');
+const { readPayslip, whosePayslip, figuresToKeep, nameKey } = require('./payslip-read');
 const allowanceFor = (emp, year) => allowanceForYear(emp, year, DAY_OFF_ALLOWANCE);
 
 // Count Mon–Fri days in a given month (no bank holidays — add if needed)
@@ -1678,17 +1678,11 @@ app.post('/api/payslips/read', requireAuth, requireAdmin, async (req, res) => {
     if (up.error) return res.status(up.status).json({ error: up.error });
     const slip = readPayslip(up.buf, up.name);
     const { rows: people } = await q(`SELECT id, name, active FROM employees WHERE employment_type = 'payroll' ORDER BY active DESC, name`);
-    // A name the owner has matched by hand before is remembered
-    let match = { id: null, candidates: [] };
+    // By the name printed on it, and by who a payslip with that name was filed under
+    // before (see whosePayslip for when that is taken as certain)
     const key = nameKey(slip.name);
-    if (key) {
-      const { rows: known } = await q('SELECT employee_id FROM payslip_names WHERE name_key = ?', [key]);
-      if (known[0] && people.some(p => p.id === known[0].employee_id)) match = { id: known[0].employee_id, sure: true };
-    }
-    // Otherwise by the name itself: someone still working here first, and a leaver (their
-    // final payslip) only when nobody current fits
-    if (!match.id) match = matchPerson(slip.name, people.filter(p => p.active));
-    if (!match.id && !(match.candidates || []).length) match = matchPerson(slip.name, people);
+    const { rows: known } = key ? await q('SELECT employee_id FROM payslip_names WHERE name_key = ?', [key]) : { rows: [] };
+    const match = whosePayslip(slip.name, people, known[0] ? known[0].employee_id : null);
     res.json({
       file_name: up.name, ok: slip.ok, problems: slip.problems, name: slip.name, several: slip.several,
       employee_id: match.id || null, sure: !!match.sure, candidates: match.candidates || [],

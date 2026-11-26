@@ -10,7 +10,7 @@ const zlib = require('zlib');
 const { PDFDocument, StandardFonts } = require('pdf-lib');
 const fontkit = require('@pdf-lib/fontkit');
 const { readPdfText } = require('../pdf-text');
-const { readPayslip, matchPerson, money } = require('../payslip-read');
+const { readPayslip, matchPerson, whosePayslip, nameKey, money } = require('../payslip-read');
 
 // ── A made-up payslip, as boxes of [label, figure] ──
 const SLIP = {
@@ -32,7 +32,9 @@ const SLIP = {
 // A label or a figure holding "\n" is drawn over several lines, as the real thing does
 // when a figure grows and its label no longer fits beside it.
 //   figureOn   'first' draws a wrapped label's figure level with its first line, after the
-//              label's lines (how the payroll software does it); 'last' beside its last line
+//              label's lines (how the payroll software does it); 'last' beside its last line;
+//              'close' one space after the label, where the page has run out of room;
+//              'before' draws each figure first and its label after it, to its left
 //   headGap    extra space between the letters of the box headings
 //   before, after   extra lines drawn before the name or after the footer (a browser's
 //              printed page header)
@@ -61,11 +63,13 @@ function skiaStylePdf(slip, { title = `${slip.name} - ${slip.heading}`.replace(/
     let y = 31;
     rows.forEach(([label, value]) => {
       const labelLines = label.split('\n'), valueLines = String(value || '').split('\n');
+      if (figureOn === 'before' && value) ops += run(valueLines[0], 220 - valueLines[0].length * W, y);
       labelLines.forEach((part, k) => {
         ops += run(part, 8.5, y + k * 15);
         if (figureOn === 'last' && k === labelLines.length - 1 && value) ops += run(valueLines[0], 220 - valueLines[0].length * W, y + k * 15);
+        if (figureOn === 'close' && k === labelLines.length - 1 && value) ops += run(valueLines[0], 8.5 + (part.length + 1) * W, y + k * 15);
       });
-      if (value) valueLines.forEach((part, k) => { if (figureOn !== 'last' || k > 0) ops += run(part, 220 - part.length * W, y + k * 15); });   // right-aligned
+      if (value) valueLines.forEach((part, k) => { if (!['last', 'close', 'before'].includes(figureOn) || k > 0) ops += run(part, 220 - part.length * W, y + k * 15); });   // right-aligned
       y += Math.max(labelLines.length, valueLines.length) * 15;
     });
     ops += 'Q\n';
@@ -209,6 +213,11 @@ function checkFigures(r, where) {
   assert.strictEqual(readPdfText(skiaStylePdf(SLIP, { type3: true })).lines[0], 'Jane Example', 'a Type 3 font reads as words, not letter by letter');
   checkFigures(readPayslip(skiaStylePdf(SLIP, { type3: true })), 'Type 3 font');
 
+  // A layout this reader cannot pair up (every figure drawn before its label) is not
+  // taken on trust: the amount paid is still read, and the page is told to check it
+  const scrambled = readPayslip(skiaStylePdf(SLIP, { figureOn: 'before' }));
+  assert.deepStrictEqual([scrambled.payment, scrambled.adds_up], [2010.44, false]);
+
   // Printed from a browser, the page gains a header that repeats the document's title:
   // still one payslip, and the header is no part of the name
   const header = ['26/11/2026, 16:46\tJane Example - Payslip for Month Ending 30 Nov 2026', 'https://payroll.example.com/payslips/view\t1/1'];
@@ -262,6 +271,10 @@ function checkFigures(r, where) {
   const viaFile = readPayslip(skiaStylePdf(bare, { title: 'Untitled' }), 'Jane_Example_-_Payslip_for_Month_Ending_30_Sep_2026.pdf');
   assert.deepStrictEqual(viaFile.period, { year: 2026, month: 9, end: '2026-09-30' }); assert.strictEqual(viaFile.name, 'Jane Example');
 
+  // The month written as figures, day first
+  const figuresDate = JSON.parse(JSON.stringify(SLIP)); figuresDate.heading = 'Payslip for Month Ending 31/10/2026';
+  assert.deepStrictEqual(readPayslip(skiaStylePdf(figuresDate)).period, { year: 2026, month: 10, end: '2026-10-31' });
+
   // A weekly payslip is read but not placed in a month
   const weekly = JSON.parse(JSON.stringify(SLIP)); weekly.heading = 'Payslip for Week Ending 27 Nov 2026';
   const wk = readPayslip(skiaStylePdf(weekly));
@@ -279,6 +292,19 @@ function checkFigures(r, where) {
   assert.strictEqual(money('£2,375.00'), 2375); assert.strictEqual(money('£0.00'), 0); assert.strictEqual(money('-£12.50'), -12.5);
   assert.strictEqual(money('(£12.50)'), -12.5); assert.strictEqual(money('£-12.50'), -12.5); assert.strictEqual(money('1,234,567.89'), 1234567.89);
   assert.strictEqual(money('1257L'), null); assert.strictEqual(money('12.5 days'), null); assert.strictEqual(money(''), null); assert.strictEqual(money('£12'), null);
+  // (money back is written many ways)
+  for (const refund of ['-£52.40', '\u2212£52.40', '\u2013£52.40', '(£52.40)', '£52.40-', '£52.40 CR', '£-52.40', '- £52.40', '-52.40']) assert.strictEqual(money(refund), -52.4, refund);
+  assert.strictEqual(money('£52.40 DR'), null); assert.strictEqual(money('QQ 12 34 56 C'), null);
+  // A tax refund set far from its label or hard against it, however it is written
+  for (const refund of ['-£52.40', '\u2013£52.40', '(£52.40)', '£52.40-', '£52.40 CR', '-52.40']) {
+    for (const figureOn of ['first', 'close']) {
+      const back = JSON.parse(JSON.stringify(SLIP));
+      back.boxes[2][1] = [['Tax', refund], ['National Insurance', '£176.16'], ['NEST', '£79.20'], ['Total', '£202.96']];
+      back.boxes[5][1] = [['£2,297.04', ''], ['Paid on 30/11/2026', '']];
+      const r = readPayslip(skiaStylePdf(back, { figureOn }));
+      assert.deepStrictEqual([r.tax, r.ni, r.pension, r.other_deductions, r.payment, r.adds_up], [-52.4, 176.16, 79.2, null, 2297.04, true], `a refund written ${refund}, figure ${figureOn}`);
+    }
+  }
 
   // Whose payslip: the tracker often holds a shorter name than the payslip prints
   const people = [{ id: 1, name: 'Jane Example' }, { id: 2, name: 'Sam Sample' }, { id: 3, name: 'José Peña Ruiz' }, { id: 4, name: 'Alex Stone' }, { id: 5, name: 'Alex Stone-Hart' }];
@@ -295,6 +321,32 @@ function checkFigures(r, where) {
   assert.deepStrictEqual(matchPerson('', people), { id: null, candidates: [] });
   const twins = [{ id: 7, name: 'Pat Lee' }, { id: 8, name: 'Pat Lee' }];
   assert.deepStrictEqual(matchPerson('Pat Lee', twins), { id: null, candidates: [7, 8] }, 'two people with the same name: ask');
+
+  // Names that do not come apart into plain letters, joined-up letters, and other scripts
+  assert.strictEqual(nameKey('\u0141ukasz \u017b\u00f3\u0142\u0107'), 'lukasz zolc');
+  assert.strictEqual(nameKey('S\u00f8ren Wei\u00df'), 'soren weiss');
+  assert.strictEqual(nameKey('Sofia Gri\ufb03n'), 'sofia griffin');
+  assert.strictEqual(nameKey('\u674e \u96f7'), '\u674e \u96f7');
+  assert.deepStrictEqual(matchPerson('\u0141ukasz \u017b\u00f3\u0142\u0107', [{ id: 1, name: 'Lukasz Zolc' }]), { id: 1, sure: true });
+
+  // On the upload page a wrong answer would file one person's payslip where another can
+  // open it, so only a plain case is taken as certain
+  const staff = [{ id: 4, name: 'Alex Stone', active: false }, { id: 5, name: 'Alex Stone-Hart', active: true }, { id: 7, name: 'Pat Lee', active: true }, { id: 9, name: 'Chris New', active: true }];
+  assert.deepStrictEqual(whosePayslip('Alex Stone', staff), { id: 4, sure: true }, 'the exact name wins, even a leaver over someone current with a longer name');
+  assert.deepStrictEqual(whosePayslip('Alex Stone-Hart', staff), { id: 5, sure: true });
+  assert.deepStrictEqual(whosePayslip('Patricia Lee', staff, 7), { id: 7, sure: true }, 'a name filed under someone before is remembered');
+  assert.deepStrictEqual(whosePayslip('Chris New', staff, 7), { id: null, candidates: [9, 7] }, 'remembered for one person, but somebody else now has exactly that name: ask');
+  assert.deepStrictEqual(whosePayslip('Chris New', staff, 9), { id: 9, sure: true });
+  assert.deepStrictEqual(whosePayslip('Chris New', staff, 99), { id: 9, sure: true }, 'a remembered person who is no longer on payroll is ignored');
+  assert.deepStrictEqual(whosePayslip('Nobody Here', staff), { id: null, candidates: [] });
+  assert.deepStrictEqual(whosePayslip('', staff, 7), { id: null, candidates: [] });
+  // Two people of the same name: the one still here is suggested, never assumed; memory settles it
+  const namesakes = [{ id: 1, name: 'Pat Lee', active: true }, { id: 2, name: 'Pat Lee', active: false }];
+  assert.deepStrictEqual(whosePayslip('Pat Lee', namesakes), { id: 1, sure: false, candidates: [1, 2] });
+  assert.deepStrictEqual(whosePayslip('Pat Lee', namesakes, 2), { id: 2, sure: true });
+  assert.deepStrictEqual(whosePayslip('Pat Lee', namesakes.map(p => ({ ...p, active: true }))), { id: null, candidates: [1, 2] });
+  // A longer name that fits two people, one of whom has left
+  assert.deepStrictEqual(whosePayslip('Sam Lee Carter Jones', [{ id: 1, name: 'Sam Lee', active: true }, { id: 2, name: 'Sam Lee Carter', active: false }]), { id: 1, sure: false, candidates: [1, 2] });
 
   console.log('payslip reading tests passed');
 })().catch(e => { console.error(e); process.exit(1); });
