@@ -3196,9 +3196,15 @@ function payToDoCount(overviews) {
   const now = payNow(), rows = overviews[now.year] || [];
   return (payWeekStarted() ? getUnpaidThisMonth(rows, now.year, now.month).length : 0) + payAttention(overviews).length;
 }
+// The years that count towards what needs attention now: this year, last year until the end
+// of March, and an earlier year with a month still set aside (as last fetched)
+function payAttentionYears() {
+  const now = payNow();
+  return Object.fromEntries(Object.entries(_pay.data).filter(([y]) => Number(y) === now.year || (Number(y) === now.year - 1 && now.month <= 3) || (_pay.laterYears || []).includes(Number(y))));
+}
 function paySetBadge() {
   if (!_pay.data[payNow().year]) return;
-  updateSalaryBadge(payToDoCount(_pay.data));
+  updateSalaryBadge(payToDoCount(payAttentionYears()));
 }
 // Tap an amount to copy it (for the banking app): the plain number, no pound sign or commas
 function payCopy(amount) {
@@ -3230,9 +3236,10 @@ async function loadSalaryPage() {
   try {
     // The year on screen, this year (for what needs attention), last year while it is still
     // fresh, and any earlier year with a month still set aside to pay later
-    const later = await payLaterBefore();
-    const years = [...new Set([_pay.year, now.year, ...(now.month <= 3 ? [now.year - 1] : []), ...later.years])];
-    await Promise.all(years.map(payFetchYear));
+    const years = [...new Set([_pay.year, now.year, ...(now.month <= 3 ? [now.year - 1] : [])])];
+    const [later] = await Promise.all([payLaterBefore(), ...years.map(payFetchYear)]);
+    _pay.laterYears = later.years;
+    await Promise.all(later.years.filter(y => !years.includes(y)).map(payFetchYear));
   } catch (e) {
     console.error('loadSalaryPage error:', e);
     body.innerHTML = `<div class="card pay-card"><div class="ep-empty">Could not load the salary page: ${esc(e.message || 'no connection')}. <button class="co-link" onclick="loadSalaryPage()">Try again</button></div></div>`;
@@ -3264,7 +3271,7 @@ function renderSalaryPage() {
   const body = document.getElementById('salaryBody');
   if (!body) return;
   const now = payNow(), { year, month } = _pay, isNow = year === now.year && month === now.month;
-  const attention = payAttention(_pay.data);
+  const attention = payAttention(payAttentionYears());
   const head = `<div class="pay-top">
       <div class="pay-switch">
         <button class="pay-arrow" onclick="payStep(-1)" aria-label="${_pay.view === 'year' ? 'Previous year' : 'Previous month'}">‹</button>
