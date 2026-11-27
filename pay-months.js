@@ -203,15 +203,19 @@ function payslipDues({ slips, gross, history, annual, months, none = [] }) {
  * year is kept the way a running account is, to the penny, and a deduction counts exactly
  * as money paid does:
  *
- *   1. A month's own payment goes to that month first, then its own deduction.
+ *   1. A payment pays the oldest month still owing first, the way money on account does,
+ *      and then the month it was logged in. (24,000 a year and 6,000 paid in April, with
+ *      nothing before: January, February and March are paid, April is still to pay.)
+ *      A deduction is taken off the month it is dated in.
  *   2. What the month still needs is met from what was carried forward, oldest first.
  *   3. Whatever the month did not need (a payment or a deduction bigger than its pay) goes
  *      to the oldest month still owing, and what is left after that is carried forward to
  *      the months that follow.
  *
  * (January's payment for four months covers February to April; a double payment in May
- * covers a missed April; a missed February followed by ordinary payments stays missed; a
- * deduction of three months' pay in July leaves August and September with nothing to pay.)
+ * covers a missed April; somebody paid a month in arrears every month has only the latest
+ * month to pay; a deduction of three months' pay in July leaves August and September with
+ * nothing to pay.)
  * Anything logged before the person's first month is carried forward into it, and anything
  * after their last month goes to whatever is still owing. A month marked 'none', or one
  * with no working day of theirs in it, is worth nothing.
@@ -237,8 +241,10 @@ function payslipDues({ slips, gross, history, annual, months, none = [] }) {
  * Each month: { month, due, logged, deduction, paid, covered, short, skip, status, left,
  *               taken, advance, from, made_up, made_up_in, back, back_to, ahead,
  *               brought, brought_from, passed, balance }
- *   paid        a payment is logged in the month, or it was settled another way (`covered`)
- *   short       a payment is logged in it, but the month is still owed this much
+ *   applied     how much of the month's own payment went to the month itself (the rest went
+ *               to older months first: `back`)
+ *   paid        some of its own payment went to it, or it was settled another way (`covered`)
+ *   short       some of its own payment went to it, but the month is still owed this much
  *   left        what to send for it: its pay less everything already put towards it
  *   taken       how much of its pay was met by its own deduction
  *   advance     how much was met by what was carried forward, and `from` the months that
@@ -288,7 +294,7 @@ function contractorYear({ months, payments, deductions = {}, skips = {} }) {
   // What a month did not need, paid or deducted in month `by`: towards the oldest months
   // still owing, then any small shortfall still waiting, and the rest carried forward.
   // { back: what went to older months, to: which ones, on: what was carried forward }
-  const passOn = (by, spare) => {
+  const passOn = (by, spare, keep = true) => {
     const to = [];
     let back = 0;
     for (const r of rows) {
@@ -311,6 +317,8 @@ function contractorYear({ months, payments, deductions = {}, skips = {} }) {
       if (!to.includes(r.month)) to.push(r.month);
     }
     waiting = waiting.filter(w => w.amount > 0.004);
+    // (`keep` false: what is left is handed back, for the month it was logged in)
+    if (!keep) return { back, to, rest: Math.max(0, round2(spare)) };
     const on = spare > 0.004 ? round2(spare) : 0;
     carry(by, on);
     return { back, to, on };
@@ -326,15 +334,19 @@ function contractorYear({ months, payments, deductions = {}, skips = {} }) {
     // (a small shortfall passed on by the months before is asked for with this month's pay)
     if (due > 0 && waiting.length) { r.brought = debtOf(); r.broughtFrom = [...new Set(waiting.flatMap(w => w.from))].sort((a, b) => a - b); waiting = []; }
     r.owing = round2(due + r.brought);
-    const own = Math.min(got, r.owing);
+    // (a payment pays the oldest month still owing first)
+    const first = got > 0.004 ? passOn(row.month, got, false) : { back: 0, to: [], rest: 0 };
+    const money = got > 0.004 ? first.rest : 0;
+    const own = Math.min(money, r.owing);
+    r.applied = own;
     r.owing = round2(r.owing - own);
     r.taken = Math.min(off, r.owing);
     r.owing = round2(r.owing - r.taken);
     const drawn = draw(r.owing);
     r.advance = drawn.used; r.from = drawn.from;
     r.owing = round2(r.owing - drawn.used);
-    const spare = passOn(row.month, round2(got - own + off - r.taken));
-    r.back = spare.back; r.backTo = spare.to; r.ahead = spare.on;
+    const spare = passOn(row.month, round2(money - own + off - r.taken));
+    r.back = round2(first.back + spare.back); r.backTo = [...new Set([...first.to, ...spare.to])]; r.ahead = spare.on;
     // Within half a percent of settled is settled: the pounds or pence go on to the next month
     if (due > 0 && r.owing > 0.004 && r.owing <= near) settle(r);
     rows.push(r);
@@ -360,12 +372,13 @@ function contractorYear({ months, payments, deductions = {}, skips = {} }) {
     const settled = r.owing <= 0.004;
     // Worth nothing: set aside as nothing owed, or no working day of theirs fell in it
     const nothing = r.skip === 'none' || (r.due <= 0.004 && !(r.got > 0));
-    const covered = !nothing && !(r.got > 0) && settled;
-    const paid = !nothing && (r.got > 0 || covered);
-    const short = r.got > 0 && !settled ? r.owing : 0;
+    const own = r.applied > 0.004;
+    const covered = !nothing && !own && settled;
+    const paid = !nothing && (own || covered);
+    const short = own && !settled ? r.owing : 0;
     const left = nothing || settled ? 0 : r.owing;
     const status = nothing ? 'none' : short ? 'short' : paid ? 'paid' : r.skip === 'later' ? 'later' : 'due';
-    return { month: r.month, due: r.due, logged: r.got, deduction: r.off, paid, covered, short, over: 0, source: 'salary', skip: r.skip, status, left,
+    return { month: r.month, due: r.due, logged: r.got, applied: round2(r.applied), deduction: r.off, paid, covered, short, over: 0, source: 'salary', skip: r.skip, status, left,
       taken: round2(r.taken), advance: r.advance, from: r.from, made_up: r.later, made_up_in: r.laterIn, back: r.back, back_to: r.backTo, ahead: r.ahead,
       brought: r.brought, brought_from: r.broughtFrom, passed: r.passed, balance: r.balance };
   });

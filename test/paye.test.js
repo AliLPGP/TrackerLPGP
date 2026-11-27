@@ -345,13 +345,23 @@ const slip = (over = {}) => ({
   assert.deepStrictEqual(ahead.map(r => r.status), ['paid', 'paid', 'paid', 'paid', 'paid', 'due']);
   assert.deepStrictEqual(ahead.map(r => r.covered), [false, true, true, true, false, false]);
   assert.strictEqual(ahead[5].left, 8000);
-  // A missed month made up with a double payment the month after is settled; one never made up stays missed
+  // A payment pays the oldest month still owing first: 24,000 a year and 6,000 paid in April
+  // pays January to March, and April is still to pay; 7,000 leaves 1,000 of April to pay
+  const year2k = Array.from({ length: 12 }, (_, i) => ({ month: i + 1, due: 2000, whole: true }));
+  const april = contractorYear({ months: year2k, payments: [pay(4, 6000)] });
+  assert.deepStrictEqual([april.months.slice(0, 5).map(r => r.status), april.months[3].left, april.remaining], [['paid', 'paid', 'paid', 'due', 'due'], 2000, 18000]);
+  assert.deepStrictEqual([april.months[0].made_up_in, april.months[3].back, april.months[3].back_to, april.months[3].applied], [[4], 6000, [1, 2, 3], 0]);
+  const april7 = contractorYear({ months: year2k, payments: [pay(4, 7000)] });
+  assert.deepStrictEqual([april7.months[3].status, april7.months[3].left, april7.months[3].applied, april7.remaining], ['short', 1000, 1000, 17000]);
+  // A missed month made up with a double payment the month after is settled
   const madeUp = contractorMonths({ months, payments: [pay(1, 8000), pay(2, 8000), pay(3, 8000), pay(5, 16000)] });
   assert.deepStrictEqual(madeUp.map(r => r.status), ['paid', 'paid', 'paid', 'paid', 'paid', 'due']);
   assert.strictEqual(madeUp[3].covered, true);
+  // ...and a month missed and never made up leaves the latest month to pay, each payment
+  // having gone to the oldest month owing (paid a month in arrears)
   const missed = contractorMonths({ months, payments: [pay(1, 8000), pay(3, 8000), pay(4, 8000), pay(5, 8000)] });
-  assert.deepStrictEqual(missed.map(r => r.status), ['paid', 'due', 'paid', 'paid', 'paid', 'due']);
-  assert.deepStrictEqual([missed[1].left, missed[1].covered], [8000, false]);
+  assert.deepStrictEqual(missed.map(r => r.status), ['paid', 'paid', 'paid', 'paid', 'due', 'due']);
+  assert.deepStrictEqual([missed[1].covered, missed[1].made_up_in, missed[4].left], [true, [3], 8000]);
   // Part of a month already paid ahead
   const partly = contractorMonths({ months, payments: [pay(1, 12000)] });
   assert.deepStrictEqual([partly[1].paid, partly[1].left, partly[2].left], [false, 4000, 8000]);
@@ -368,17 +378,18 @@ const slip = (over = {}) => ({
   assert.deepStrictEqual([unpaidOff[0].left, unpaidOff[0].taken, unpaidOff[0].status, unpaidOff[1].left], [7800, 200, 'due', 8000]);
   assert.deepStrictEqual(contractorMonths({ months: [], payments: [] }), []);
 
-  // Paid in part and never made up: the month is short by what is still owing, and says so
+  // Paid in part: the next payment makes that month up first, and the shortfall moves on to
+  // the latest month, which is what is still owed
   const partPaid = contractorMonths({ months, payments: [pay(1, 8000), pay(2, 3000), pay(3, 8000)] });
-  assert.deepStrictEqual(partPaid.map(r => r.status), ['paid', 'short', 'paid', 'due', 'due', 'due']);
-  assert.deepStrictEqual([partPaid[1].paid, partPaid[1].short, partPaid[1].left], [true, 5000, 5000]);
+  assert.deepStrictEqual(partPaid.map(r => r.status), ['paid', 'paid', 'short', 'due', 'due', 'due']);
+  assert.deepStrictEqual([partPaid[1].made_up, partPaid[2].short, partPaid[2].left, partPaid[2].applied], [5000, 5000, 5000, 3000]);
   // ...made up the month after: settled
   assert.deepStrictEqual(contractorMonths({ months, payments: [pay(1, 8000), pay(2, 3000), pay(3, 13000)] }).map(r => r.status).slice(0, 3), ['paid', 'paid', 'paid']);
-  // ...made up in part: short by the rest
-  assert.strictEqual(contractorMonths({ months, payments: [pay(1, 8000), pay(2, 3000), pay(3, 10000)] })[1].short, 3000);
-  // A later payment that goes part of the way towards a missed month leaves the rest owing on it
+  // ...made up in part: the latest month is short by the rest
+  assert.strictEqual(contractorMonths({ months, payments: [pay(1, 8000), pay(2, 3000), pay(3, 10000)] })[2].short, 3000);
+  // A later payment pays a missed month first, and its own month is owed what is left
   const partWay = contractorMonths({ months, payments: [pay(1, 8000), pay(3, 12000)] });
-  assert.deepStrictEqual([partWay[1].status, partWay[1].left, partWay[2].status], ['due', 4000, 'paid']);
+  assert.deepStrictEqual([partWay[1].status, partWay[1].covered, partWay[2].status, partWay[2].left], ['paid', true, 'short', 4000]);
   // Paid ahead, then a smaller payment: nothing is short (the advance makes up the month), and what is left of the advance goes to the next
   const aheadThenLess = contractorMonths({ months, payments: [pay(1, 16000), pay(2, 3000)] });
   assert.deepStrictEqual([aheadThenLess[1].status, aheadThenLess[1].short, aheadThenLess[2].status, aheadThenLess[2].left], ['paid', 0, 'due', 5000]);
@@ -390,6 +401,9 @@ const slip = (over = {}) => ({
   // Someone who left in March, paid for March in April: March is settled
   const leaver = contractorMonths({ months: months.slice(0, 3), payments: [pay(1, 8000), pay(2, 8000), pay(4, 8000)] });
   assert.deepStrictEqual([leaver.map(r => r.status), leaver[2].covered], [['paid', 'paid', 'paid'], true]);
+  // A payment logged in a month that went entirely to older months leaves that month to pay, not "part paid"
+  const allBack = contractorMonths({ months, payments: [pay(2, 8000)] });
+  assert.deepStrictEqual([allBack[0].status, allBack[1].status, allBack[1].applied, allBack[1].left], ['paid', 'due', 0, 8000]);
   // Pay logged by hand is seldom to the penny: a month within half a percent of its pay is
   // settled (a bank fee, a rounded figure), and the difference goes on to the next month.
   // Nothing is dropped: 23,920 paid against 24,000 leaves March 80 short.
@@ -428,15 +442,17 @@ function checkAccount(y, say) {
     // Every month's pay (and any small shortfall asked for with it) is accounted for: its own
     // payment, its deduction, what was carried forward, what came later, what went on to the
     // next month, and what is left
-    const asked = p2(r.due + r.brought), own = Math.min(r.logged, asked);
+    // (`applied`: what of the month's own payment was left for it after older months)
+    const asked = p2(r.due + r.brought), own = r.applied;
+    assert.ok(own <= Math.min(r.logged, asked) + 0.005, say);
     assert.ok(r.left >= 0 && r.left <= asked + 0.005 && r.taken <= r.deduction + 0.005 && r.advance >= 0 && r.made_up >= 0 && r.passed >= 0 && r.back >= 0 && r.ahead >= 0, say);
     assert.ok(Math.abs(own + r.taken + r.advance + r.made_up + r.passed + r.left - asked) < 0.006, `month ${r.month} does not add up: ` + say);
     assert.ok(r.passed <= tolerance + 0.005, say);
     assert.ok(r.left === 0 || r.left > tolerance, `month ${r.month} is left owing a sum small enough to be settled: ` + say);
-    assert.strictEqual(r.status === 'short', r.logged > 0 && r.left > 0, say);
+    assert.strictEqual(r.status === 'short', r.applied > 0 && r.left > 0, say);
     assert.strictEqual(r.short, r.status === 'short' ? r.left : 0, say);
     if (r.status === 'none') assert.deepStrictEqual([r.left, r.paid], [0, false], say);
-    if (r.covered) assert.ok(!(r.logged > 0) && r.left === 0, say);
+    if (r.covered) assert.ok(!(r.applied > 0) && r.left === 0, say);
   }
 }
 {
@@ -451,9 +467,10 @@ function checkAccount(y, say) {
   assert.deepStrictEqual([uneven.months[11].left, uneven.left, uneven.credit, uneven.remaining], [1000, 1000, 0, 1000]);
   // Where the account stood month by month: behind until June caught up, ahead from July
   assert.deepStrictEqual(uneven.months.map(r => r.balance), [0, -650, -150, -2950, -4950, 50, 10700, 8400, 8400, 5950, 3000, -1000]);
-  // February's shortfall was made up in March and June; June's extra went to February, April and May
-  assert.deepStrictEqual([uneven.months[1].made_up, uneven.months[1].made_up_in, uneven.months[3].made_up_in, uneven.months[5].ahead], [650, [3, 6], [6], 50]);
-  assert.deepStrictEqual([uneven.months[2].back, uneven.months[2].back_to, uneven.months[5].back, uneven.months[5].back_to], [500, [2], 4950, [2, 4, 5]]);
+  // Each payment made up the oldest month still owing first: March's made up February,
+  // April's March, May's April, and June's April and May; June's extra was carried forward
+  assert.deepStrictEqual([uneven.months[1].made_up, uneven.months[1].made_up_in, uneven.months[3].made_up_in, uneven.months[5].ahead], [650, [3], [5, 6], 50]);
+  assert.deepStrictEqual([uneven.months[2].back, uneven.months[2].back_to, uneven.months[5].back, uneven.months[5].back_to], [650, [2], 4950, [4, 5]]);
   // July: its 650 and 3,350 of the deduction settle it, and the rest of the deduction is carried forward
   assert.deepStrictEqual([uneven.months[6].taken, uneven.months[6].ahead, uneven.months[6].deduction], [3350, 10650, 14000]);
   // October: 1,550 paid, the other 2,450 from what July carried forward
@@ -484,10 +501,10 @@ function checkAccount(y, say) {
   // A rounded-down figure every month, topped up in December: level too
   const roundDown = contractorYear({ months: year(2083.33), payments: pays([...Array(11).fill(2080), 2119.96]) });
   assert.deepStrictEqual([roundDown.remaining, roundDown.rounding, roundDown.months.every(r => r.status === 'paid')], [0, 0, true]);
-  // A little under every month is not written off: once it comes to more than half a percent
-  // of a month it is owed, on the month it reached that (12 short a month on 2,500: every other month)
+  // A little under every month is not written off: each payment makes up the month before
+  // first, so what is owed moves on to the latest month (12 short a month on 2,500: 144 on December)
   const steadyUnder = contractorYear({ months: year(2500), payments: pays(Array(12).fill(2488)) });
-  assert.deepStrictEqual([steadyUnder.remaining, steadyUnder.rounding, steadyUnder.months.map(r => r.short).join()], [144, 0, [0, 24, 0, 24, 0, 24, 0, 24, 0, 24, 0, 24].join()]);
+  assert.deepStrictEqual([steadyUnder.remaining, steadyUnder.rounding, steadyUnder.months.map(r => r.short).join()], [144, 0, [...Array(11).fill(0), 144].join()]);
   // Round pounds on a pay that does not divide (2,083 on 2,083.33): no month is short, the
   // pence roll on, and the 3.96 still waiting at the end of the year is let go
   const pence = contractorYear({ months: year(2083.33), payments: pays(Array(12).fill(2083)) });
@@ -503,7 +520,7 @@ function checkAccount(y, say) {
   const rest = Array(10).fill(2083.33);
   const behind = contractorYear({ months: year(2083.33), payments: pays([0, 4166, ...rest]) });
   const aheadOf = contractorYear({ months: year(2083.33), payments: pays([4166, 0, ...rest]) });
-  assert.deepStrictEqual([behind.remaining, behind.rounding, behind.months[0].status, behind.months[0].covered, behind.months[0].left, behind.months[0].passed], [0, 0.66, 'paid', true, 0, 0.66]);
+  assert.deepStrictEqual([behind.remaining, behind.rounding, behind.months[0].status, behind.months[0].covered, behind.months[0].left, behind.months[1].passed], [0, 0.66, 'paid', true, 0, 0.66]);
   assert.deepStrictEqual([aheadOf.remaining, aheadOf.rounding, aheadOf.months[1].status, aheadOf.months[1].passed], [0, 0.66, 'paid', 0.66]);
   // ...nor short, when part of it was paid in its own month
   const partThen = contractorYear({ months: year(2083.33), payments: pays([1000, 3166, ...rest]) });
@@ -512,9 +529,9 @@ function checkAccount(y, say) {
   const pesos = contractorYear({ months: year(50000), payments: pays([0, 99990, ...Array(10).fill(50000)]) });
   assert.deepStrictEqual([pesos.months[0].status, pesos.months[0].left, pesos.remaining, pesos.rounding], ['paid', 0, 0, 10]);
   // What is let go at the end is never more than half a percent of a month: any more is owed,
-  // on the last month (January made up in April to within 3, on top of March's 4 short)
+  // on the last month (each payment made up the month before: February 4 short, March 3 short)
   const two = contractorYear({ months: year(1000).slice(0, 3), payments: pays([0, 1000, 996, 997]) });
-  assert.deepStrictEqual([two.rounding, two.remaining, two.months[0].status, two.months[2].status, two.months[2].short, two.months[2].brought, two.months[2].brought_from, two.months[2].passed], [0, 7, 'paid', 'short', 7, 3, [1], 0]);
+  assert.deepStrictEqual([two.rounding, two.remaining, two.months[0].status, two.months[2].status, two.months[2].left, two.months[2].brought, two.months[2].brought_from, two.months[2].passed], [0, 7, 'paid', 'due', 7, 4, [2], 0]);
   // A leaver's last month paid 5 under and topped up the month after: June was made up in
   // July, nothing is let go, and nothing is left
   const topped = contractorYear({ months: year(2000).slice(0, 6), payments: pays([2000, 2000, 2000, 2000, 2000, 1995, 5]) });
