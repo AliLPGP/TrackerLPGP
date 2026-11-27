@@ -1342,6 +1342,13 @@ app.get('/api/employee/salary', requireAuth, async (req, res) => {
       monthly_pay:      owedYear.monthlyPay ?? null,
       monthly_pay_from: owedYear.months ? (owedYear.fromPayslip ? 'payslip' : 'estimate') : null,
       salary_target:    netSalaryTarget,
+      // A row per month, as on the admin's Salary page, for their own card: what each month
+      // pays, what went out for it and what is left. Only what a person can already work out
+      // from their own payments and their card: no notes, no payslip tax breakdown, and nothing
+      // on how a day off was treated (that is for the admin alone).
+      months: (owedYear.monthRows || []).map(m => ({ month: m.month, due: m.due, logged: m.logged, applied: m.applied, status: m.status,
+        paid: m.paid, covered: !!m.covered, short: m.short || 0, left: m.left, advance: m.advance || 0, from: m.from || [],
+        made_up: m.made_up || 0, made_up_in: m.made_up_in || [], balance: m.balance })),
       start_date:       startDateStr,
       is_terminated:    isTerminated,
       pro_rated:        !isTerminated ? earnedPay : null,

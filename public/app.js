@@ -3210,21 +3210,39 @@ function payProgress(row, month) {
 }
 // The bar: paid so far (the part that already covers months to come drawn striped), what is
 // owed now, and the rest of the year still to come
-function payBarHtml(p, cur, year) {
+function payBarHtml(p, cur, year, { staff = false } = {}) {
   const share = v => (p.total > 0.005 ? Math.max(0, Math.min(100, v / p.total * 100)) : 0);
   const aheadW = share(p.aheadPaid), paidW = Math.max(0, share(p.paid) - aheadW), owedW = Math.min(100 - paidW - aheadW, share(p.owed));
   const done = p.rem <= 0.005, to = payMonthNames(p.towards, 'the months to come');
-  const flag = p.over > 0.005 ? (p.overpaid ? ['is-over', `${payMoneyShort(p.over, cur)} overpaid`] : ['is-ahead', `${payMoneyShort(p.over, cur)} ahead for the year`])
+  const flag = p.over > 0.005 ? (staff ? ['is-ahead', `${year} fully paid`] : p.overpaid ? ['is-over', `${payMoneyShort(p.over, cur)} overpaid`] : ['is-ahead', `${payMoneyShort(p.over, cur)} ahead for the year`])
     : p.ahead > 0.005 ? ['is-ahead', `${payMoneyShort(p.ahead, cur)} of ${to} already paid`]
       : p.late > 0.005 ? ['is-late', `+ ${payMoneyShort(p.late, cur)} from ${payMonthNames(p.lateIn, 'earlier months')}`]
         : p.pending > 0.005 ? ['is-over', `${payMoneyShort(p.pending, cur)} of deductions to take off`] : null;
-  const words = p.over > 0.005 ? (p.overpaid ? `Paid ${payMoneyShort(p.paid, cur)}, ${payMoneyShort(p.over, cur)} more than the ${payMoneyShort(p.worth, cur)} that ${year} comes to`
+  const words = p.over > 0.005 && staff ? `${year} fully paid: ${payMoneyShort(p.paid, cur)} received` : p.over > 0.005 ? (p.overpaid ? `Paid ${payMoneyShort(p.paid, cur)}, ${payMoneyShort(p.over, cur)} more than the ${payMoneyShort(p.worth, cur)} that ${year} comes to`
       : `${payMoneyShort(p.paid, cur)} paid: with deductions, ${payMoneyShort(p.over, cur)} more than ${year} comes to`)
     : `${p.pct}% of ${year} paid: ${payMoneyShort(p.paid, cur)} of ${payMoneyShort(p.worth, cur)}${p.owed > 0.005 ? `, ${payMoneyShort(p.owed, cur)} owed now` : ''}${p.late > 0.005 ? `, ${payMoneyShort(p.late, cur)} of it from ${payMonthNames(p.lateIn, 'earlier months')}` : ''}${p.ahead > 0.005 ? `, ${payMoneyShort(p.ahead, cur)} of ${to} already paid` : ''}`;
   return `<div class="pay-meter${done ? ' is-done' : ''}" role="img" aria-label="${esc(words)}" title="${esc(words)}">
       <div class="pay-meter-track">${paidW > 0 ? `<i class="is-paid" style="width:${paidW.toFixed(2)}%"></i>` : ''}${aheadW > 0 ? `<i class="is-ahead" style="width:${aheadW.toFixed(2)}%"></i>` : ''}${owedW > 0 ? `<i class="is-owed${p.late > 0.005 ? ' is-late' : ''}" style="width:${owedW.toFixed(2)}%"></i>` : ''}</div>
       <div class="pay-meter-text"><b>${p.pct}%</b><span>${p.worth > 0.005 || p.paid > 0.005 ? `${payMoneyShort(p.paid, cur)} of ${payMoneyShort(Math.max(0, p.worth), cur)}` : 'Nothing owed'}</span>${flag ? `<span class="pay-meter-flag ${flag[0]}">${esc(flag[1])}</span>` : ''}</div>
     </div>`;
+}
+// A staff member's own months, in plain words: what they received in the month, and whether
+// that month's pay is settled (by its own payment, or by their other payments and deductions,
+// which go to the oldest month owing first). Nothing here that is for the admin alone: no
+// month-by-month deductions.
+function payStaffMonthsHtml(s) {
+  const cur = s.currency || 'GBP', year = Number(s.year), now = payNow();
+  const rows = (s.months || []).map(m => {
+    const gone = year < now.year || (year === now.year && m.month < now.month);
+    const got = m.logged > 0.005 ? payMoney(m.logged, cur) : '—';
+    let chip, note = '';
+    if (m.status === 'none') chip = '<span class="co-chip">Nothing due</span>';
+    else if (m.short > 0.005) { chip = `<span class="co-chip ${gone ? 'is-late' : 'is-soon'}">Part paid</span>`; note = `${payMoney(m.left, cur)} still to come`; }
+    else if (m.paid) { chip = '<span class="co-chip is-ok">Paid</span>'; if (!(m.logged > 0.005)) note = 'covered by your other payments'; }
+    else { chip = `<span class="co-chip ${gone ? 'is-late' : 'is-soon'}">${gone ? 'Not paid yet' : 'To come'}</span>`; note = `${payMoney(m.left, cur)} due${m.left + 0.005 < m.due ? ' (the rest is already covered)' : ''}`; }
+    return `<div class="emp-pay-month"><b>${MONTHS[m.month]}</b><span>${esc(note)}</span><strong>${got}</strong>${chip}</div>`;
+  }).join('');
+  return rows ? `<details class="emp-pay-months"><summary>Month by month</summary><div class="emp-pay-month emp-pay-month--head"><b>Month</b><span></span><strong>Received</strong><span>Pay for the month</span></div>${rows}</details>` : '';
 }
 // What the parts of a bar mean
 const PAY_BAR_KEY = '<span><i class="pay-key-bar is-paid"></i>Paid so far</span><span><i class="pay-key-bar is-ahead"></i>Already paid for months to come</span><span><i class="pay-key-bar is-owed"></i>Owed now</span><span><i class="pay-key-bar is-owed is-late"></i>Owed from earlier months</span>';
@@ -8823,13 +8841,21 @@ async function loadEmployeeDashboard(user) {
           '</div>'
         : '';
 
+      // The same reading of the year as the admin's Salary page: a bar of what has gone out,
+      // what is already paid ahead, and what is owed; then each month and where it stands
+      const prog = Array.isArray(s.months) && s.months.length ? payProgress(s, payAsOf(Number(s.year))) : null;
+      const progHtml = prog ? '<div style="padding:18px 20px;border-bottom:1px solid var(--border)">' +
+          '<div class="emp-pay-head"><span>Paid so far in ' + s.year + '</span><b>' + (prog.rem <= 0.005 ? 'Fully paid' : sSym + Math.max(0, prog.rem).toLocaleString('en-GB', { minimumFractionDigits: 2 }) + ' still to come') + '</b></div>' +
+          payBarHtml(prog, s.currency || 'GBP', Number(s.year), { staff: true }) +
+          payStaffMonthsHtml(s) +
+        '</div>' : '';
       salHtml =
         '<div class="card" style="margin-top:16px">' +
           '<div class="card-header"><span class="card-title">My Pay — ' + s.year + '</span>' +
             '<span style="font:700 11px/1 var(--font-mono);color:var(--muted)">' + (s.employment_type === 'self_employed' ? 'SELF-EMPLOYED' : 'PAYROLL') + '</span>' +
           '</div>' +
-          // Progress bar
-          '<div style="padding:18px 20px;border-bottom:1px solid var(--border)">' +
+          // Progress bar (an answer from before the server sent months has the old one)
+          (prog ? progHtml : '<div style="padding:18px 20px;border-bottom:1px solid var(--border)">' +
             '<div style="display:flex;justify-content:space-between;font:600 12px/1 var(--font-mono);color:var(--muted);margin-bottom:10px">' +
               '<span>Payments received</span><span style="color:' + barCol + '">' + pctPaid + '%</span>' +
             '</div>' +
@@ -8842,7 +8868,7 @@ async function loadEmployeeDashboard(user) {
                 ? '<span style="color:var(--positive)">Fully paid ✓</span>'
                 : '<span style="color:' + outColor + '">' + sSym + Math.abs(netRemaining).toLocaleString('en-GB',{minimumFractionDigits:2}) + ' remaining</span>') +
             '</div>' +
-          '</div>' +
+          '</div>') +
           // Stat row
           '<div class="emp-pay-stats" style="display:flex;border-bottom:1px solid var(--border)">' +
             '<div style="flex:1;padding:16px 20px;border-right:1px solid var(--border)">' +
@@ -8868,9 +8894,10 @@ async function loadEmployeeDashboard(user) {
                 : null;
               const lp2Amt   = lastPay2 ? sSym + parseFloat(lastPay2.amount||0).toLocaleString('en-GB',{maximumFractionDigits:0}) : '—';
               const lp2Date  = lastPay2 ? (MONTHS[Number(lastPay2.payment_month)]||'') + (lastPay2.payment_year ? ' '+lastPay2.payment_year : '') : 'No payments yet';
-              const remAmt   = isOverpaid ? 'Paid ✓' : sSym + Math.abs(netRemaining).toLocaleString('en-GB',{maximumFractionDigits:0});
-              const remSub   = isOverpaid ? 'fully settled' : 'left this year';
-              const remColor = isOverpaid ? 'var(--positive)' : netRemaining === 0 ? 'var(--muted)' : outColor;
+              const left2    = prog ? Math.max(0, prog.rem) : netRemaining, done2 = prog ? prog.rem <= 0.005 : isOverpaid;
+              const remAmt   = done2 ? 'Paid ✓' : sSym + Math.abs(left2).toLocaleString('en-GB',{maximumFractionDigits:0});
+              const remSub   = done2 ? 'fully settled' : 'left this year';
+              const remColor = done2 ? 'var(--positive)' : left2 === 0 ? 'var(--muted)' : outColor;
               return '<div style="flex:1;padding:16px 20px;border-left:1px solid var(--border)">' +
                   '<div style="font:600 9px/1 var(--font-mono);text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:8px">Last Payment</div>' +
                   '<div style="font:700 22px/1 var(--font-mono);color:' + (lastPay2 ? 'var(--positive)' : 'var(--muted)') + '">' + lp2Amt + '</div>' +
