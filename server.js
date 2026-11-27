@@ -412,7 +412,7 @@ const DAY_OFF_ALLOWANCE = { payroll: 20, self_employed: 5 };
 
 const { allowanceFor: allowanceForYear } = require('./allowance');
 const { selfEmployedYearTarget, salaryOnDate, payBands, periodsFrom, payrollMonths, payrollYear } = require('./salary-periods');
-const { trackerGross, payslipDues, contractorMonths } = require('./pay-months');
+const { trackerGross, payslipDues, contractorYear } = require('./pay-months');
 const { readPayslip, whosePayslip, matchPerson, figuresToKeep, nameKey } = require('./payslip-read');
 const allowanceFor = (emp, year) => allowanceForYear(emp, year, DAY_OFF_ALLOWANCE);
 
@@ -521,7 +521,8 @@ const payFor = (req, row) => (req.admin && req.admin.role === 'admin' ? row : wi
 // payslips set the monthly pay until this year has one. With payslips on file (`slips`,
 // as read by payslip-read.js) each month is the figure its payslip should show, worked
 // out the way the payroll software does (pay-months.js payslipDues).
-// Self-employed: the year's target (see yearPayFigures) less deductions, less what was paid.
+// Self-employed: what the months of the year still owe, counted as a running account
+// (pay-months.js contractorYear): the year's target, less deductions, less what was paid.
 // `skips` is { month: 'later' | 'none' } for months set aside on the Salary page; a month
 // marked 'none' is owed nothing. `monthRows` is a row per month for either kind of person.
 function yearOwed({ emp, year, history, annualSal, salaryTarget, startDateStr, terminationDateStr, payments, lastYearPayments, deductions,
@@ -556,14 +557,26 @@ function yearOwed({ emp, year, history, annualSal, salaryTarget, startDateStr, t
       monthlyPay: ref ? exact[ref.month].due : round2(takeHome(annualSal) * owed.rate) };
   }
   const totalPaid = payments.reduce((a, b) => a + (parseFloat(b.amount) || 0), 0);
-  // A month for each month of work, as a running balance (they are often paid ahead)
+  // A month for each month of work, kept as a running account (they are often paid ahead, or
+  // unevenly, and a deduction can be worth more than the month it falls in): contractorYear
   const worth = annualSal > 0 ? payrollMonths({ history, year, startDate: startDateStr, endDate: terminationDateStr, annual: annualSal, netMonthly: a => a / 12 }) : [];
-  const monthRows = contractorMonths({ months: worth, payments, deductions: deductionsByMonth, skips });
-  // Nothing is owed for a month marked 'none', so it comes off the year
+  const account = contractorYear({ months: worth, payments, deductions: deductionsByMonth, skips });
+  const monthRows = account.months;
+  // Nothing is owed for a month marked 'none', so it comes off the year (and with no month
+  // of work in the year at all, nothing is owed for it)
   const notOwed = worth.filter(m => skips[m.month] === 'none' && !monthRows.find(r => r.month === m.month).logged).reduce((a, m) => a + m.due, 0);
-  const target = Math.max(0, salaryTarget - notOwed), effective = target - deductions;
-  return { target: round2(target), remaining: round2(effective - totalPaid), totalPaid: round2(totalPaid), months: null, monthRows, differs: null,
-    pct: effective > 0 ? Math.min(100, Math.round(totalPaid / effective * 100)) : (totalPaid > 0 ? 100 : 0) };
+  const target = worth.length ? Math.max(0, salaryTarget - notOwed) : 0;
+  // What is left is what the months still owe, less anything paid or deducted over the
+  // year's pay, so the year and its months can never disagree. It is the year's pay, less
+  // deductions, less what was paid, to the penny, but for the small shortfall let go at the
+  // very end of the year (`rounding`: never more than half a percent of one month's pay).
+  const remaining = account.remaining, owed = Math.max(0, remaining);
+  const taken = Object.values(deductionsByMonth).reduce((a, b) => a + (parseFloat(b) || 0), 0);
+  return { target: round2(target), remaining, totalPaid: round2(totalPaid), months: null, monthRows, differs: null,
+    rounding: worth.length ? round2(target - taken - totalPaid - remaining) : 0,
+    // (the share of what is payable that has been paid: nothing paid is 0%, even when
+    // deductions have covered everything)
+    pct: totalPaid + owed > 0 ? Math.min(100, Math.round(totalPaid / (totalPaid + owed) * 100)) : 0 };
 }
 
 // Last year's payments for a payroll person (nobody else's pay is counted in months)
@@ -1611,40 +1624,6 @@ app.put('/api/payments/:id', requireAuth, requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// A payment above a self-employed person's monthly pay was counted as pay in advance, but
-// the extra was a one-off (a bonus, commission, expenses). It comes off that month's
-// payments, latest first, and is recorded as a bonus dated in that month, so the months
-// after are owed in full again and the year's figures agree.
-app.post('/api/payments/extra-is-bonus', requireAuth, requireAdmin, async (req, res) => {
-  try {
-    const employee_id = parseInt(req.body.employee_id, 10), year = parseInt(req.body.year, 10), month = parseInt(req.body.month, 10);
-    const amount = round2(parseFloat(req.body.amount));
-    if (!(employee_id > 0) || !validPayMonth(year, month) || !(amount > 0)) return res.status(400).json({ error: 'Choose the person, the month and the amount' });
-    const { rows: logged } = await q('SELECT * FROM monthly_payments WHERE employee_id = ? AND payment_year = ? AND payment_month = ? ORDER BY id', [employee_id, year, month]);
-    const total = round2(logged.reduce((a, p) => a + (parseFloat(p.amount) || 0), 0));
-    if (!logged.length || amount > total + 0.005) return res.status(409).json({ error: 'The payments for that month have changed. Reload and try again.' });
-    let excess = amount;
-    for (const p of [...logged].reverse()) {
-      if (excess <= 0.005) break;
-      const had = round2(parseFloat(p.amount));
-      if (had <= excess + 0.005) {
-        await q('DELETE FROM monthly_payments WHERE id = ?', [p.id]);
-        await logPayment(req, 'removed', { id: p.id, employee_id, payment_year: year, payment_month: month, amount: had, notes: 'Recorded as a bonus instead' });
-        excess = round2(excess - had);
-      } else {
-        await q('UPDATE monthly_payments SET amount = ? WHERE id = ?', [round2(had - excess), p.id]);
-        await logPayment(req, 'changed', { id: p.id, employee_id, payment_year: year, payment_month: month, amount: round2(had - excess), notes: 'The extra was recorded as a bonus' },
-          { payment_year: year, payment_month: month, amount: had });
-        excess = 0;
-      }
-    }
-    const last = new Date(Date.UTC(year, month, 0)).getUTCDate();
-    await q('INSERT INTO bonuses (employee_id, amount, bonus_date, reason, notes, created_by) VALUES (?, ?, ?, ?, ?, ?)',
-      [employee_id, amount, `${year}-${String(month).padStart(2, '0')}-${String(last).padStart(2, '0')}`, `Paid with ${MONTH_LONG[month - 1]} pay`, 'Moved from that month’s pay on the Salary page', req.admin.id]);
-    res.json({ success: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
 app.delete('/api/payments/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { rows } = await q('DELETE FROM monthly_payments WHERE id = ? RETURNING *', [parseInt(req.params.id, 10) || 0]);
@@ -2001,6 +1980,8 @@ async function salaryOverviewRow(emp, year, onFile = null) {
     pay_differs:         owedYear.differs || null,
     // ...and the latest payslip when it was run at the pay from before a rise that covers it
     pay_behind:          owedYear.behind || null,
+    // Self-employed: the pounds and pence let go as rounding over the year's months
+    pay_rounding:        owedYear.rounding || 0,
     has_pin:             !!emp.portal_pin
   };
 }
