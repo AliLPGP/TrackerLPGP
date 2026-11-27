@@ -3215,19 +3215,19 @@ function payBarHtml(p, cur, year) {
   const aheadW = share(p.aheadPaid), paidW = Math.max(0, share(p.paid) - aheadW), owedW = Math.min(100 - paidW - aheadW, share(p.owed));
   const done = p.rem <= 0.005, to = payMonthNames(p.towards, 'the months to come');
   const flag = p.over > 0.005 ? (p.overpaid ? ['is-over', `${payMoneyShort(p.over, cur)} overpaid`] : ['is-ahead', `${payMoneyShort(p.over, cur)} ahead for the year`])
-    : p.ahead > 0.005 ? ['is-ahead', `${payMoneyShort(p.ahead, cur)} towards ${to}`]
+    : p.ahead > 0.005 ? ['is-ahead', `${payMoneyShort(p.ahead, cur)} of ${to} already paid`]
       : p.late > 0.005 ? ['is-late', `+ ${payMoneyShort(p.late, cur)} from ${payMonthNames(p.lateIn, 'earlier months')}`]
         : p.pending > 0.005 ? ['is-over', `${payMoneyShort(p.pending, cur)} of deductions to take off`] : null;
   const words = p.over > 0.005 ? (p.overpaid ? `Paid ${payMoneyShort(p.paid, cur)}, ${payMoneyShort(p.over, cur)} more than the ${payMoneyShort(p.worth, cur)} that ${year} comes to`
       : `${payMoneyShort(p.paid, cur)} paid: with deductions, ${payMoneyShort(p.over, cur)} more than ${year} comes to`)
-    : `${p.pct}% of ${year} paid: ${payMoneyShort(p.paid, cur)} of ${payMoneyShort(p.worth, cur)}${p.owed > 0.005 ? `, ${payMoneyShort(p.owed, cur)} owed now` : ''}${p.late > 0.005 ? `, ${payMoneyShort(p.late, cur)} of it from ${payMonthNames(p.lateIn, 'earlier months')}` : ''}${p.ahead > 0.005 ? `, ${payMoneyShort(p.ahead, cur)} of it towards ${to}` : ''}`;
+    : `${p.pct}% of ${year} paid: ${payMoneyShort(p.paid, cur)} of ${payMoneyShort(p.worth, cur)}${p.owed > 0.005 ? `, ${payMoneyShort(p.owed, cur)} owed now` : ''}${p.late > 0.005 ? `, ${payMoneyShort(p.late, cur)} of it from ${payMonthNames(p.lateIn, 'earlier months')}` : ''}${p.ahead > 0.005 ? `, ${payMoneyShort(p.ahead, cur)} of ${to} already paid` : ''}`;
   return `<div class="pay-meter${done ? ' is-done' : ''}" role="img" aria-label="${esc(words)}" title="${esc(words)}">
       <div class="pay-meter-track">${paidW > 0 ? `<i class="is-paid" style="width:${paidW.toFixed(2)}%"></i>` : ''}${aheadW > 0 ? `<i class="is-ahead" style="width:${aheadW.toFixed(2)}%"></i>` : ''}${owedW > 0 ? `<i class="is-owed${p.late > 0.005 ? ' is-late' : ''}" style="width:${owedW.toFixed(2)}%"></i>` : ''}</div>
       <div class="pay-meter-text"><b>${p.pct}%</b><span>${p.worth > 0.005 || p.paid > 0.005 ? `${payMoneyShort(p.paid, cur)} of ${payMoneyShort(Math.max(0, p.worth), cur)}` : 'Nothing owed'}</span>${flag ? `<span class="pay-meter-flag ${flag[0]}">${esc(flag[1])}</span>` : ''}</div>
     </div>`;
 }
 // What the parts of a bar mean
-const PAY_BAR_KEY = '<span><i class="pay-key-bar is-paid"></i>Paid so far</span><span><i class="pay-key-bar is-ahead"></i>Paid, and covers months to come</span><span><i class="pay-key-bar is-owed"></i>Owed now</span><span><i class="pay-key-bar is-owed is-late"></i>Owed from earlier months</span>';
+const PAY_BAR_KEY = '<span><i class="pay-key-bar is-paid"></i>Paid so far</span><span><i class="pay-key-bar is-ahead"></i>Already paid for months to come</span><span><i class="pay-key-bar is-owed"></i>Owed now</span><span><i class="pay-key-bar is-owed is-late"></i>Owed from earlier months</span>';
 // How a self-employed month's pay was met, in plain words (their months are a running
 // account: see the server's contractorYear). `full` is for the person's own year, where
 // every line is given; in a list, the pounds and pence that merely rolled on to the next
@@ -3254,7 +3254,12 @@ function payMonthStory(row, m, cur, full) {
     : `${payMoney(m.deduction, cur)} deduction taken off`);
   if (m.advance > 0.005 && !small(m.advance)) out.push(`${payMoney(m.advance, cur)} ${open ? 'already ' : ''}covered from ${payMonthNames(m.from, 'earlier months')}`);
   if (m.made_up > 0.005 && !small(m.made_up)) out.push(`${payMoney(m.made_up, cur)} made up in ${payMonthNames(m.made_up_in, 'later months')}`);
-  if (moneySpare > 0.005 && (where || beyond) && !small(moneySpare)) out.push(`${payMoney(moneySpare, cur)} more than ${name} needed${where ? ` went towards ${where}` : ''}${beyond ? `${where ? ', and the rest is' : ', and'} ${beyond}` : ''}`);
+  // (a payment goes to the oldest months still owing first, then to its own month, and what
+  // is over after that goes on)
+  const moneyBack = Math.min(m.back || 0, Math.max(0, p2((m.logged || 0) - (m.applied || 0)))), moneyOn = Math.max(0, p2(moneySpare - moneyBack));
+  if (moneyBack > 0.005 && older && !small(moneyBack)) out.push(`${payMoney(moneyBack, cur)} of the ${payMoney(m.logged, cur)} logged in ${name} went to ${older} first`);
+  const ahead = on && !last ? 'later months' : '';
+  if (moneyOn > 0.005 && (ahead || beyond) && !small(moneyOn)) out.push(`${payMoney(moneyOn, cur)} more than ${name} needed${ahead ? ` went towards ${ahead}` : ''}${beyond ? `${ahead ? ', and the rest is' : ', and'} ${beyond}` : ''}`);
   // Pounds or pence under: the month's own are asked for with a later month. After the last
   // month there is none, and they are let go, whether its own or brought to it from earlier.
   const own = Math.max(0, p2(passed - brought)), theirs = p2(passed - own);
@@ -3615,13 +3620,14 @@ function payAttentionHtml(all) {
     let text, btns;
     if (it.kind === 'short') {
       text = m.payslip && m.source === 'payslip' ? `${when}: paid ${payMoney(m.logged, cur)}, the payslip says ${payMoney(m.due, cur)}`
-        : !payIsPayroll(row) ? [`${when}: ${payMoney(m.logged, cur)} of ${payMoney(m.due, cur)} paid`, ...payMonthStory(row, m, cur)].join(' · ')
+        : !payIsPayroll(row) ? [`${when}: ${payMoney(m.applied ?? m.logged, cur)} of ${payMoney(m.due, cur)} paid`, ...payMonthStory(row, m, cur)].join(' · ')
           : `${when}: paid ${payMoney(m.logged, cur)} at the amount from before the pay rise`;
       btns = `<button class="btn btn-primary btn-sm" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${m.month}, topUp: true })">Pay the rest</button>
         <button class="btn btn-ghost btn-sm" onclick="payFixShort(${id}, ${year}, ${m.month})" title="The full amount did go out: correct what was logged">It was paid in full</button>
         <button class="btn btn-ghost btn-sm" onclick="payNothingMore(${id}, ${year}, ${m.month})" title="What was paid is right and nothing more is owed for this month">Nothing more owed</button>`;
     } else {
-      text = it.kind === 'later' ? `${when}: set aside to pay later` : `${when}: no payment logged`;
+      // (a payment logged in the month may have gone to older months first)
+      text = it.kind === 'later' ? `${when}: set aside to pay later` : m.logged > 0.005 ? `${when}: the ${payMoney(m.logged, cur)} logged went to ${payMonthNames(m.back_to, 'earlier months')} first` : `${when}: no payment logged`;
       btns = `<button class="btn btn-primary btn-sm" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${m.month} })">Mark paid</button>
         <button class="btn btn-ghost btn-sm" onclick="paySkip(${id}, ${year}, ${m.month}, 'none')">Nothing owed</button>`;
     }
@@ -3647,7 +3653,7 @@ function payGroupsHtml(list, year, month, partial) {
   list.forEach(x => { const g = payGroupOf(x.row); (groups[g.key] = groups[g.key] || { ...g, items: [] }).items.push(x); });
   return Object.values(groups).sort((a, b) => (a.order - b.order) || a.key.localeCompare(b.key)).map(g => {
     const cur = payCur(g.items[0].row), n = g.items.length, people = n === 1 ? 'person' : 'people';
-    const due = g.items.filter(x => x.m.status === 'due' && x.m.left > 0.005);
+    const due = g.items.filter(x => x.m.status === 'due' && x.m.left > 0.005 && !(x.m.logged > 0));
     const owing = g.items.filter(x => (x.m.status === 'due' || x.m.status === 'short') && x.m.left > 0.005), later = g.items.filter(x => x.m.status === 'later').length;
     const done = g.items.filter(x => x.m.status === 'none' || (x.m.paid && x.m.status !== 'short')).length;
     const total = owing.reduce((a, x) => a + x.m.left, 0);
@@ -3728,7 +3734,7 @@ function payRowHtml(row, m, year, month) {
       notes.push(m.source === 'payslip' ? `${payMoney(m.logged, cur)} paid, the payslip says ${payMoney(m.due, cur)}` : `${payMoney(m.logged, cur)} paid, the amount from before the pay rise`);
     } else {
       chip = `<span class="co-chip ${gone ? 'is-late' : 'is-soon'}">Part paid</span>`;
-      notes.push(`${payMoney(m.logged, cur)} of ${payMoney(m.due, cur)} paid`, ...payMonthStory(row, m, cur));
+      notes.push(`${payMoney(m.applied ?? m.logged, cur)} of ${payMoney(m.due, cur)} paid`, ...payMonthStory(row, m, cur));
     }
     btns = `<button class="btn btn-primary btn-sm" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${month}, topUp: true })">Pay the rest</button>` + change;
   } else if (m.paid) {
@@ -3751,7 +3757,7 @@ function payRowHtml(row, m, year, month) {
     // (a payslip's figure knows nothing of the tracker's deductions, so those are offered to
     // take off; a self-employed month's figure already has them, and any advance, taken off)
     if (payroll) { if (m.deduction > 0.005) notes.push(`${payMoney(m.deduction, cur)} to take off for days off or deductions`); }
-    else if (Math.abs(m.left - m.due) > 0.005) notes.push(`${payMoney(m.due, cur)} a month`, ...payMonthStory(row, m, cur));
+    else if (Math.abs(m.left - m.due) > 0.005 || m.logged > 0.005) notes.push(...(Math.abs(m.left - m.due) > 0.005 ? [`${payMoney(m.due, cur)} a month`] : []), ...payMonthStory(row, m, cur));
     btns = `<button class="btn btn-primary btn-sm" onclick="openPayModal({ id: ${id}, year: ${year}, month: ${month} })">Mark paid</button>`
       + (m.status === 'later' ? `<button class="btn btn-ghost btn-sm" onclick="payUnskip(${m.skip_id})">Undo</button>`
         : `<button class="btn btn-ghost btn-sm" onclick="openPaySkip(${id}, ${year}, ${month})">Skip</button>`);
@@ -3810,7 +3816,7 @@ function payYearHtml(year) {
     const part = m && m.short > 0.005;
     const state = !m ? 'off' : m.status === 'none' ? 'off' : part ? 'late' : m.paid ? 'paid' : late ? 'late' : 'due';
     const tip = !m ? `${name}: not on the books` : m.status === 'none' ? `${name}: nothing owed`
-      : part ? `${name}: ${payMoney(m.logged, cur)} paid, ${payMoney(m.short, cur)} ${payIsPayroll(r) ? 'short' : 'still to pay'}`
+      : part ? `${name}: ${payMoney(payIsPayroll(r) ? m.logged : m.applied ?? m.logged, cur)} paid, ${payMoney(m.short, cur)} ${payIsPayroll(r) ? 'short' : 'still to pay'}`
       : m.covered ? `${name}: nothing to pay, ${m.advance > 0.005 ? `covered from ${payMonthNames(m.from, 'earlier months')}` : m.made_up > 0.005 ? `made up in ${payMonthNames(m.made_up_in, 'later months')}` : 'covered by a deduction'}` : m.paid ? `${name}: ${payMoney(m.logged, cur)} paid`
       : `${name}: ${payMoney(m.left, cur)} to pay${m.status === 'later' ? ', set aside to pay later' : late ? ', no payment logged' : ''}`;
     return `<button class="sc-mo is-${state} pay-dot" title="${esc(tip)}" aria-label="${esc(tip)}" onclick="event.stopPropagation();_pay.view='month';paySetMonth(${year}, ${i + 1})">${name[0]}</button>`;
@@ -3942,7 +3948,7 @@ async function payFixShort(id, year, month) {
   const pays = (row.payments || []).filter(p => Number(p.payment_month) === month);
   if (!pays.length) return;
   const cur = payCur(row), last = pays[pays.length - 1];
-  const more = payIsPayroll(row) ? m.short : Math.min(m.short, Math.max(0, Math.round((m.due - m.logged) * 100) / 100));
+  const more = payIsPayroll(row) ? m.short : Math.min(m.short, Math.max(0, Math.round((m.due - (m.applied ?? m.logged)) * 100) / 100));
   if (!(more > 0.005)) { showToast(`${MONTHS[month]}’s own pay is logged in full. What is owed is from earlier months.`, 'warning'); return; }
   if (!await showConfirm(`Change ${row.name}’s ${MONTHS[month]} payment from ${payMoney(m.logged, cur)} to ${payMoney(m.logged + more, cur)}? Only do this if the full amount really was paid.`)) return;
   if (await spSend('PUT', `/api/payments/${last.id}`, { amount: Math.round((parseFloat(last.amount) + more) * 100) / 100 })) { showToast('Payment corrected', 'success'); loadSalaryPage(); }
@@ -4126,7 +4132,7 @@ async function submitPayOne() {
     // A month still to pay is paid once, and a top-up only on top of what this page saw
     // logged; anything else (a second payment) is deliberate
     ok = await spSend('POST', '/api/payments', { employee_id: o.id, payment_year: o.year, payment_month: o.month, amount, notes,
-      only_if_unpaid: !!(m && !m.paid && !o.topUp), ...(o.topUp && m ? { only_if_total: m.logged } : {}) });
+      only_if_unpaid: !!(m && !m.paid && !o.topUp && !(m.logged > 0)), ...(m && (o.topUp || (!m.paid && m.logged > 0)) ? { only_if_total: m.logged } : {}) });
   }
   btn.disabled = false;
   if (!ok) { if (o.topUp) loadSalaryPage(); return; }
@@ -4145,7 +4151,7 @@ function openPayAll(groupKey) {
   const { year, month } = _pay;
   // (`groupKey` is one of the page's groups, or 'cur:PHP' for everyone paid in that currency)
   const wanted = x => (String(groupKey).startsWith('cur:') ? payCur(x.row) === groupKey.slice(4) : payGroupOf(x.row).key === groupKey);
-  const items = payMonthList(year, month).filter(x => wanted(x) && x.m.status === 'due' && x.m.left > 0.005)
+  const items = payMonthList(year, month).filter(x => wanted(x) && x.m.status === 'due' && x.m.left > 0.005 && !(x.m.logged > 0))
     .sort((a, b) => String(a.row.name).localeCompare(String(b.row.name)));
   if (!items.length) return;
   const cur = payCur(items[0].row);
@@ -4543,11 +4549,11 @@ function renderPayPerson() {
       : m.status === 'later' ? '<span class="co-chip is-soon">Pay later</span>' : late ? '<span class="co-chip is-late">Not paid</span>' : '<span class="co-chip is-soon">To pay</span>';
     const fig = m.status === 'none' ? '—' : payMoney(m.covered ? 0 : m.paid ? m.logged : m.left, cur);
     // Self-employed: how the month's pay was met, and where the account stood at the end of it
-    const story = payroll ? [] : [!m.paid && m.status !== 'none' && Math.abs(m.left - m.due) > 0.005 ? `${payMoney(m.due, cur)} a month` : '', part ? `${payMoney(m.logged, cur)} of ${payMoney(m.due, cur)} paid` : '', ...payMonthStory(row, m, cur, true)].filter(Boolean);
+    const story = payroll ? [] : [!m.paid && m.status !== 'none' && Math.abs(m.left - m.due) > 0.005 ? `${payMoney(m.due, cur)} a month` : '', part ? `${payMoney(payroll ? m.logged : m.applied ?? m.logged, cur)} of ${payMoney(m.due, cur)} paid` : '', ...payMonthStory(row, m, cur, true)].filter(Boolean);
     const come = year < now.year || (year === now.year && m.month <= now.month);
     const account = story.length ? `<div class="pay-how">${esc(story.join(' · '))}</div>` : '';
     // The month's pay as a small bar: paid in the month, met another way, still to pay
-    const met = m.due > 0.005 && m.status !== 'none' ? { own: Math.min(m.logged || 0, m.due), other: payroll ? (m.taken || 0) : (m.taken || 0) + (m.advance || 0) + (m.made_up || 0), left: m.left > 0.005 ? m.left : 0 } : null;
+    const met = m.due > 0.005 && m.status !== 'none' ? { own: Math.min((payroll ? m.logged : m.applied ?? m.logged) || 0, m.due), other: payroll ? (m.taken || 0) : (m.taken || 0) + (m.advance || 0) + (m.made_up || 0), left: m.left > 0.005 ? m.left : 0 } : null;
     const w = v => Math.max(0, Math.min(100, v / m.due * 100)).toFixed(1);
     if (met && met.other > 0.005) anyOther = true;
     const mini = met ? `<span class="pay-mini" aria-hidden="true">${met.own > 0.005 ? `<i class="is-paid" style="width:${w(met.own)}%"></i>` : ''}${met.other > 0.005 ? `<i class="is-ahead" style="width:${w(met.other)}%"></i>` : ''}${met.left > 0.005 && come ? `<i class="is-owed${late || partLate ? ' is-late' : ''}" style="width:${w(met.left)}%"></i>` : ''}</span>` : '<span class="pay-mini is-off" aria-hidden="true"></span>';
