@@ -3215,19 +3215,19 @@ function payBarHtml(p, cur, year) {
   const aheadW = share(p.aheadPaid), paidW = Math.max(0, share(p.paid) - aheadW), owedW = Math.min(100 - paidW - aheadW, share(p.owed));
   const done = p.rem <= 0.005, to = payMonthNames(p.towards, 'the months to come');
   const flag = p.over > 0.005 ? (p.overpaid ? ['is-over', `${payMoneyShort(p.over, cur)} overpaid`] : ['is-ahead', `${payMoneyShort(p.over, cur)} ahead for the year`])
-    : p.ahead > 0.005 ? ['is-ahead', `${payMoneyShort(p.ahead, cur)} towards ${to}`]
+    : p.ahead > 0.005 ? ['is-ahead', `${payMoneyShort(p.ahead, cur)} of ${to} already paid`]
       : p.late > 0.005 ? ['is-late', `+ ${payMoneyShort(p.late, cur)} from ${payMonthNames(p.lateIn, 'earlier months')}`]
         : p.pending > 0.005 ? ['is-over', `${payMoneyShort(p.pending, cur)} of deductions to take off`] : null;
   const words = p.over > 0.005 ? (p.overpaid ? `Paid ${payMoneyShort(p.paid, cur)}, ${payMoneyShort(p.over, cur)} more than the ${payMoneyShort(p.worth, cur)} that ${year} comes to`
       : `${payMoneyShort(p.paid, cur)} paid: with deductions, ${payMoneyShort(p.over, cur)} more than ${year} comes to`)
-    : `${p.pct}% of ${year} paid: ${payMoneyShort(p.paid, cur)} of ${payMoneyShort(p.worth, cur)}${p.owed > 0.005 ? `, ${payMoneyShort(p.owed, cur)} owed now` : ''}${p.late > 0.005 ? `, ${payMoneyShort(p.late, cur)} of it from ${payMonthNames(p.lateIn, 'earlier months')}` : ''}${p.ahead > 0.005 ? `, ${payMoneyShort(p.ahead, cur)} of it towards ${to}` : ''}`;
+    : `${p.pct}% of ${year} paid: ${payMoneyShort(p.paid, cur)} of ${payMoneyShort(p.worth, cur)}${p.owed > 0.005 ? `, ${payMoneyShort(p.owed, cur)} owed now` : ''}${p.late > 0.005 ? `, ${payMoneyShort(p.late, cur)} of it from ${payMonthNames(p.lateIn, 'earlier months')}` : ''}${p.ahead > 0.005 ? `, ${payMoneyShort(p.ahead, cur)} of ${to} already paid` : ''}`;
   return `<div class="pay-meter${done ? ' is-done' : ''}" role="img" aria-label="${esc(words)}" title="${esc(words)}">
       <div class="pay-meter-track">${paidW > 0 ? `<i class="is-paid" style="width:${paidW.toFixed(2)}%"></i>` : ''}${aheadW > 0 ? `<i class="is-ahead" style="width:${aheadW.toFixed(2)}%"></i>` : ''}${owedW > 0 ? `<i class="is-owed${p.late > 0.005 ? ' is-late' : ''}" style="width:${owedW.toFixed(2)}%"></i>` : ''}</div>
       <div class="pay-meter-text"><b>${p.pct}%</b><span>${p.worth > 0.005 || p.paid > 0.005 ? `${payMoneyShort(p.paid, cur)} of ${payMoneyShort(Math.max(0, p.worth), cur)}` : 'Nothing owed'}</span>${flag ? `<span class="pay-meter-flag ${flag[0]}">${esc(flag[1])}</span>` : ''}</div>
     </div>`;
 }
 // What the parts of a bar mean
-const PAY_BAR_KEY = '<span><i class="pay-key-bar is-paid"></i>Paid so far</span><span><i class="pay-key-bar is-ahead"></i>Paid, and covers months to come</span><span><i class="pay-key-bar is-owed"></i>Owed now</span><span><i class="pay-key-bar is-owed is-late"></i>Owed from earlier months</span>';
+const PAY_BAR_KEY = '<span><i class="pay-key-bar is-paid"></i>Paid so far</span><span><i class="pay-key-bar is-ahead"></i>Already paid for months to come</span><span><i class="pay-key-bar is-owed"></i>Owed now</span><span><i class="pay-key-bar is-owed is-late"></i>Owed from earlier months</span>';
 // How a self-employed month's pay was met, in plain words (their months are a running
 // account: see the server's contractorYear). `full` is for the person's own year, where
 // every line is given; in a list, the pounds and pence that merely rolled on to the next
